@@ -133,19 +133,20 @@ Resources:
   MediSlotDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupDescription: >
-        Private subnet group for the MediSlot RDS database.
+      DBSubnetGroupDescription: "Private subnet group for MediSlot RDS"
       DBSubnetGroupName: !Sub "MediSlot-DBSubnetGroup-${Environment}"
+
       SubnetIds:
         - Fn::ImportValue:
             !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
         - Fn::ImportValue:
             !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-DBSubnetGroup-${Environment}"
         - Key: Project
-          Value: MediSlot
+          Value: "MediSlot"
         - Key: Environment
           Value: !Ref Environment
 
