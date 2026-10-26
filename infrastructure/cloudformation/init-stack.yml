@@ -1,0 +1,268 @@
+```yaml
+AWSTemplateFormatVersion: "2010-09-09"
+
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  MediSlot database initialization stack.
+  Deploys a Lambda function that initializes the MySQL schema
+  after the Network, Data, and IAM stacks have been deployed.
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+
+Parameters:
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment.
+
+  Region:
+    Type: String
+    Default: ap-south-1
+    Description: AWS region in which the stack is deployed.
+
+  DatabaseHost:
+    Type: String
+    Description: Private RDS MySQL endpoint.
+
+  DatabasePort:
+    Type: Number
+    Default: 3306
+    Description: RDS MySQL port.
+
+  DatabaseName:
+    Type: String
+    Default: medislot
+    Description: Name of the application database.
+
+  DatabaseUsername:
+    Type: String
+    Default: medislot_admin
+    Description: MySQL administrator username used for initialization.
+
+  DatabasePasswordParameterName:
+    Type: String
+    Description: >
+      Name of the SSM parameter containing the RDS administrator
+      password. Must match the parameter created by the Data stack.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC containing the RDS database.
+
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: First private subnet for the initializer Lambda.
+
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second private subnet for the initializer Lambda.
+
+  RDSSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group attached to the RDS database.
+
+# ============================================================
+# RULES
+# ============================================================
+
+Rules:
+
+  RegionMustMatchStackRegion:
+    Assertions:
+      - Assert:
+          Fn::Equals:
+            - !Ref Region
+            - !Ref AWS::Region
+        AssertDescription: >
+          The Region parameter must match the CloudFormation
+          deployment region.
+
+# ============================================================
+# RESOURCES
+# ============================================================
+
+Resources:
+
+  # ==========================================================
+  # SECURITY GROUP FOR THE DATABASE INITIALIZER
+  # ==========================================================
+
+  DatabaseInitializerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub
+        - "MediSlot database initializer security group (${Env})"
+        - Env: !Ref Environment
+
+      VpcId: !Ref VpcId
+
+      # Do not allow unrestricted outbound traffic.
+      SecurityGroupEgress: []
+
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-DBInitializer-SG-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================
+  # ALLOW MYSQL FROM THE INITIALIZER TO RDS
+  # ==========================================================
+
+  DatabaseInitializerToRDSEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref DatabaseInitializerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      DestinationSecurityGroupId: !Ref RDSSecurityGroupId
+      Description: Allow MySQL connections to the MediSlot RDS SG.
+
+  DatabaseInitializerToRDSIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RDSSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref DatabaseInitializerSecurityGroup
+      Description: Allow MySQL connections from the initializer Lambda.
+
+  # ==========================================================
+  # LAMBDA EXECUTION ROLE
+  # ==========================================================
+
+  DatabaseInitializerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MediSlot-DBInitializer-Role-${Environment}"
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+
+      Policies:
+        - PolicyName: !Sub "MediSlot-DBInitializer-SSM-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadDatabasePassword
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ParameterName}"
+                  - ParameterName: !Ref DatabasePasswordParameterName
+
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================
+  # DATABASE INITIALIZER LAMBDA
+  # ==========================================================
+
+  DatabaseInitializerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-DBInitializer-${Environment}"
+
+      Description: >
+        Initializes and verifies the MediSlot MySQL database schema.
+
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+
+      CodeUri: ../../src/init_lambda/
+
+      Role: !GetAtt DatabaseInitializerExecutionRole.Arn
+
+      MemorySize: 512
+      Timeout: 900
+
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref DatabaseInitializerSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          AWS_REGION: !Ref AWS::Region
+          DB_HOST: !Ref DatabaseHost
+          DB_PORT: !Ref DatabasePort
+          DB_NAME: !Ref DatabaseName
+          DB_USERNAME: !Ref DatabaseUsername
+          DB_PASSWORD_PARAMETER_NAME: !Ref DatabasePasswordParameterName
+
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+        Component: DatabaseInitialization
+
+  # ==========================================================
+  # CLOUDFORMATION CUSTOM RESOURCE
+  # ==========================================================
+
+  InitializeMediSlotDatabase:
+    Type: Custom::MediSlotDatabaseInitialization
+
+    DependsOn:
+      - DatabaseInitializerToRDSIngress
+
+    Properties:
+      ServiceToken: !GetAtt DatabaseInitializerFunction.Arn
+      ServiceTimeout: 900
+
+      Environment: !Ref Environment
+      DatabaseHost: !Ref DatabaseHost
+      DatabasePort: !Ref DatabasePort
+      DatabaseName: !Ref DatabaseName
+      DatabaseUsername: !Ref DatabaseUsername
+      SchemaVersion: "1"
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+
+Outputs:
+
+  DatabaseInitializerFunctionArn:
+    Description: ARN of the database initializer Lambda function.
+    Value: !GetAtt DatabaseInitializerFunction.Arn
+    Export:
+      Name: !Sub "MediSlot-DBInitializerFunctionArn-${Environment}"
+
+  DatabaseInitializerSecurityGroupId:
+    Description: Security group ID used by the initializer Lambda.
+    Value: !Ref DatabaseInitializerSecurityGroup
+    Export:
+      Name: !Sub "MediSlot-DBInitializerSecurityGroupId-${Environment}"
+
+  DatabaseName:
+    Description: Database initialized by this stack.
+    Value: !Ref DatabaseName
