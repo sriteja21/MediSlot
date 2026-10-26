@@ -82,8 +82,7 @@ Resources:
               - sts:AssumeRole
 
       ManagedPolicyArns:
-        - !Sub >
-          arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 
       Policies:
 
@@ -214,8 +213,7 @@ Resources:
               - sts:AssumeRole
 
       ManagedPolicyArns:
-        - !Sub >
-          arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 
       Policies:
 
