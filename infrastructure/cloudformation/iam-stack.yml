@@ -25,10 +25,6 @@ Parameters:
     Default: ap-south-1
     Description: AWS region where this stack is deployed.
 
-  # ----------------------------------------------------------
-  # SSM PARAMETER NAMES
-  # ----------------------------------------------------------
-
   JWTSecretParameterName:
     Type: String
     Description: >
@@ -39,15 +35,6 @@ Parameters:
     Description: >
       SSM SecureString parameter containing application database
       credentials. This must be separate from the RDS master password.
-
-  # ----------------------------------------------------------
-  # DATABASE CONFIGURATION
-  # ----------------------------------------------------------
-
-  DatabaseName:
-    Type: String
-    Default: medislot
-    Description: Application database name.
 
 # ============================================================
 # RULES
@@ -74,13 +61,6 @@ Resources:
   # ==========================================================
   # AUTH LAMBDA EXECUTION ROLE
   # ==========================================================
-
-  # Used by the single authentication Lambda for:
-  # - Patient and doctor registration
-  # - Login
-  # - JWT generation
-  # - Refresh tokens
-  # - Logout and token revocation
 
   MediSlotAuthLambdaRole:
     Type: AWS::IAM::Role
@@ -133,7 +113,7 @@ Resources:
                     arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthFunction-${Environment}:*
 
         # ----------------------------------------------------
-        # READ JWT AND APPLICATION DATABASE SECRETS
+        # READ JWT AND DATABASE SECRETS
         # ----------------------------------------------------
 
         - PolicyName: !Sub "MediSlot-AuthReadSecrets-${Environment}"
@@ -214,13 +194,6 @@ Resources:
   # APPLICATION API LAMBDA EXECUTION ROLE
   # ==========================================================
 
-  # Used by the single application API Lambda for:
-  # - Authentication and role checks for protected routes
-  # - Doctor and patient profile APIs
-  # - Availability and appointment APIs
-  # - Booking, cancellation, and waitlist workflows
-  # - Application database operations
-
   MediSlotApiLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -299,17 +272,6 @@ Resources:
                     kms:ViaService: !Sub "ssm.${Region}.${AWS::URLSuffix}"
 
         # ----------------------------------------------------
-        # DATABASE CONNECTIVITY CONFIGURATION
-        # ----------------------------------------------------
-
-        # Lambda does not require an IAM permission to connect
-        # to MySQL directly. Network access is controlled by
-        # the Lambda and RDS security groups.
-        #
-        # The application uses the database endpoint and port
-        # exported by the data stack.
-
-        # ----------------------------------------------------
         # SLOTS TABLE
         # ----------------------------------------------------
 
@@ -325,8 +287,7 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                   - dynamodb:Query
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
+                  - dynamodb:ConditionCheckItem
                 Resource:
                   - Fn::ImportValue:
                       !Sub "MediSlot-SlotsTableArn-${Environment}"
@@ -352,8 +313,7 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                   - dynamodb:Query
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
+                  - dynamodb:ConditionCheckItem
                 Resource:
                   Fn::ImportValue:
                     !Sub "MediSlot-SeatClaimsTableArn-${Environment}"
@@ -393,8 +353,7 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                   - dynamodb:Query
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
+                  - dynamodb:ConditionCheckItem
                 Resource:
                   Fn::ImportValue:
                     !Sub "MediSlot-WaitlistTableArn-${Environment}"
@@ -415,8 +374,7 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                   - dynamodb:Query
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
+                  - dynamodb:ConditionCheckItem
                 Resource:
                   - Fn::ImportValue:
                       !Sub "MediSlot-HoldOffersTableArn-${Environment}"
