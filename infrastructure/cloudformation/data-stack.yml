@@ -33,11 +33,14 @@ Parameters:
     AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]*$"
     Description: RDS MySQL administrator username.
 
-  DBMasterPasswordParameterName:
+  DBMasterPassword:
     Type: String
+    NoEcho: true
+    MinLength: 12
+    MaxLength: 41
     Description: >
-      Name of the pre-provisioned SSM SecureString containing the
-      RDS administrator password.
+      RDS administrator password. CloudFormation stores it in SSM as a
+      String parameter for this temporary development configuration.
 
   DBInstanceClass:
     Type: String
@@ -104,6 +107,26 @@ Conditions:
 Resources:
 
   # ==========================================================
+  # SSM DATABASE MASTER PASSWORD (TEMPORARY STRING)
+  # ==========================================================
+
+  # WARNING: SSM Type String is not encrypted. Use SecureString for
+  # production or any environment containing real/sensitive data.
+  MediSlotDatabaseMasterPasswordParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "/MediSlot/${Environment}/database/master-password"
+      Type: String
+      Value: !Ref DBMasterPassword
+      Description: !Sub "MediSlot ${Environment} RDS master password (temporary String parameter)"
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+        DataClassification: Sensitive
+
+  # ==========================================================
   # RDS SUBNET GROUP
   # ==========================================================
 
@@ -144,9 +167,7 @@ Resources:
 
       MasterUsername: !Ref DBMasterUsername
 
-      MasterUserPassword:
-        Fn::Sub: >-
-          {{resolve:ssm-secure:${DBMasterPasswordParameterName}:1}}
+      MasterUserPassword: !Ref DBMasterPassword
 
       DBName: medislot
       Port: 3306
@@ -744,6 +765,66 @@ Outputs:
     Value: !Ref MediSlotReportsBucket
     Export:
       Name: !Sub "MediSlot-ReportsBucketName-${Environment}"
+
+  RefreshTokensTableArn:
+    Description: DynamoDB refresh tokens table ARN for IAM policies.
+    Value: !GetAtt MediSlotRefreshTokensTable.Arn
+    Export:
+      Name: !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
+
+  TokenDenylistTableArn:
+    Description: DynamoDB token denylist table ARN for IAM policies.
+    Value: !GetAtt MediSlotTokenDenylistTable.Arn
+    Export:
+      Name: !Sub "MediSlot-TokenDenylistTableArn-${Environment}"
+
+  SlotsTableArn:
+    Description: DynamoDB slots table ARN for IAM policies.
+    Value: !GetAtt MediSlotSlotsTable.Arn
+    Export:
+      Name: !Sub "MediSlot-SlotsTableArn-${Environment}"
+
+  SeatClaimsTableArn:
+    Description: DynamoDB seat claims table ARN for IAM policies.
+    Value: !GetAtt MediSlotSeatClaimsTable.Arn
+    Export:
+      Name: !Sub "MediSlot-SeatClaimsTableArn-${Environment}"
+
+  IdempotencyTableArn:
+    Description: DynamoDB idempotency table ARN for IAM policies.
+    Value: !GetAtt MediSlotIdempotencyTable.Arn
+    Export:
+      Name: !Sub "MediSlot-IdempotencyTableArn-${Environment}"
+
+  WaitlistTableArn:
+    Description: DynamoDB waitlist table ARN for IAM policies.
+    Value: !GetAtt MediSlotWaitlistTable.Arn
+    Export:
+      Name: !Sub "MediSlot-WaitlistTableArn-${Environment}"
+
+  HoldOffersTableArn:
+    Description: DynamoDB hold offers table ARN for IAM policies.
+    Value: !GetAtt MediSlotHoldOffersTable.Arn
+    Export:
+      Name: !Sub "MediSlot-HoldOffersTableArn-${Environment}"
+
+  DispatchLogTableArn:
+    Description: DynamoDB dispatch log table ARN for IAM policies.
+    Value: !GetAtt MediSlotDispatchLogTable.Arn
+    Export:
+      Name: !Sub "MediSlot-DispatchLogTableArn-${Environment}"
+
+  ProfilePhotosBucketArn:
+    Description: Profile photos bucket ARN for IAM policies.
+    Value: !GetAtt MediSlotProfilePhotosBucket.Arn
+    Export:
+      Name: !Sub "MediSlot-ProfilePhotosBucketArn-${Environment}"
+
+  ReportsBucketArn:
+    Description: Reports bucket ARN for IAM policies.
+    Value: !GetAtt MediSlotReportsBucket.Arn
+    Export:
+      Name: !Sub "MediSlot-ReportsBucketArn-${Environment}"
 
   DeploymentRegion:
     Description: AWS region configured for this stack.
