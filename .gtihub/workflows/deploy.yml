@@ -1,0 +1,484 @@
+
+name: MediSlot Infrastructure Deployment
+
+# ============================================================
+# WORKFLOW TRIGGERS
+# ============================================================
+
+on:
+  push:
+    branches:
+      - master
+      - feature/authentication
+    paths:
+      - "infrastructure/cloudformation/**"
+      - ".github/workflows/deploy.yml"
+
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "infrastructure/cloudformation/**"
+      - ".github/workflows/deploy.yml"
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+        default: dev
+
+# ============================================================
+# GLOBAL CONFIGURATION
+# ============================================================
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'ap-south-1' }}
+  PROJECT_NAME: MediSlot
+
+  NETWORK_TEMPLATE: infrastructure/cloudformation/network-stack.yml
+  DATA_TEMPLATE: infrastructure/cloudformation/data-stack.yml
+  IAM_TEMPLATE: infrastructure/cloudformation/iam-stack.yml
+
+# ============================================================
+# JOBS
+# ============================================================
+
+jobs:
+
+  # ==========================================================
+  # JOB 1: VALIDATE TEMPLATES
+  # ==========================================================
+
+  validate:
+    name: Validate CloudFormation Templates
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cfn-lint
+        run: |
+          python -m pip install --upgrade pip
+          pip install cfn-lint
+
+      - name: Check Required Templates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$NETWORK_TEMPLATE"
+          test -f "$DATA_TEMPLATE"
+          test -f "$IAM_TEMPLATE"
+
+      - name: Lint Network Stack
+        run: cfn-lint "$NETWORK_TEMPLATE"
+
+      - name: Lint Data Stack
+        run: cfn-lint "$DATA_TEMPLATE"
+
+      - name: Lint IAM Stack
+        run: cfn-lint "$IAM_TEMPLATE"
+
+  # ==========================================================
+  # JOB 2: DEPLOY INFRASTRUCTURE
+  # ==========================================================
+
+  deploy:
+    name: Deploy MediSlot Infrastructure
+    runs-on: ubuntu-latest
+
+    needs:
+      - validate
+
+    # Pull requests validate templates only.
+    # Pushes to master and manual runs can deploy.
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      DEPLOY_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+
+    steps:
+
+      # --------------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------------
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------------
+      # CONFIGURE AWS USING OIDC
+      # --------------------------------------------------------
+
+      - name: Configure AWS Credentials Using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: MediSlotGitHubActions
+
+      # --------------------------------------------------------
+      # VERIFY AUTHENTICATION
+      # --------------------------------------------------------
+
+      - name: Verify AWS Identity
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+
+      # --------------------------------------------------------
+      # VERIFY CONFIGURATION
+      # --------------------------------------------------------
+
+      - name: Verify Deployment Configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$DEPLOY_ENVIRONMENT" != "dev" &&
+                "$DEPLOY_ENVIRONMENT" != "test" &&
+                "$DEPLOY_ENVIRONMENT" != "prod" ]]; then
+            echo "ERROR: Invalid environment."
+            exit 1
+          fi
+
+          if [[ -z "$AWS_REGION" ]]; then
+            echo "ERROR: AWS_REGION is not configured."
+            exit 1
+          fi
+
+          echo "Project: $PROJECT_NAME"
+          echo "Environment: $DEPLOY_ENVIRONMENT"
+          echo "Region: $AWS_REGION"
+
+      # --------------------------------------------------------
+      # AWS TEMPLATE VALIDATION
+      # --------------------------------------------------------
+
+      - name: Validate Network Stack with AWS
+        run: |
+          aws cloudformation validate-template \
+            --template-body "file://$NETWORK_TEMPLATE" \
+            --region "$AWS_REGION"
+
+      - name: Validate Data Stack with AWS
+        run: |
+          aws cloudformation validate-template \
+            --template-body "file://$DATA_TEMPLATE" \
+            --region "$AWS_REGION"
+
+      - name: Validate IAM Stack with AWS
+        run: |
+          aws cloudformation validate-template \
+            --template-body "file://$IAM_TEMPLATE" \
+            --region "$AWS_REGION"
+
+      # ========================================================
+      # STACK 1: NETWORK
+      # ========================================================
+
+      - name: Deploy Network Stack Using Change Set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="MediSlot-Network-${DEPLOY_ENVIRONMENT}"
+          CHANGE_SET_NAME="MediSlot-Network-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          echo "Preparing Network stack deployment."
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+            CHANGE_SET_TYPE="UPDATE"
+          else
+            CHANGE_SET_TYPE="CREATE"
+          fi
+
+          aws cloudformation create-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --change-set-type "$CHANGE_SET_TYPE" \
+            --template-body "file://$NETWORK_TEMPLATE" \
+            --parameters \
+              "ParameterKey=Environment,ParameterValue=${DEPLOY_ENVIRONMENT}" \
+              "ParameterKey=Region,ParameterValue=${AWS_REGION}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$AWS_REGION"
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"; then
+
+            REASON=$(aws cloudformation describe-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$CHANGE_SET_NAME" \
+              --region "$AWS_REGION" \
+              --query 'StatusReason' \
+              --output text 2>/dev/null || true)
+
+            if [[ "$REASON" == *"didn't contain changes"* ||
+                  "$REASON" == *"No updates are to be performed"* ]]; then
+              echo "Network stack has no changes."
+              exit 0
+            fi
+
+            echo "ERROR: Network Change Set creation failed."
+            echo "$REASON"
+            exit 1
+          fi
+
+          aws cloudformation describe-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"
+
+          if [[ "$CHANGE_SET_TYPE" == "CREATE" ]]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          fi
+
+          echo "Network stack deployment completed."
+
+      # ========================================================
+      # STACK 2: DATA
+      # ========================================================
+
+      - name: Deploy Data Stack Using Change Set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="MediSlot-Data-${DEPLOY_ENVIRONMENT}"
+          CHANGE_SET_NAME="MediSlot-Data-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          # SSM parameter name only.
+          # The actual database password stays in AWS SSM.
+          DB_PASSWORD_PARAMETER="/MediSlot/${DEPLOY_ENVIRONMENT}/database/master-password"
+
+          echo "Preparing Data stack deployment."
+
+          # Network exports must exist before this stack is deployed.
+          aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Network-${DEPLOY_ENVIRONMENT}" \
+            --region "$AWS_REGION" >/dev/null
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+            CHANGE_SET_TYPE="UPDATE"
+          else
+            CHANGE_SET_TYPE="CREATE"
+          fi
+
+          aws cloudformation create-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --change-set-type "$CHANGE_SET_TYPE" \
+            --template-body "file://$DATA_TEMPLATE" \
+            --parameters \
+              "ParameterKey=Environment,ParameterValue=${DEPLOY_ENVIRONMENT}" \
+              "ParameterKey=Region,ParameterValue=${AWS_REGION}" \
+              "ParameterKey=DBMasterPasswordParameterName,ParameterValue=${DB_PASSWORD_PARAMETER}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$AWS_REGION"
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"; then
+
+            REASON=$(aws cloudformation describe-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$CHANGE_SET_NAME" \
+              --region "$AWS_REGION" \
+              --query 'StatusReason' \
+              --output text 2>/dev/null || true)
+
+            if [[ "$REASON" == *"didn't contain changes"* ||
+                  "$REASON" == *"No updates are to be performed"* ]]; then
+              echo "Data stack has no changes."
+              exit 0
+            fi
+
+            echo "ERROR: Data Change Set creation failed."
+            echo "$REASON"
+            exit 1
+          fi
+
+          aws cloudformation describe-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"
+
+          if [[ "$CHANGE_SET_TYPE" == "CREATE" ]]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          fi
+
+          echo "Data stack deployment completed."
+
+      # ========================================================
+      # STACK 3: IAM
+      # ========================================================
+
+      - name: Deploy IAM Stack Using Change Set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="MediSlot-IAM-${DEPLOY_ENVIRONMENT}"
+          CHANGE_SET_NAME="MediSlot-IAM-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          # These are SSM parameter names, not secret values.
+          JWT_PARAMETER="/MediSlot/${DEPLOY_ENVIRONMENT}/auth/jwt-secret"
+          DB_CREDENTIALS_PARAMETER="/MediSlot/${DEPLOY_ENVIRONMENT}/database/application-credentials"
+
+          echo "Preparing IAM stack deployment."
+
+          # Data exports must exist before the IAM stack is deployed.
+          aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Data-${DEPLOY_ENVIRONMENT}" \
+            --region "$AWS_REGION" >/dev/null
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+            CHANGE_SET_TYPE="UPDATE"
+          else
+            CHANGE_SET_TYPE="CREATE"
+          fi
+
+          aws cloudformation create-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --change-set-type "$CHANGE_SET_TYPE" \
+            --template-body "file://$IAM_TEMPLATE" \
+            --parameters \
+              "ParameterKey=Environment,ParameterValue=${DEPLOY_ENVIRONMENT}" \
+              "ParameterKey=Region,ParameterValue=${AWS_REGION}" \
+              "ParameterKey=JWTSecretParameterName,ParameterValue=${JWT_PARAMETER}" \
+              "ParameterKey=DatabaseCredentialsParameterName,ParameterValue=${DB_CREDENTIALS_PARAMETER}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$AWS_REGION"
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"; then
+
+            REASON=$(aws cloudformation describe-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$CHANGE_SET_NAME" \
+              --region "$AWS_REGION" \
+              --query 'StatusReason' \
+              --output text 2>/dev/null || true)
+
+            if [[ "$REASON" == *"didn't contain changes"* ||
+                  "$REASON" == *"No updates are to be performed"* ]]; then
+              echo "IAM stack has no changes."
+              exit 0
+            fi
+
+            echo "ERROR: IAM Change Set creation failed."
+            echo "$REASON"
+            exit 1
+          fi
+
+          aws cloudformation describe-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"
+
+          if [[ "$CHANGE_SET_TYPE" == "CREATE" ]]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          fi
+
+          echo "IAM stack deployment completed."
+
+      # ========================================================
+      # DEPLOYMENT SUMMARY
+      # ========================================================
+
+      - name: Display Deployment Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for STACK_NAME in \
+            "MediSlot-Network-${DEPLOY_ENVIRONMENT}" \
+            "MediSlot-Data-${DEPLOY_ENVIRONMENT}" \
+            "MediSlot-IAM-${DEPLOY_ENVIRONMENT}"
+          do
+            echo "=========================================="
+            echo "Stack: $STACK_NAME"
+
+            aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --query 'Stacks[0].[StackName,StackStatus]' \
+              --output table
+          done
+
+          echo "=========================================="
+          echo "MediSlot infrastructure deployment completed."
