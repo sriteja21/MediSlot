@@ -3,8 +3,11 @@ AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   MediSlot network infrastructure. Creates a VPC, public and private
-  subnets, route tables, an Internet Gateway, and security groups.
-  This stack does not create Lambda functions.
+  subnets, an Internet Gateway, route tables, and security groups.
+
+# ============================================================
+# PARAMETERS
+# ============================================================
 
 Parameters:
 
@@ -20,7 +23,7 @@ Parameters:
   Region:
     Type: String
     Default: ap-south-1
-    Description: AWS region in which this stack is intended to be deployed.
+    Description: AWS region in which this stack is deployed.
 
   VpcCidr:
     Type: String
@@ -42,12 +45,9 @@ Parameters:
     Default: 10.0.3.0/24
     Description: CIDR range for the second private subnet.
 
-Conditions:
-
-  IsRegionCorrect:
-    Fn::Equals:
-      - !Ref Region
-      - !Ref AWS::Region
+# ============================================================
+# REGION VALIDATION
+# ============================================================
 
 Rules:
 
@@ -58,14 +58,18 @@ Rules:
             - !Ref Region
             - !Ref AWS::Region
         AssertDescription: >
-          The Region parameter must match the AWS region where the
-          CloudFormation stack is deployed.
+          The Region parameter must match the AWS region where
+          the CloudFormation stack is deployed.
+
+# ============================================================
+# RESOURCES
+# ============================================================
 
 Resources:
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # VPC
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotVPC:
     Type: AWS::EC2::VPC
@@ -80,12 +84,10 @@ Resources:
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
-        - Key: Region
-          Value: !Ref Region
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # INTERNET GATEWAY
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotInternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -104,9 +106,9 @@ Resources:
       VpcId: !Ref MediSlotVPC
       InternetGatewayId: !Ref MediSlotInternetGateway
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # PUBLIC SUBNET
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotPublicSubnet:
     Type: AWS::EC2::Subnet
@@ -127,9 +129,9 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # PRIVATE SUBNET 1
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotPrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -150,9 +152,9 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # PRIVATE SUBNET 2
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotPrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -173,9 +175,9 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # PUBLIC ROUTE TABLE
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotPublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -203,9 +205,9 @@ Resources:
       SubnetId: !Ref MediSlotPublicSubnet
       RouteTableId: !Ref MediSlotPublicRouteTable
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # PRIVATE ROUTE TABLE
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotPrivateRouteTable:
     Type: AWS::EC2::RouteTable
@@ -231,15 +233,15 @@ Resources:
       SubnetId: !Ref MediSlotPrivateSubnet2
       RouteTableId: !Ref MediSlotPrivateRouteTable
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # LAMBDA SECURITY GROUP
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotLambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupName: !Sub "MediSlot-LambdaSecurityGroup-${Environment}"
-      GroupDescription: Security group for MediSlot application Lambdas
+      GroupDescription: Security group for MediSlot application Lambda functions
       VpcId: !Ref MediSlotVPC
       SecurityGroupIngress: []
       SecurityGroupEgress:
@@ -254,18 +256,18 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ==========================================================
+  # ----------------------------------------------------------
   # RDS SECURITY GROUP
-  # ==========================================================
+  # ----------------------------------------------------------
 
   MediSlotRDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupName: !Sub "MediSlot-RDSSecurityGroup-${Environment}"
-      GroupDescription: Allow MySQL access from MediSlot Lambda functions
+      GroupDescription: Allow MySQL connections from MediSlot Lambda functions
       VpcId: !Ref MediSlotVPC
       SecurityGroupIngress:
-        - Description: MySQL access from MediSlot Lambda functions
+        - Description: MySQL access from MediSlot Lambda security group
           IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
@@ -313,13 +315,13 @@ Outputs:
       Name: !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
 
   LambdaSecurityGroupId:
-    Description: Security group ID shared by the two Lambda functions
+    Description: Security group ID for MediSlot Lambda functions
     Value: !Ref MediSlotLambdaSecurityGroup
     Export:
       Name: !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
 
   RDSSecurityGroupId:
-    Description: RDS security group ID
+    Description: Security group ID for the RDS database
     Value: !Ref MediSlotRDSSecurityGroup
     Export:
       Name: !Sub "MediSlot-RDSSecurityGroupId-${Environment}"
