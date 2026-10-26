@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
@@ -112,9 +113,11 @@ Resources:
     Properties:
       VpcId: !Ref MediSlotVPC
       CidrBlock: !Ref PublicSubnetCidr
-      AvailabilityZone: !Select
-        - 0
-        - !GetAZs !Ref Region
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs:
+              Ref: Region
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -133,9 +136,11 @@ Resources:
     Properties:
       VpcId: !Ref MediSlotVPC
       CidrBlock: !Ref PrivateSubnet1Cidr
-      AvailabilityZone: !Select
-        - 0
-        - !GetAZs !Ref Region
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs:
+              Ref: Region
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -154,9 +159,11 @@ Resources:
     Properties:
       VpcId: !Ref MediSlotVPC
       CidrBlock: !Ref PrivateSubnet2Cidr
-      AvailabilityZone: !Select
-        - 1
-        - !GetAZs !Ref Region
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs:
+              Ref: Region
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -274,6 +281,10 @@ Resources:
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
+
+# ============================================================
+# OUTPUTS
+# ============================================================
 
 Outputs:
 
