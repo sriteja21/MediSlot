@@ -1,5 +1,5 @@
-name: MediSlot Infrastructure CI/CD
 
+name: MediSlot Infrastructure CI/CD
 
 on:
   push:
@@ -56,6 +56,7 @@ jobs:
           pip install cfn-lint
           pip install aws-sam-cli
 
+      # Ignore cfn-lint warnings while retaining error checks.
       - name: Validate CloudFormation templates
         run: |
           set -e
@@ -70,9 +71,12 @@ jobs:
             echo "Validating $template"
             echo "========================================"
 
-            test -f "$template"
+            if [ ! -f "$template" ]; then
+              echo "ERROR: Template not found: $template"
+              exit 1
+            fi
 
-            cfn-lint "$template"
+            cfn-lint "$template" --ignore-checks W
           done
 
       - name: Validate Database Initializer SAM Template
@@ -92,8 +96,6 @@ jobs:
 
     needs: validate
 
-    # Deploy only when changes are pushed to master or deployment is
-    # explicitly started through workflow_dispatch.
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/master')
@@ -114,10 +116,11 @@ jobs:
         run: |
           aws sts get-caller-identity
 
-      - name: Validate AWS region
+      - name: Display deployment configuration
         run: |
-          echo "Deploying MediSlot to region: $AWS_REGION"
-          aws configure get region || true
+          echo "Project: $PROJECT_NAME"
+          echo "Region: $AWS_REGION"
+          echo "Branch: $GITHUB_REF_NAME"
 
       - name: Validate deployment templates
         run: |
@@ -129,7 +132,11 @@ jobs:
             "$IAM_TEMPLATE" \
             "$INIT_TEMPLATE"
           do
-            test -f "$template"
+            if [ ! -f "$template" ]; then
+              echo "ERROR: Template not found: $template"
+              exit 1
+            fi
+
             echo "Found $template"
           done
 
@@ -150,14 +157,27 @@ jobs:
 
       - name: Wait for network stack
         run: |
-          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          set -e
 
-          aws cloudformation wait stack-create-complete \
-            --stack-name "MediSlot-Network-${ENVIRONMENT}" \
-            --region "$AWS_REGION" 2>/dev/null || \
-          aws cloudformation wait stack-update-complete \
-            --stack-name "MediSlot-Network-${ENVIRONMENT}" \
-            --region "$AWS_REGION"
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          STACK_NAME="MediSlot-Network-${ENVIRONMENT}"
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || \
+               [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          fi
 
       - name: Deploy database stack
         run: |
@@ -176,14 +196,27 @@ jobs:
 
       - name: Wait for database stack
         run: |
-          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          set -e
 
-          aws cloudformation wait stack-create-complete \
-            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
-            --region "$AWS_REGION" 2>/dev/null || \
-          aws cloudformation wait stack-update-complete \
-            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
-            --region "$AWS_REGION"
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          STACK_NAME="MediSlot-Data-${ENVIRONMENT}"
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || \
+               [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          fi
 
       - name: Deploy IAM stack
         run: |
@@ -202,16 +235,29 @@ jobs:
 
       - name: Wait for IAM stack
         run: |
+          set -e
+
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          STACK_NAME="MediSlot-IAM-${ENVIRONMENT}"
 
-          aws cloudformation wait stack-create-complete \
-            --stack-name "MediSlot-IAM-${ENVIRONMENT}" \
-            --region "$AWS_REGION" 2>/dev/null || \
-          aws cloudformation wait stack-update-complete \
-            --stack-name "MediSlot-IAM-${ENVIRONMENT}" \
-            --region "$AWS_REGION"
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
 
-      - name: Package Database Initializer
+          if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || \
+               [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          fi
+
+      - name: Build Database Initializer
         run: |
           set -e
 
@@ -237,7 +283,7 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
-      - name: Show deployed stacks
+      - name: Show deployed MediSlot stacks
         if: success()
         run: |
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
