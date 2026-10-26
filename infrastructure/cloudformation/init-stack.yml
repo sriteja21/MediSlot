@@ -3,8 +3,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
-  MediSlot database initializer. Uses SAM to deploy a Lambda function
-  that initializes and verifies the schema in the existing RDS MySQL database.
+  MediSlot database initializer. Deploys a Lambda function that can be invoked manually
+  to initialize and verify the schema in the existing RDS MySQL database. No custom resource is created.
 
 Parameters:
   Environment:
@@ -49,6 +49,20 @@ Resources:
       ToPort: 3306
       DestinationSecurityGroupId:
         Fn::ImportValue: !Sub "MediSlot-RDSSecurityGroupId-${Environment}"
+
+  # ==========================================================
+  # OUTBOUND HTTPS ACCESS TO SSM AND S3 VPC ENDPOINTS
+  # ==========================================================
+
+  DatabaseInitializerHttpsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref DatabaseInitializerSecurityGroup
+      Description: Allow HTTPS to the SSM interface endpoint and S3 gateway endpoint
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
 
   # ==========================================================
   # INBOUND MYSQL ACCESS FROM INITIALIZER TO RDS
@@ -148,23 +162,6 @@ Resources:
       Tags:
         Application: MediSlot
         Environment: !Ref Environment
-
-  # ==========================================================
-  # DATABASE SCHEMA CUSTOM RESOURCE
-  # ==========================================================
-
-  InitializeMediSlotDatabase:
-    Type: Custom::MediSlotDatabaseSchema
-    DependsOn:
-      - DatabaseInitializerToRDSIngress
-
-    Properties:
-      ServiceToken: !GetAtt DatabaseInitializerFunction.Arn
-      ServiceTimeout: 900
-      Environment: !Ref Environment
-      DatabaseName:
-        Fn::ImportValue: !Sub "MediSlot-DatabaseName-${Environment}"
-      SchemaRevision: "1"
 
 # ============================================================
 # OUTPUTS

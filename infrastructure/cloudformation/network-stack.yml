@@ -234,6 +234,75 @@ Resources:
       RouteTableId: !Ref MediSlotPrivateRouteTable
 
   # ----------------------------------------------------------
+  # VPC ENDPOINT SECURITY GROUP FOR SSM
+  # ----------------------------------------------------------
+
+  MediSlotSSMEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Allow HTTPS from within the MediSlot VPC to the SSM interface endpoint (${Environment})"
+      VpcId: !Ref MediSlotVPC
+      SecurityGroupIngress:
+        - Description: Allow HTTPS from VPC resources to Systems Manager
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCidr
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-SSM-Endpoint-SecurityGroup-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # SYSTEMS MANAGER (SSM) INTERFACE ENDPOINT
+  # ----------------------------------------------------------
+
+  MediSlotSSMInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref MediSlotPrivateSubnet1
+        - !Ref MediSlotPrivateSubnet2
+      SecurityGroupIds:
+        - !Ref MediSlotSSMEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-SSM-Endpoint-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # S3 GATEWAY ENDPOINT
+  # Used by the initializer Lambda to send the CloudFormation
+  # custom-resource response to its presigned S3 URL.
+  # ----------------------------------------------------------
+
+  MediSlotS3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      RouteTableIds:
+        - !Ref MediSlotPrivateRouteTable
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-S3-Gateway-Endpoint-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
   # LAMBDA SECURITY GROUP
   # ----------------------------------------------------------
 
@@ -325,6 +394,24 @@ Outputs:
     Value: !Ref MediSlotRDSSecurityGroup
     Export:
       Name: !Sub "MediSlot-RDSSecurityGroupId-${Environment}"
+
+  SSMInterfaceEndpointId:
+    Description: Systems Manager interface VPC endpoint ID
+    Value: !Ref MediSlotSSMInterfaceEndpoint
+    Export:
+      Name: !Sub "MediSlot-SSMInterfaceEndpointId-${Environment}"
+
+  SSMEndpointSecurityGroupId:
+    Description: Security group attached to the SSM interface endpoint
+    Value: !Ref MediSlotSSMEndpointSecurityGroup
+    Export:
+      Name: !Sub "MediSlot-SSMEndpointSecurityGroupId-${Environment}"
+
+  S3GatewayEndpointId:
+    Description: S3 gateway VPC endpoint ID
+    Value: !Ref MediSlotS3GatewayEndpoint
+    Export:
+      Name: !Sub "MediSlot-S3GatewayEndpointId-${Environment}"
 
   DeploymentRegion:
     Description: AWS region configured for this stack
