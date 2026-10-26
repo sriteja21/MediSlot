@@ -4,8 +4,7 @@ name: MediSlot Infrastructure CI/CD
 on:
   push:
     branches:
-      - master
-      - feature/authentication
+      - "**"
 
   pull_request:
     branches:
@@ -56,7 +55,7 @@ jobs:
           pip install cfn-lint
           pip install aws-sam-cli
 
-      # Ignore cfn-lint warnings while retaining error checks.
+      # Ignore cfn-lint warnings.
       - name: Validate CloudFormation templates
         run: |
           set -e
@@ -96,10 +95,14 @@ jobs:
 
     needs: validate
 
+    # Deploy on pushes to any branch or on a manual workflow run.
+    # Pull requests run validation only.
     if: >
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/master')
+      github.event_name == 'push'
 
+    # Pushes default to dev.
+    # Manual runs use the environment selected by the user.
     environment: ${{ github.event.inputs.environment || 'dev' }}
 
     steps:
@@ -122,7 +125,7 @@ jobs:
           echo "Region: $AWS_REGION"
           echo "Branch: $GITHUB_REF_NAME"
 
-      - name: Validate deployment templates
+      - name: Check deployment templates
         run: |
           set -e
 
@@ -155,30 +158,6 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
-      - name: Wait for network stack
-        run: |
-          set -e
-
-          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
-          STACK_NAME="MediSlot-Network-${ENVIRONMENT}"
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
-
-          if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
-            aws cloudformation wait stack-create-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-          elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || \
-               [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
-            aws cloudformation wait stack-update-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-          fi
-
       - name: Deploy database stack
         run: |
           set -e
@@ -194,30 +173,6 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
-      - name: Wait for database stack
-        run: |
-          set -e
-
-          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
-          STACK_NAME="MediSlot-Data-${ENVIRONMENT}"
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
-
-          if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
-            aws cloudformation wait stack-create-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-          elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || \
-               [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
-            aws cloudformation wait stack-update-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-          fi
-
       - name: Deploy IAM stack
         run: |
           set -e
@@ -232,30 +187,6 @@ jobs:
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
               Environment="$ENVIRONMENT"
-
-      - name: Wait for IAM stack
-        run: |
-          set -e
-
-          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
-          STACK_NAME="MediSlot-IAM-${ENVIRONMENT}"
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
-
-          if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
-            aws cloudformation wait stack-create-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-          elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || \
-               [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
-            aws cloudformation wait stack-update-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-          fi
 
       - name: Build Database Initializer
         run: |
@@ -291,6 +222,7 @@ jobs:
           echo "MediSlot deployment completed."
           echo "Environment: $ENVIRONMENT"
           echo "Region: $AWS_REGION"
+          echo "Branch: $GITHUB_REF_NAME"
 
           aws cloudformation list-stacks \
             --region "$AWS_REGION" \
