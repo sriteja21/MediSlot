@@ -61,7 +61,7 @@ Parameters:
 
   DBBackupRetentionPeriod:
     Type: Number
-    Default: 7
+    Default: 1
     MinValue: 1
     MaxValue: 35
     Description: Number of days to retain automated database backups.
