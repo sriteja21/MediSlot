@@ -727,15 +727,17 @@ def rotate_refresh_token(
 
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         logger.warning(
-            "Refresh-token rotation rejected because the stored record "
-            "is malformed."
+            "Refresh-token rotation rejected because the stored record is malformed."
         )
+
         raise ValueError(
             "Refresh token is invalid or expired."
         ) from exc
 
     if old_expires_at <= now:
-        raise ValueError("Refresh token is invalid or expired.")
+        raise ValueError(
+            "Refresh token is invalid or expired."
+        )
 
     old_hash = hash_refresh_token(old_refresh_token)
 
@@ -767,19 +769,8 @@ def rotate_refresh_token(
                                 "S": old_hash
                             }
                         },
-                        "ConditionExpression": (
-                            "attribute_exists(tokenHash) "
-                            "AND userId = :user_id "
-                            "AND expiresAt = :expected_expiry"
-                        ),
-                        "ExpressionAttributeValues": {
-                            ":user_id": {
-                                "S": user_id
-                            },
-                            ":expected_expiry": {
-                                "N": str(old_expires_at)
-                            }
-                        }
+                        "ConditionExpression":
+                            "attribute_exists(tokenHash)"
                     }
                 },
                 {
@@ -805,27 +796,25 @@ def rotate_refresh_token(
                                 "N": str(new_expires_at)
                             }
                         },
-                        "ConditionExpression": (
+                        "ConditionExpression":
                             "attribute_not_exists(tokenHash)"
-                        )
                     }
                 }
             ]
         )
 
     except ClientError as exc:
+        logger.exception(
+            "Refresh-token rotation transaction failed. response=%s",
+            json.dumps(exc.response, default=str)
+        )
+
         error_code = exc.response.get(
             "Error",
             {}
         ).get(
             "Code",
             "Unknown"
-        )
-
-        logger.warning(
-            "Refresh-token rotation transaction failed. "
-            "error_code=%s",
-            error_code,
         )
 
         if error_code in (
@@ -849,7 +838,6 @@ def rotate_refresh_token(
         new_refresh_token,
         claims,
     )
-
 # ============================================================
 # DATABASE HELPERS
 # ============================================================
