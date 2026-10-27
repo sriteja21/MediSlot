@@ -12,8 +12,9 @@ Environment variables:
     DB_USERNAME
     DB_PASSWORD_PARAMETER_NAME
 
-Required dependency:
+Required dependencies:
     PyMySQL==1.1.1
+    cryptography
 """
 
 import json
@@ -578,34 +579,66 @@ def send_cloudformation_response(
 # ============================================================
 
 def lambda_handler(
-    event: dict[str, Any],
+    event: dict[str, Any] | None,
     context: Any,
 ) -> dict[str, Any]:
     """
-    CloudFormation custom-resource handler.
+    Initialize the MediSlot database.
 
-    Create / Update:
-        Initialize and verify the database schema.
+    Manual invocation:
+        An empty event ({}), or any event without RequestType, runs
+        database initialization directly. No CloudFormation response
+        is attempted, so this works with the Lambda console Test button.
 
-    Delete:
-        Do not drop tables or delete application data.
-        Return success so deleting the initializer stack does not
-        destroy the database schema.
+    CloudFormation custom-resource invocation:
+        Create / Update initializes and verifies the schema.
+        Delete preserves the database and its application data.
+        A response is sent only for actual custom-resource events.
     """
 
-    request_type = event.get("RequestType", "Unknown")
+    if not isinstance(event, dict):
+        event = {}
 
-    stack_id = event.get("StackId", "")
+    # A direct Lambda test such as {} should initialize the database.
+    # Only events explicitly carrying RequestType are handled as
+    # CloudFormation custom-resource requests.
+    is_cloudformation_event = "RequestType" in event
+
+    if not is_cloudformation_event:
+        logger.info(
+            "Received manual database initializer invocation. "
+            "Starting schema initialization."
+        )
+        try:
+            result = initialize_database()
+            logger.info(
+                "Manual database initialization completed successfully."
+            )
+            return result
+        except Exception as exc:
+            logger.exception(
+                "Manual MediSlot database initialization failed."
+            )
+            # Do not attempt to call send_cloudformation_response here.
+            return {
+                "status": "FAILED",
+                "error_type": type(exc).__name__,
+                "message": (
+                    "Database initialization failed. Check the Lambda "
+                    "CloudWatch logs for the detailed error."
+                ),
+            }
+
+    request_type = str(event.get("RequestType", "Unknown"))
     logical_resource_id = event.get("LogicalResourceId", "")
 
     logger.info(
-        "Received database initializer event. "
+        "Received CloudFormation database initializer event. "
         "RequestType=%s, LogicalResourceId=%s.",
         request_type,
         logical_resource_id,
     )
 
-    # Use a stable physical ID across Create, Update, and Delete.
     physical_resource_id = event.get(
         "PhysicalResourceId",
         f"MediSlotDatabaseInitializer-{DB_NAME or 'database'}",
@@ -613,10 +646,9 @@ def lambda_handler(
 
     if request_type == "Delete":
         logger.info(
-            "Delete request received. "
-            "Database tables and application data will not be deleted."
+            "Delete request received. Database tables and application "
+            "data will not be deleted."
         )
-
         try:
             send_cloudformation_response(
                 event=event,
@@ -627,13 +659,8 @@ def lambda_handler(
                     "database contents were preserved"
                 ),
                 physical_resource_id=physical_resource_id,
-                data={
-                    "Message": (
-                        "Database contents were preserved."
-                    )
-                },
+                data={"Message": "Database contents were preserved."},
             )
-
         except Exception:
             logger.exception(
                 "Could not deliver the Delete response to CloudFormation."
@@ -650,55 +677,43 @@ def lambda_handler(
         error_message = (
             f"Unsupported CloudFormation RequestType: {request_type}"
         )
-
         logger.error(error_message)
-
-        send_cloudformation_response(
-            event=event,
-            context=context,
-            status="FAILED",
-            reason=error_message,
-            physical_resource_id=physical_resource_id,
-            data={},
-        )
-
-        return {
-            "status": "FAILED",
-            "reason": error_message,
-        }
+        try:
+            send_cloudformation_response(
+                event=event,
+                context=context,
+                status="FAILED",
+                reason=error_message,
+                physical_resource_id=physical_resource_id,
+                data={},
+            )
+        except Exception:
+            logger.exception(
+                "Failed to report the invalid custom-resource event "
+                "to CloudFormation."
+            )
+        return {"status": "FAILED", "reason": error_message}
 
     try:
         result = initialize_database()
-
         send_cloudformation_response(
             event=event,
             context=context,
             status="SUCCESS",
-            reason=(
-                "MediSlot database schema initialized and verified"
-            ),
+            reason="MediSlot database schema initialized and verified",
             physical_resource_id=physical_resource_id,
             data={
                 "Database": result["database"],
-                "VerifiedTableCount": result[
-                    "tables_created_or_verified"
-                ],
+                "VerifiedTableCount": result["tables_created_or_verified"],
             },
         )
-
         return result
 
     except Exception as exc:
-        # Log the traceback in CloudWatch, but do not return the full
-        # traceback or any credentials to CloudFormation.
-        logger.exception(
-            "MediSlot database initialization failed."
-        )
-
+        logger.exception("MediSlot database initialization failed.")
         safe_error_message = (
             f"Database initialization failed: {type(exc).__name__}"
         )
-
         try:
             send_cloudformation_response(
                 event=event,
@@ -708,17 +723,13 @@ def lambda_handler(
                 physical_resource_id=physical_resource_id,
                 data={},
             )
-
         except Exception:
             logger.exception(
                 "Failed to report the initialization failure to "
-                "CloudFormation."
+                "CloudFormation. Check network access to ResponseURL."
             )
-
-        # The failure has been reported through the custom-resource
-        # response. Return normally to avoid an unnecessary second
-        # Lambda invocation for the same event.
         return {
             "status": "FAILED",
             "error_type": type(exc).__name__,
+            "message": safe_error_message,
         }
