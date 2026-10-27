@@ -3,14 +3,21 @@ MediSlot shared database utilities.
 
 Provides secure RDS MySQL connection management and transaction handling.
 
-Required environment variables:
+Environment variables:
     DB_HOST
     DB_PORT
     DB_NAME
-    DB_USERNAME
-    DB_PASSWORD_PARAMETER_NAME
+    DB_PASSWORD_PARAMETER_NAME          (or DATABASE_CREDENTIALS_PARAMETER_NAME)
+    DB_USERNAME                         (only needed when the SSM parameter
+                                         holds a plain password)
+
+The SSM parameter may contain either:
+    - a JSON object: {"username": "...", "password": "..."}
+    - a plain password string (DB_USERNAME must then be set)
 """
 
+import json
+import os
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -20,26 +27,72 @@ from pymysql.connections import Connection
 from shared.config import get_required_env, get_ssm_parameter
 
 
+def _resolve_credentials() -> tuple[str, str]:
+    """
+    Resolve the database username and password.
+
+    Never logs or returns secrets anywhere except to the caller.
+    """
+    parameter_name = (
+        os.environ.get("DB_PASSWORD_PARAMETER_NAME")
+        or os.environ.get("DATABASE_CREDENTIALS_PARAMETER_NAME")
+    )
+
+    if not parameter_name:
+        raise RuntimeError(
+            "Neither DB_PASSWORD_PARAMETER_NAME nor "
+            "DATABASE_CREDENTIALS_PARAMETER_NAME is configured."
+        )
+
+    raw_value = get_ssm_parameter(
+        parameter_name=parameter_name,
+        decrypt=True,
+    )
+
+    env_username = os.environ.get("DB_USERNAME", "").strip()
+
+    try:
+        parsed = json.loads(raw_value)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+
+    if isinstance(parsed, dict):
+        username = (
+            parsed.get("username")
+            or parsed.get("user")
+            or env_username
+        )
+        password = parsed.get("password")
+    else:
+        username = env_username
+        password = raw_value
+
+    if not username:
+        raise RuntimeError(
+            "Database username is not configured. Set DB_USERNAME or "
+            "store JSON with a 'username' key in the SSM parameter."
+        )
+
+    if not password:
+        raise RuntimeError(
+            "Database password is missing from the SSM parameter."
+        )
+
+    return str(username), str(password)
+
+
 def get_database_connection() -> Connection:
     """
     Create a connection to the MediSlot RDS MySQL database.
 
-    The database password is retrieved from SSM Parameter Store.
-    The Lambda execution role must have permission to read the
-    configured parameter.
+    The Lambda execution role must be allowed to read the configured
+    SSM parameter (and decrypt it with KMS if it uses a CMK).
     """
     db_host = get_required_env("DB_HOST")
     db_port = int(get_required_env("DB_PORT"))
     db_name = get_required_env("DB_NAME")
-    db_username = get_required_env("DB_USERNAME")
-    password_parameter_name = get_required_env(
-        "DB_PASSWORD_PARAMETER_NAME"
-    )
 
-    db_password = get_ssm_parameter(
-        parameter_name=password_parameter_name,
-        decrypt=True,
-    )
+    db_username, db_password = _resolve_credentials()
 
     return pymysql.connect(
         host=db_host,
@@ -62,8 +115,8 @@ def database_connection() -> Iterator[Connection]:
     """
     Yield a database connection and always close it afterward.
 
-    The caller is responsible for committing or rolling back
-    transactions when using this context manager.
+    Use with a `with` statement. The caller is responsible for
+    committing or rolling back transactions.
     """
     connection = get_database_connection()
 

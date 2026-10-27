@@ -35,9 +35,10 @@ from typing import Any
 import boto3
 import bcrypt
 import jwt
+import pymysql
 from botocore.exceptions import ClientError
 
-from shared.database import database_connection
+from shared.database import get_database_connection
 
 
 # ============================================================
@@ -60,9 +61,12 @@ JWT_SECRET_PARAMETER_NAME = os.environ.get(
     "JWT_SECRET_PARAMETER_NAME", ""
 )
 
-REFRESH_TOKENS_TABLE_NAME = os.environ.get(
-    "REFRESH_TOKENS_TABLE_NAME",
-    f"MediSlot-RefreshTokens-{ENVIRONMENT}",
+# The CloudFormation stack sets REFRESH_TOKENS_TABLE; the older
+# REFRESH_TOKENS_TABLE_NAME name is still honoured if present.
+REFRESH_TOKENS_TABLE_NAME = (
+    os.environ.get("REFRESH_TOKENS_TABLE_NAME")
+    or os.environ.get("REFRESH_TOKENS_TABLE")
+    or f"MediSlot-RefreshTokens-{ENVIRONMENT}"
 )
 
 TOKEN_DENYLIST_TABLE_NAME = os.environ.get(
@@ -82,6 +86,8 @@ ACCESS_TOKEN_LIFETIME_SECONDS = 15 * 60
 REFRESH_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60
 
 ALLOWED_ROLES = {"doctor", "patient"}
+
+ALLOWED_GENDERS = {"female", "male", "other", "undisclosed"}
 
 ssm_client = boto3.client("ssm", region_name=AWS_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
@@ -282,6 +288,182 @@ def validate_password(password: Any) -> str:
         )
 
     return password
+
+
+def required_text(
+    body: dict[str, Any],
+    field: str,
+    max_length: int,
+) -> str:
+    """Return a required, trimmed string field."""
+
+    value = body.get(field)
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} is required.")
+
+    value = value.strip()
+
+    if len(value) > max_length:
+        raise ValueError(
+            f"{field} must not exceed {max_length} characters."
+        )
+
+    return value
+
+
+def optional_text(
+    body: dict[str, Any],
+    field: str,
+    max_length: int,
+) -> str | None:
+    """Return an optional, trimmed string field or None."""
+
+    value = body.get(field)
+
+    if value is None or value == "":
+        return None
+
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string.")
+
+    value = value.strip()
+
+    if len(value) > max_length:
+        raise ValueError(
+            f"{field} must not exceed {max_length} characters."
+        )
+
+    return value or None
+
+
+def validate_phone(value: Any, field: str) -> str:
+    """Validate a phone number (digits, spaces, hyphens, optional +)."""
+
+    if not isinstance(value, str) or not re.fullmatch(
+        r"\+?[0-9][0-9\s\-]{6,19}", value.strip()
+    ):
+        raise ValueError(
+            f"{field} must be a valid phone number "
+            f"(7 to 20 digits, optional leading +)."
+        )
+
+    return value.strip()
+
+
+def validate_patient_profile(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate the patient-specific registration fields."""
+
+    date_of_birth = body.get("date_of_birth")
+
+    if not isinstance(date_of_birth, str):
+        raise ValueError(
+            "date_of_birth is required in YYYY-MM-DD format."
+        )
+
+    try:
+        dob = datetime.strptime(
+            date_of_birth.strip(),
+            "%Y-%m-%d",
+        ).date()
+    except ValueError:
+        raise ValueError(
+            "date_of_birth must be a valid date in YYYY-MM-DD format."
+        )
+
+    if dob >= datetime.now(timezone.utc).date() or dob.year < 1900:
+        raise ValueError(
+            "date_of_birth must be a past date after 1900."
+        )
+
+    gender = body.get("gender")
+
+    if not isinstance(gender, str) or (
+        gender.strip().lower() not in ALLOWED_GENDERS
+    ):
+        raise ValueError(
+            "gender must be one of: "
+            + ", ".join(sorted(ALLOWED_GENDERS))
+            + "."
+        )
+
+    emergency_phone = body.get("emergency_contact_phone")
+
+    if emergency_phone in (None, ""):
+        emergency_phone = None
+    else:
+        emergency_phone = validate_phone(
+            emergency_phone,
+            "emergency_contact_phone",
+        )
+
+    return {
+        "date_of_birth": dob.isoformat(),
+        "gender": gender.strip().lower(),
+        "phone": validate_phone(body.get("phone"), "phone"),
+        "city": required_text(body, "city", 100),
+        "emergency_contact_name": optional_text(
+            body,
+            "emergency_contact_name",
+            150,
+        ),
+        "emergency_contact_phone": emergency_phone,
+    }
+
+
+def validate_doctor_profile(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate the doctor-specific registration fields."""
+
+    licence_number = required_text(body, "licence_number", 50)
+
+    specialisation_id = body.get("specialisation_id")
+
+    if (
+        isinstance(specialisation_id, bool)
+        or not isinstance(specialisation_id, int)
+        or specialisation_id < 1
+    ):
+        raise ValueError(
+            "specialisation_id must be a positive integer."
+        )
+
+    hospital_id = required_text(body, "hospital_id", 36)
+
+    try:
+        hospital_id = str(uuid.UUID(hospital_id))
+    except ValueError:
+        raise ValueError("hospital_id must be a valid UUID.")
+
+    years_experience = body.get("years_experience", 0)
+
+    if (
+        isinstance(years_experience, bool)
+        or not isinstance(years_experience, int)
+        or not 0 <= years_experience <= 255
+    ):
+        raise ValueError(
+            "years_experience must be an integer from 0 to 255."
+        )
+
+    timezone_name = required_text(body, "timezone", 64)
+
+    # IANA zone format, e.g. Asia/Kolkata or America/Argentina/Buenos_Aires.
+    if timezone_name != "UTC" and not re.fullmatch(
+        r"[A-Za-z_]+(?:/[A-Za-z0-9_+\-]+){1,2}",
+        timezone_name,
+    ):
+        raise ValueError(
+            "timezone must be an IANA timezone such as Asia/Kolkata."
+        )
+
+    return {
+        "licence_number": licence_number,
+        "specialisation_id": specialisation_id,
+        "hospital_id": hospital_id,
+        "years_experience": years_experience,
+        "qualifications": optional_text(body, "qualifications", 500),
+        "timezone": timezone_name,
+    }
 
 
 def hash_password(password: str) -> str:
@@ -623,7 +805,7 @@ def rotate_refresh_token(
 def find_user_by_email(email: str) -> dict[str, Any] | None:
     """Retrieve a user's identity and password hash from RDS."""
 
-    connection = database_connection()
+    connection = get_database_connection()
 
     try:
         with connection.cursor() as cursor:
@@ -674,7 +856,7 @@ def find_user_by_email(email: str) -> dict[str, Any] | None:
 def get_connection():
     """Create a database connection using the shared database helper."""
 
-    return database_connection()
+    return get_database_connection()
 
 
 # ============================================================
@@ -701,6 +883,12 @@ def register_user(
     if len(full_name) > 150:
         raise ValueError("full_name must not exceed 150 characters.")
 
+    # Validate all role-specific input before any hashing or database work.
+    if role == "doctor":
+        profile = validate_doctor_profile(body)
+    else:
+        profile = validate_patient_profile(body)
+
     password_hash = hash_password(password)
 
     user_id = str(uuid.uuid4())
@@ -724,30 +912,6 @@ def register_user(
             )
 
             if role == "doctor":
-                licence_number = body.get("licence_number")
-                specialisation_id = body.get("specialisation_id")
-                hospital_id = body.get("hospital_id")
-
-                if not licence_number:
-                    raise ValueError("licence_number is required.")
-
-                if specialisation_id is None:
-                    raise ValueError("specialisation_id is required.")
-
-                if not hospital_id:
-                    raise ValueError("hospital_id is required.")
-
-                years_experience = body.get("years_experience", 0)
-
-                if (
-                    isinstance(years_experience, bool)
-                    or not isinstance(years_experience, int)
-                    or not 0 <= years_experience <= 255
-                ):
-                    raise ValueError(
-                        "years_experience must be an integer from 0 to 255."
-                    )
-
                 cursor.execute(
                     """
                     INSERT INTO doctors (
@@ -758,19 +922,23 @@ def register_user(
                         licence_number,
                         specialisation_id,
                         hospital_id,
-                        years_experience
+                        years_experience,
+                        qualifications,
+                        timezone
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
                         email,
                         password_hash,
                         full_name,
-                        str(licence_number).strip(),
-                        specialisation_id,
-                        hospital_id,
-                        years_experience,
+                        profile["licence_number"],
+                        profile["specialisation_id"],
+                        profile["hospital_id"],
+                        profile["years_experience"],
+                        profile["qualifications"],
+                        profile["timezone"],
                     ),
                 )
 
@@ -781,15 +949,27 @@ def register_user(
                         id,
                         email,
                         password_hash,
-                        full_name
+                        full_name,
+                        date_of_birth,
+                        gender,
+                        phone,
+                        city,
+                        emergency_contact_name,
+                        emergency_contact_phone
                     )
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
                         email,
                         password_hash,
                         full_name,
+                        profile["date_of_birth"],
+                        profile["gender"],
+                        profile["phone"],
+                        profile["city"],
+                        profile["emergency_contact_name"],
+                        profile["emergency_contact_phone"],
                     ),
                 )
 
@@ -812,6 +992,43 @@ def register_user(
                 },
             },
         }
+
+    except pymysql.err.IntegrityError as exc:
+        connection.rollback()
+
+        error_code = exc.args[0] if exc.args else None
+
+        # 1062: duplicate email or licence number.
+        if error_code == 1062:
+            logger.info(
+                "Registration rejected because of a duplicate value. "
+                "role=%s",
+                role,
+            )
+
+            return {
+                "statusCode": 409,
+                "body": {
+                    "message": (
+                        "An account with these details "
+                        "already exists."
+                    ),
+                },
+            }
+
+        # 1452: foreign key failure (specialisation or hospital).
+        if error_code == 1452:
+            return {
+                "statusCode": 400,
+                "body": {
+                    "message": (
+                        "specialisation_id or hospital_id "
+                        "does not exist."
+                    ),
+                },
+            }
+
+        raise
 
     except Exception:
         connection.rollback()
