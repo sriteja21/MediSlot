@@ -707,21 +707,16 @@ def revoke_refresh_token(refresh_token: str) -> bool:
 
         raise
 
-
 def rotate_refresh_token(
     old_refresh_token: str,
     token_item: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
     """
     Atomically consume an existing refresh token and create its replacement.
-
-    The old token must exist, belong to the same user, and remain unexpired.
-    The transaction prevents the same refresh token from being reused.
     """
 
     now = int(time.time())
 
-    # Validate the existing token record.
     try:
         old_expires_at = int(token_item["expiresAt"])
         user_id = str(token_item["userId"])
@@ -754,8 +749,10 @@ def rotate_refresh_token(
         tz=timezone.utc,
     ).isoformat()
 
-    # Generate the access token before consuming the old refresh token.
-    access_token, claims = create_access_token(user_id, role)
+    access_token, claims = create_access_token(
+        user_id,
+        role,
+    )
 
     client = dynamodb.meta.client
 
@@ -766,54 +763,64 @@ def rotate_refresh_token(
                     "Delete": {
                         "TableName": REFRESH_TOKENS_TABLE_NAME,
                         "Key": {
-                            "tokenHash": {"S": old_hash},
+                            "tokenHash": {
+                                "S": old_hash
+                            }
                         },
                         "ConditionExpression": (
                             "attribute_exists(tokenHash) "
-                            "AND expiresAt = :expected_expiry "
-                            "AND expiresAt > :now "
-                            "AND userId = :user_id"
+                            "AND userId = :user_id "
+                            "AND expiresAt = :expected_expiry"
                         ),
                         "ExpressionAttributeValues": {
-                            ":expected_expiry": {
-                                "N": str(old_expires_at)
-                            },
-                            ":now": {
-                                "N": str(now)
-                            },
                             ":user_id": {
                                 "S": user_id
                             },
-                        },
-                    },
+                            ":expected_expiry": {
+                                "N": str(old_expires_at)
+                            }
+                        }
+                    }
                 },
                 {
                     "Put": {
                         "TableName": REFRESH_TOKENS_TABLE_NAME,
                         "Item": {
-                            "tokenHash": {"S": new_hash},
-                            "userId": {"S": user_id},
-                            "role": {"S": role},
-                            "issuedAt": {"S": issued_at},
+                            "tokenHash": {
+                                "S": new_hash
+                            },
+                            "userId": {
+                                "S": user_id
+                            },
+                            "role": {
+                                "S": role
+                            },
+                            "issuedAt": {
+                                "S": issued_at
+                            },
                             "expiresAt": {
                                 "N": str(new_expires_at)
                             },
                             "ttl": {
                                 "N": str(new_expires_at)
-                            },
+                            }
                         },
                         "ConditionExpression": (
                             "attribute_not_exists(tokenHash)"
-                        ),
-                    },
-                },
+                        )
+                    }
+                }
             ]
         )
 
     except ClientError as exc:
         error_code = exc.response.get(
-            "Error", {}
-        ).get("Code", "Unknown")
+            "Error",
+            {}
+        ).get(
+            "Code",
+            "Unknown"
+        )
 
         logger.warning(
             "Refresh-token rotation transaction failed. "
@@ -837,8 +844,11 @@ def rotate_refresh_token(
         role,
     )
 
-    return access_token, new_refresh_token, claims
-
+    return (
+        access_token,
+        new_refresh_token,
+        claims,
+    )
 
 # ============================================================
 # DATABASE HELPERS
