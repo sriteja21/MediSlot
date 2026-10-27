@@ -802,12 +802,30 @@ def rotate_refresh_token(
 # DATABASE HELPERS
 # ============================================================
 
-def find_user_by_email(email: str) -> dict[str, Any] | None:
-    """Retrieve a user's identity and password hash from RDS."""
+def find_user_by_email(
+    email: str,
+    correlation_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Retrieve a user's identity and password hash from RDS with timing logs."""
 
+    started = time.perf_counter()
+    logger.info(
+        "Login stage started. stage=rds_connect correlation_id=%s",
+        correlation_id or "not_set",
+    )
     connection = get_database_connection()
+    logger.info(
+        "Login stage completed. stage=rds_connect correlation_id=%s duration_ms=%d",
+        correlation_id or "not_set",
+        int((time.perf_counter() - started) * 1000),
+    )
 
     try:
+        query_started = time.perf_counter()
+        logger.info(
+            "Login stage started. stage=rds_user_query correlation_id=%s",
+            correlation_id or "not_set",
+        )
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -816,41 +834,44 @@ def find_user_by_email(email: str) -> dict[str, Any] | None:
                     ui.role,
                     ui.user_id,
                     CASE
-                        WHEN ui.role = 'doctor'
-                            THEN d.password_hash
-                        WHEN ui.role = 'patient'
-                            THEN p.password_hash
+                        WHEN ui.role = 'doctor' THEN d.password_hash
+                        WHEN ui.role = 'patient' THEN p.password_hash
                     END AS password_hash
                 FROM user_identities AS ui
                 LEFT JOIN doctors AS d
-                    ON ui.role = 'doctor'
-                    AND d.id = ui.user_id
+                    ON ui.role = 'doctor' AND d.id = ui.user_id
                 LEFT JOIN patients AS p
-                    ON ui.role = 'patient'
-                    AND p.id = ui.user_id
+                    ON ui.role = 'patient' AND p.id = ui.user_id
                 WHERE ui.email = %s
                 LIMIT 1
                 """,
                 (email,),
             )
-
             row = cursor.fetchone()
 
-            if not row:
-                return None
-
-            if isinstance(row, dict):
-                return row
-
-            return {
-                "email": row[0],
-                "role": row[1],
-                "user_id": row[2],
-                "password_hash": row[3],
-            }
-
+        logger.info(
+            "Login stage completed. stage=rds_user_query correlation_id=%s "
+            "found_user=%s duration_ms=%d",
+            correlation_id or "not_set",
+            bool(row),
+            int((time.perf_counter() - query_started) * 1000),
+        )
+        if not row:
+            return None
+        if isinstance(row, dict):
+            return row
+        return {
+            "email": row[0],
+            "role": row[1],
+            "user_id": row[2],
+            "password_hash": row[3],
+        }
     finally:
         connection.close()
+        logger.info(
+            "Login stage completed. stage=rds_connection_closed correlation_id=%s",
+            correlation_id or "not_set",
+        )
 
 
 def get_connection():
@@ -1045,78 +1066,89 @@ def register_user(
 def login_user(
     body: dict[str, Any],
     expected_role: str | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Authenticate credentials and issue tokens.
+    """Authenticate credentials and issue tokens with timed stage logs."""
 
-    When called from a role-specific route, reject accounts belonging to
-    the other role without disclosing whether the email is registered.
-    """
+    login_started = time.perf_counter()
+    correlation_id = correlation_id or "not_set"
+    logger.info(
+        "Login flow started. correlation_id=%s expected_role=%s",
+        correlation_id,
+        expected_role or "any",
+    )
 
+    stage_started = time.perf_counter()
     email = normalize_email(body.get("email"))
-
     password = body.get("password")
-
     if not isinstance(password, str):
         raise ValueError("Email and password are required.")
+    logger.info(
+        "Login stage completed. stage=input_validation correlation_id=%s duration_ms=%d",
+        correlation_id, int((time.perf_counter() - stage_started) * 1000),
+    )
 
-    user = find_user_by_email(email)
+    stage_started = time.perf_counter()
+    user = find_user_by_email(email, correlation_id=correlation_id)
+    logger.info(
+        "Login stage completed. stage=rds_lookup correlation_id=%s user_found=%s duration_ms=%d",
+        correlation_id, bool(user), int((time.perf_counter() - stage_started) * 1000),
+    )
 
-    if (
-        not user
-        or not user.get("password_hash")
-        or not verify_password(
-            password,
-            user["password_hash"],
-        )
-    ):
-        return {
-            "statusCode": 401,
-            "body": {
-                "message": "Invalid email or password.",
-            },
-        }
+    stage_started = time.perf_counter()
+    password_valid = bool(
+        user and user.get("password_hash")
+        and verify_password(password, user["password_hash"])
+    )
+    logger.info(
+        "Login stage completed. stage=password_verification correlation_id=%s "
+        "password_valid=%s duration_ms=%d",
+        correlation_id, password_valid, int((time.perf_counter() - stage_started) * 1000),
+    )
+    if not password_valid:
+        logger.info("Login rejected. reason=invalid_credentials correlation_id=%s", correlation_id)
+        return {"statusCode": 401, "body": {"message": "Invalid email or password."}}
 
     role = user["role"]
-
     if expected_role is not None and role != expected_role:
-        return {
-            "statusCode": 401,
-            "body": {
-                "message": "Invalid email or password.",
-            },
-        }
-
+        logger.info("Login rejected. reason=role_mismatch correlation_id=%s", correlation_id)
+        return {"statusCode": 401, "body": {"message": "Invalid email or password."}}
     if role not in ALLOWED_ROLES:
-        logger.error("Login failed because the stored role is invalid.")
-
-        return {
-            "statusCode": 401,
-            "body": {
-                "message": "Unable to authenticate this account.",
-            },
-        }
+        logger.error("Login failed because the stored role is invalid. correlation_id=%s", correlation_id)
+        return {"statusCode": 401, "body": {"message": "Unable to authenticate this account."}}
 
     user_id = str(user["user_id"])
 
-    access_token, claims = create_access_token(
-        user_id,
-        role,
+    stage_started = time.perf_counter()
+    logger.info("Login stage started. stage=jwt_creation correlation_id=%s", correlation_id)
+    access_token, claims = create_access_token(user_id, role)
+    logger.info(
+        "Login stage completed. stage=jwt_creation correlation_id=%s duration_ms=%d",
+        correlation_id, int((time.perf_counter() - stage_started) * 1000),
     )
 
+    stage_started = time.perf_counter()
     refresh_token = create_refresh_token()
+    logger.info(
+        "Login stage completed. stage=refresh_token_generation correlation_id=%s duration_ms=%d",
+        correlation_id, int((time.perf_counter() - stage_started) * 1000),
+    )
 
-    store_refresh_token(
-        refresh_token,
-        user_id,
-        role,
+    stage_started = time.perf_counter()
+    logger.info(
+        "Login stage started. stage=dynamodb_store_refresh_token correlation_id=%s table=%s",
+        correlation_id, REFRESH_TOKENS_TABLE_NAME,
+    )
+    store_refresh_token(refresh_token, user_id, role)
+    logger.info(
+        "Login stage completed. stage=dynamodb_store_refresh_token correlation_id=%s duration_ms=%d",
+        correlation_id, int((time.perf_counter() - stage_started) * 1000),
     )
 
     logger.info(
-        "Login succeeded. role=%s user_id=%s",
-        role,
-        user_id,
+        "Login succeeded. role=%s user_id=%s correlation_id=%s total_duration_ms=%d",
+        role, user_id, correlation_id, int((time.perf_counter() - login_started) * 1000),
     )
-
     return {
         "statusCode": 200,
         "body": {
@@ -1126,11 +1158,7 @@ def login_user(
             "expires_in": ACCESS_TOKEN_LIFETIME_SECONDS,
             "refresh_token": refresh_token,
             "refresh_expires_in": REFRESH_TOKEN_LIFETIME_SECONDS,
-            "user": {
-                "user_id": user_id,
-                "email": email,
-                "role": role,
-            },
+            "user": {"user_id": user_id, "email": email, "role": role},
         },
     }
 
@@ -1403,15 +1431,15 @@ def lambda_handler(
             result = register_user(body, "patient")
 
         elif method == "POST" and path == "/auth/doctors/login":
-            result = login_user(body, expected_role="doctor")
+            result = login_user(body, expected_role="doctor", correlation_id=correlation_id)
 
         elif method == "POST" and path == "/auth/patients/login":
-            result = login_user(body, expected_role="patient")
+            result = login_user(body, expected_role="patient", correlation_id=correlation_id)
 
         # Keep the shared route for compatibility with an existing API
         # Gateway configuration while role-specific routes are available.
         elif method == "POST" and path == "/auth/login":
-            result = login_user(body)
+            result = login_user(body, correlation_id=correlation_id)
 
         elif method == "POST" and path == "/auth/refresh":
             result = refresh_session(body)

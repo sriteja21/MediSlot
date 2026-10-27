@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
@@ -303,6 +302,29 @@ Resources:
           Value: !Ref Environment
 
   # ----------------------------------------------------------
+  # DYNAMODB GATEWAY ENDPOINT                              # FIX
+  # The private subnets have no NAT gateway, so the Auth Lambda
+  # needs this endpoint to reach the refresh-token and denylist
+  # tables. Gateway endpoints are free.
+  # ----------------------------------------------------------
+
+  MediSlotDynamoDBGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.dynamodb"
+      RouteTableIds:
+        - !Ref MediSlotPrivateRouteTable
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-DynamoDB-Gateway-Endpoint-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
   # LAMBDA SECURITY GROUP
   # ----------------------------------------------------------
 
@@ -412,6 +434,12 @@ Outputs:
     Value: !Ref MediSlotS3GatewayEndpoint
     Export:
       Name: !Sub "MediSlot-S3GatewayEndpointId-${Environment}"
+
+  DynamoDBGatewayEndpointId:
+    Description: DynamoDB gateway VPC endpoint ID
+    Value: !Ref MediSlotDynamoDBGatewayEndpoint
+    Export:
+      Name: !Sub "MediSlot-DynamoDBGatewayEndpointId-${Environment}"
 
   DeploymentRegion:
     Description: AWS region configured for this stack
