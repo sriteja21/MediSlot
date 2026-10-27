@@ -397,10 +397,18 @@ def verify_schema(connection: Connection) -> list[str]:
         cursor.execute(query, (DB_NAME,))
         rows = cursor.fetchall()
 
-    existing_tables = {
-        row["TABLE_NAME"]
-        for row in rows
-    }
+    # PyMySQL returns tuples by default unless a DictCursor is used.
+    # Handle both row formats so verification works with the current
+    # connection configuration and with DictCursor if configured later.
+    existing_tables = set()
+    for row in rows:
+        if isinstance(row, dict):
+            table_name = row.get("TABLE_NAME")
+        else:
+            table_name = row[0] if row else None
+
+        if table_name:
+            existing_tables.add(table_name)
 
     missing_tables = sorted(
         EXPECTED_TABLES - existing_tables
