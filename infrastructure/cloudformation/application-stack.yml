@@ -122,6 +122,21 @@ Globals:
 Resources:
 
   # ==========================================================
+  # SHARED PYTHON LAMBDA LAYER
+  # Shared source of truth: layers/shared-python/python/shared/
+  # ==========================================================
+
+  SharedPythonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "medislot-shared-python-${Environment}"
+      Description: Shared Python modules for MediSlot Lambda functions.
+      ContentUri: ../../layers/shared-python/
+      CompatibleRuntimes:
+        - python3.12
+      RetentionPolicy: Retain
+
+  # ==========================================================
   # API GATEWAY
   # ==========================================================
 
@@ -188,6 +203,10 @@ Resources:
         MediSlot authentication operations for the ${Environment} environment.
 
       CodeUri: ../../src/auth/
+
+      # Shared modules are supplied by the Lambda Layer.
+      Layers:
+        - !Ref SharedPythonLayer
 
       Handler: handler.lambda_handler
 
@@ -318,6 +337,10 @@ Resources:
         MediSlot JWT authorization for the ${Environment} environment.
 
       CodeUri: ../../src/authorizer/
+
+      # Shared modules are supplied by the Lambda Layer.
+      Layers:
+        - !Ref SharedPythonLayer
 
       Handler: authorizer.lambda_handler
 
