@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   MediSlot Authentication and Authorization Stack.
-  Creates API Gateway, Authentication Lambda, and JWT Authorization Lambda.
+  Creates the shared Python Lambda Layer, API Gateway, Authentication Lambda,
+  and JWT Authorization Lambda.
   Uses existing Network, Data, and IAM stack exports.
   Does not create business or appointment APIs.
 
@@ -45,6 +46,11 @@ Globals:
     MemorySize: 256
     Tracing: Active
 
+    # The shared layer (src/shared) is attached to every function in this
+    # stack, so handlers can use: from shared.config import ...
+    Layers:
+      - !Ref SharedPythonLayer
+
     Environment:
       Variables:
 
@@ -86,9 +92,8 @@ Globals:
 
         # ----------------------------------------------------
         # OTHER EXISTING TABLES
-        # These are passed as environment variables for
-        # compatibility with the existing project configuration.
-        # No additional tables are created by this stack.
+        # Passed as environment variables for compatibility with the
+        # existing project configuration. No tables are created here.
         # ----------------------------------------------------
 
         SLOTS_TABLE:
@@ -123,14 +128,21 @@ Resources:
 
   # ==========================================================
   # SHARED PYTHON LAMBDA LAYER
-  # Shared source of truth: src/shared/; packaged by GitHub Actions.
+  #
+  # Source of truth: src/shared/
+  # The GitHub Actions workflow generates the layer package at
+  # <repo-root>/.build/lambda-layers/shared-python/python/shared/
+  # before sam validate / sam build / sam deploy run.
+  #
+  # Lambda mounts layers at /opt, and /opt/python is on the
+  # Python path, so handlers import it as:  import shared
   # ==========================================================
 
   SharedPythonLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub "medislot-shared-python-${Environment}"
-      Description: Shared Python modules for MediSlot Lambda functions.
+      Description: !Sub "Shared Python modules for MediSlot Lambda functions (${Environment})."
       ContentUri: ../../.build/lambda-layers/shared-python/
       CompatibleRuntimes:
         - python3.12
@@ -159,8 +171,8 @@ Resources:
         AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
 
       # All routes require JWT authorization by default.
-      # Individual public authentication routes explicitly
-      # disable the authorizer in their event definitions.
+      # Public authentication routes explicitly disable the
+      # authorizer in their event definitions.
 
       Auth:
         DefaultAuthorizer: MediSlotJwtAuthorizer
@@ -181,15 +193,13 @@ Resources:
   # AUTHENTICATION LAMBDA
   #
   # Responsibilities:
-  # - Doctor registration
-  # - Patient registration
-  # - Doctor login
-  # - Patient login
-  # - Generic login, if supported by the handler
+  # - Doctor / patient registration
+  # - Doctor / patient / generic login
   # - Refresh access tokens
   # - Logout
   #
   # Uses the existing Authentication Lambda IAM role.
+  # Shared modules come from SharedPythonLayer (see Globals).
   # ==========================================================
 
   MediSlotAuthFunction:
@@ -203,10 +213,6 @@ Resources:
         MediSlot authentication operations for the ${Environment} environment.
 
       CodeUri: ../../src/auth/
-
-      # Shared modules are supplied by the Lambda Layer.
-      Layers:
-        - !Ref SharedPythonLayer
 
       Handler: handler.lambda_handler
 
@@ -242,7 +248,6 @@ Resources:
 
         DoctorRegistration:
           Type: Api
-
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /auth/doctors/register
@@ -252,7 +257,6 @@ Resources:
 
         PatientRegistration:
           Type: Api
-
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /auth/patients/register
@@ -262,7 +266,6 @@ Resources:
 
         DoctorLogin:
           Type: Api
-
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /auth/doctors/login
@@ -272,7 +275,6 @@ Resources:
 
         PatientLogin:
           Type: Api
-
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /auth/patients/login
@@ -282,7 +284,6 @@ Resources:
 
         GenericLogin:
           Type: Api
-
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /auth/login
@@ -292,7 +293,6 @@ Resources:
 
         RefreshToken:
           Type: Api
-
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /auth/refresh
@@ -307,7 +307,6 @@ Resources:
 
         Logout:
           Type: Api
-
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /auth/logout
@@ -317,13 +316,13 @@ Resources:
   # AUTHORIZATION LAMBDA
   #
   # Responsibilities:
-  # - Validate JWT access tokens.
-  # - Check token expiration.
-  # - Check token revocation where supported by the handler.
-  # - Validate role claims.
-  # - Return Allow or Deny IAM policies.
+  # - Validate JWT access tokens
+  # - Check token expiration and revocation
+  # - Validate role claims
+  # - Return Allow or Deny IAM policies
   #
-  # This function is intentionally outside the VPC.
+  # Intentionally outside the VPC.
+  # Shared modules come from SharedPythonLayer (see Globals).
   # ==========================================================
 
   MediSlotAuthorizerFunction:
@@ -337,10 +336,6 @@ Resources:
         MediSlot JWT authorization for the ${Environment} environment.
 
       CodeUri: ../../src/authorizer/
-
-      # Shared modules are supplied by the Lambda Layer.
-      Layers:
-        - !Ref SharedPythonLayer
 
       Handler: authorizer.lambda_handler
 
@@ -374,6 +369,17 @@ Resources:
 # ============================================================
 
 Outputs:
+
+  # ----------------------------------------------------------
+  # SHARED LAYER
+  # ----------------------------------------------------------
+
+  SharedPythonLayerArn:
+    Description: ARN of the shared Python Lambda Layer version.
+    Value: !Ref SharedPythonLayer
+
+    Export:
+      Name: !Sub "MediSlot-SharedPythonLayerArn-${Environment}"
 
   # ----------------------------------------------------------
   # API GATEWAY
