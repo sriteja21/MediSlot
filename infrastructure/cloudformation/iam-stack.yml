@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  MediSlot IAM infrastructure. Creates execution roles and
-  least-privilege policies for exactly two Lambda functions:
-  AuthFunction and ApiFunction.
+  MediSlot IAM infrastructure. Creates separate least-privilege
+  execution roles for Authentication, Authorization, and Business API
+  Lambda functions.
 
 # ============================================================
 # PARAMETERS
@@ -59,7 +59,7 @@ Rules:
 Resources:
 
   # ==========================================================
-  # AUTH LAMBDA EXECUTION ROLE
+  # 1. AUTHENTICATION LAMBDA ROLE
   # ==========================================================
 
   MediSlotAuthLambdaRole:
@@ -67,7 +67,7 @@ Resources:
     Properties:
       RoleName: !Sub "MediSlot-AuthLambdaRole-${Environment}"
       Description: !Sub >
-        Execution role for the MediSlot authentication Lambda
+        Execution role for MediSlot authentication operations
         in the ${Environment} environment.
 
       AssumeRolePolicyDocument:
@@ -86,10 +86,6 @@ Resources:
 
       Policies:
 
-        # ----------------------------------------------------
-        # CLOUDWATCH LOGGING
-        # ----------------------------------------------------
-
         - PolicyName: !Sub "MediSlot-AuthLogging-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -99,8 +95,7 @@ Resources:
                 Action:
                   - logs:CreateLogGroup
                 Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*"
 
               - Sid: WriteAuthLogs
                 Effect: Allow
@@ -108,12 +103,7 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthFunction-${Environment}:*
-
-        # ----------------------------------------------------
-        # READ JWT AND DATABASE SECRETS
-        # ----------------------------------------------------
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthFunction-${Environment}:*"
 
         - PolicyName: !Sub "MediSlot-AuthReadSecrets-${Environment}"
           PolicyDocument:
@@ -124,10 +114,8 @@ Resources:
                 Action:
                   - ssm:GetParameter
                 Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${JWTSecretParameterName}
-                  - !Sub >
-                    arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${JWTSecretParameterName}"
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
 
               - Sid: DecryptSecureStringParameters
                 Effect: Allow
@@ -138,9 +126,9 @@ Resources:
                   StringEquals:
                     kms:ViaService: !Sub "ssm.${Region}.${AWS::URLSuffix}"
 
-        # ----------------------------------------------------
-        # REFRESH TOKEN TABLE
-        # ----------------------------------------------------
+        # Authentication needs refresh-token operations.
+        # TransactWriteItems supports atomic token rotation when
+        # the application uses DynamoDB transactions.
 
         - PolicyName: !Sub "MediSlot-AuthRefreshTokens-${Environment}"
           PolicyDocument:
@@ -154,6 +142,7 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                   - dynamodb:Query
+                  - dynamodb:TransactWriteItems
                 Resource:
                   - Fn::ImportValue:
                       !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
@@ -163,15 +152,11 @@ Resources:
                           Fn::ImportValue:
                             !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
 
-        # ----------------------------------------------------
-        # TOKEN DENYLIST TABLE
-        # ----------------------------------------------------
-
         - PolicyName: !Sub "MediSlot-AuthTokenDenylist-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ManageRevokedAccessTokens
+              - Sid: RevokeAccessTokens
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -190,7 +175,95 @@ Resources:
           Value: !Ref Environment
 
   # ==========================================================
-  # APPLICATION API LAMBDA EXECUTION ROLE
+  # 2. AUTHORIZATION LAMBDA ROLE
+  # ==========================================================
+
+  # This role is deliberately separate from the authentication role.
+  # The authorizer validates JWTs and checks the denylist.
+  # It does not need database credentials or refresh-token write access.
+
+  MediSlotAuthorizerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MediSlot-AuthorizerLambdaRole-${Environment}"
+      Description: !Sub >
+        Execution role for MediSlot JWT authorization and
+        token revocation checks in the ${Environment} environment.
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: LambdaAssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+
+        - PolicyName: !Sub "MediSlot-AuthorizerLogging-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CreateLogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*"
+
+              - Sid: WriteAuthorizerLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthorizerFunction-${Environment}:*"
+
+        - PolicyName: !Sub "MediSlot-AuthorizerReadJWTSecret-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadJWTSigningSecret
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${JWTSecretParameterName}"
+
+              - Sid: DecryptJWTSecret
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${Region}.${AWS::URLSuffix}"
+
+        - PolicyName: !Sub "MediSlot-AuthorizerCheckDenylist-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CheckRevokedAccessTokens
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  Fn::ImportValue:
+                    !Sub "MediSlot-TokenDenylistTableArn-${Environment}"
+
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-AuthorizerLambdaRole-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================
+  # 3. BUSINESS API LAMBDA ROLE
   # ==========================================================
 
   MediSlotApiLambdaRole:
@@ -198,8 +271,9 @@ Resources:
     Properties:
       RoleName: !Sub "MediSlot-ApiLambdaRole-${Environment}"
       Description: !Sub >
-        Execution role for the MediSlot application API Lambda
-        in the ${Environment} environment.
+        Execution role for MediSlot doctor, patient, availability,
+        appointment, and booking API operations in the
+        ${Environment} environment.
 
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -217,10 +291,6 @@ Resources:
 
       Policies:
 
-        # ----------------------------------------------------
-        # CLOUDWATCH LOGGING
-        # ----------------------------------------------------
-
         - PolicyName: !Sub "MediSlot-ApiLogging-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -230,8 +300,7 @@ Resources:
                 Action:
                   - logs:CreateLogGroup
                 Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*"
 
               - Sid: WriteApiLogs
                 Effect: Allow
@@ -239,28 +308,20 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-ApiFunction-${Environment}:*
-
-        # ----------------------------------------------------
-        # READ JWT AND DATABASE SECRETS
-        # ----------------------------------------------------
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-ApiFunction-${Environment}:*"
 
         - PolicyName: !Sub "MediSlot-ApiReadSecrets-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ReadAuthenticationAndDatabaseSecrets
+              - Sid: ReadDatabaseCredentials
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                 Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${JWTSecretParameterName}
-                  - !Sub >
-                    arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
 
-              - Sid: DecryptSecureStringParameters
+              - Sid: DecryptDatabaseCredentials
                 Effect: Allow
                 Action:
                   - kms:Decrypt
@@ -286,6 +347,7 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:Query
                   - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactWriteItems
                 Resource:
                   - Fn::ImportValue:
                       !Sub "MediSlot-SlotsTableArn-${Environment}"
@@ -312,6 +374,7 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:Query
                   - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactWriteItems
                 Resource:
                   Fn::ImportValue:
                     !Sub "MediSlot-SeatClaimsTableArn-${Environment}"
@@ -352,6 +415,7 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:Query
                   - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactWriteItems
                 Resource:
                   Fn::ImportValue:
                     !Sub "MediSlot-WaitlistTableArn-${Environment}"
@@ -373,6 +437,7 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:Query
                   - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactWriteItems
                 Resource:
                   - Fn::ImportValue:
                       !Sub "MediSlot-HoldOffersTableArn-${Environment}"
@@ -384,19 +449,17 @@ Resources:
 
         # ----------------------------------------------------
         # REFRESH TOKENS TABLE
+        # Retained only if business workflows need session access.
         # ----------------------------------------------------
 
         - PolicyName: !Sub "MediSlot-ApiRefreshTokens-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ManageRefreshTokens
+              - Sid: ReadRefreshTokenRecords
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
                   - dynamodb:Query
                 Resource:
                   - Fn::ImportValue:
@@ -409,18 +472,17 @@ Resources:
 
         # ----------------------------------------------------
         # TOKEN DENYLIST TABLE
+        # Business APIs should not revoke tokens directly.
         # ----------------------------------------------------
 
         - PolicyName: !Sub "MediSlot-ApiTokenDenylist-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: CheckAndManageTokenDenylist
+              - Sid: CheckTokenRevocationIfRequired
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
                 Resource:
                   Fn::ImportValue:
                     !Sub "MediSlot-TokenDenylistTableArn-${Environment}"
@@ -505,6 +567,12 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-AuthLambdaRoleArn-${Environment}"
 
+  AuthorizerLambdaRoleArn:
+    Description: IAM execution role ARN for the authorization Lambda.
+    Value: !GetAtt MediSlotAuthorizerLambdaRole.Arn
+    Export:
+      Name: !Sub "MediSlot-AuthorizerLambdaRoleArn-${Environment}"
+
   ApiLambdaRoleArn:
     Description: IAM execution role ARN for the application API Lambda.
     Value: !GetAtt MediSlotApiLambdaRole.Arn
@@ -514,6 +582,10 @@ Outputs:
   AuthLambdaRoleName:
     Description: IAM execution role name for the authentication Lambda.
     Value: !Ref MediSlotAuthLambdaRole
+
+  AuthorizerLambdaRoleName:
+    Description: IAM execution role name for the authorization Lambda.
+    Value: !Ref MediSlotAuthorizerLambdaRole
 
   ApiLambdaRoleName:
     Description: IAM execution role name for the application API Lambda.

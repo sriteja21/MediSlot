@@ -1,0 +1,395 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  MediSlot Authentication and Authorization Stack.
+  Creates API Gateway, Authentication Lambda, and JWT Authorization Lambda.
+  Uses existing Network, Data, and IAM stack exports.
+  Does not create business or appointment APIs.
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+
+Parameters:
+
+  Environment:
+    Type: String
+    Description: Deployment environment.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Default: dev
+
+  JWTSecretParameterName:
+    Type: String
+    Description: >
+      Name of the SSM SecureString parameter containing the JWT signing secret.
+    Default: /MediSlot/dev/auth/jwt-secret
+
+  DatabaseCredentialsParameterName:
+    Type: String
+    Description: >
+      Name of the SSM parameter containing the database credentials.
+    Default: /MediSlot/dev/database/application-credentials
+
+# ============================================================
+# GLOBAL LAMBDA CONFIGURATION
+# ============================================================
+
+Globals:
+
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+
+    Environment:
+      Variables:
+
+        ENVIRONMENT: !Ref Environment
+
+        JWT_SECRET_PARAMETER_NAME: !Ref JWTSecretParameterName
+
+        DATABASE_CREDENTIALS_PARAMETER_NAME: !Ref DatabaseCredentialsParameterName
+
+        # ----------------------------------------------------
+        # RDS CONFIGURATION
+        # Imported from the existing Data stack.
+        # ----------------------------------------------------
+
+        DB_HOST:
+          Fn::ImportValue:
+            !Sub "MediSlot-DatabaseEndpoint-${Environment}"
+
+        DB_PORT:
+          Fn::ImportValue:
+            !Sub "MediSlot-DatabasePort-${Environment}"
+
+        DB_NAME:
+          Fn::ImportValue:
+            !Sub "MediSlot-DatabaseName-${Environment}"
+
+        # ----------------------------------------------------
+        # DYNAMODB CONFIGURATION
+        # Imported from the existing Data stack.
+        # ----------------------------------------------------
+
+        REFRESH_TOKENS_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-RefreshTokensTableName-${Environment}"
+
+        TOKEN_DENYLIST_TABLE_NAME:
+          Fn::ImportValue:
+            !Sub "MediSlot-TokenDenylistTableName-${Environment}"
+
+        # ----------------------------------------------------
+        # OTHER EXISTING TABLES
+        # These are passed as environment variables for
+        # compatibility with the existing project configuration.
+        # No additional tables are created by this stack.
+        # ----------------------------------------------------
+
+        SLOTS_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-SlotsTableName-${Environment}"
+
+        SEAT_CLAIMS_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-SeatClaimsTableName-${Environment}"
+
+        IDEMPOTENCY_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-IdempotencyTableName-${Environment}"
+
+        WAITLIST_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-WaitlistTableName-${Environment}"
+
+        HOLD_OFFERS_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-HoldOffersTableName-${Environment}"
+
+        DISPATCH_LOG_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-DispatchLogTableName-${Environment}"
+
+# ============================================================
+# RESOURCES
+# ============================================================
+
+Resources:
+
+  # ==========================================================
+  # API GATEWAY
+  # ==========================================================
+
+  MediSlotApi:
+    Type: AWS::Serverless::Api
+
+    Properties:
+
+      Name: !Sub "MediSlot-API-${Environment}"
+
+      StageName: !Ref Environment
+
+      EndpointConfiguration: REGIONAL
+
+      TracingEnabled: true
+
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+
+      # All routes require JWT authorization by default.
+      # Individual public authentication routes explicitly
+      # disable the authorizer in their event definitions.
+
+      Auth:
+        DefaultAuthorizer: MediSlotJwtAuthorizer
+
+        Authorizers:
+
+          MediSlotJwtAuthorizer:
+
+            FunctionArn: !GetAtt MediSlotAuthorizerFunction.Arn
+
+            FunctionPayloadType: TOKEN
+
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 0
+
+  # ==========================================================
+  # AUTHENTICATION LAMBDA
+  #
+  # Responsibilities:
+  # - Doctor registration
+  # - Patient registration
+  # - Doctor login
+  # - Patient login
+  # - Generic login, if supported by the handler
+  # - Refresh access tokens
+  # - Logout
+  #
+  # Uses the existing Authentication Lambda IAM role.
+  # ==========================================================
+
+  MediSlotAuthFunction:
+    Type: AWS::Serverless::Function
+
+    Properties:
+
+      FunctionName: !Sub "MediSlot-AuthFunction-${Environment}"
+
+      Description: !Sub >
+        MediSlot authentication operations for the ${Environment} environment.
+
+      CodeUri: ../../src/auth/
+
+      Handler: handler.lambda_handler
+
+      Runtime: python3.12
+
+      Timeout: 30
+
+      MemorySize: 256
+
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-AuthLambdaRoleArn-${Environment}"
+
+      VpcConfig:
+
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+
+      Events:
+
+        # ----------------------------------------------------
+        # PUBLIC ROUTES
+        # No JWT is required to register or log in.
+        # ----------------------------------------------------
+
+        DoctorRegistration:
+          Type: Api
+
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/doctors/register
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+        PatientRegistration:
+          Type: Api
+
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/patients/register
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+        DoctorLogin:
+          Type: Api
+
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/doctors/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+        PatientLogin:
+          Type: Api
+
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/patients/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+        GenericLogin:
+          Type: Api
+
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+        RefreshToken:
+          Type: Api
+
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/refresh
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+        # ----------------------------------------------------
+        # PROTECTED ROUTE
+        # Logout requires a valid access token.
+        # ----------------------------------------------------
+
+        Logout:
+          Type: Api
+
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/logout
+            Method: POST
+
+  # ==========================================================
+  # AUTHORIZATION LAMBDA
+  #
+  # Responsibilities:
+  # - Validate JWT access tokens.
+  # - Check token expiration.
+  # - Check token revocation where supported by the handler.
+  # - Validate role claims.
+  # - Return Allow or Deny IAM policies.
+  #
+  # This function is intentionally outside the VPC.
+  # ==========================================================
+
+  MediSlotAuthorizerFunction:
+    Type: AWS::Serverless::Function
+
+    Properties:
+
+      FunctionName: !Sub "MediSlot-AuthorizerFunction-${Environment}"
+
+      Description: !Sub >
+        MediSlot JWT authorization for the ${Environment} environment.
+
+      CodeUri: ../../src/authorizer/
+
+      Handler: authorizer.lambda_handler
+
+      Runtime: python3.12
+
+      Timeout: 10
+
+      MemorySize: 256
+
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-AuthorizerLambdaRoleArn-${Environment}"
+
+      Environment:
+        Variables:
+
+          ENVIRONMENT: !Ref Environment
+
+          JWT_SECRET_PARAMETER_NAME: !Ref JWTSecretParameterName
+
+          TOKEN_DENYLIST_TABLE_NAME:
+            Fn::ImportValue:
+              !Sub "MediSlot-TokenDenylistTableName-${Environment}"
+
+          REFRESH_TOKENS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-RefreshTokensTableName-${Environment}"
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+
+Outputs:
+
+  # ----------------------------------------------------------
+  # API GATEWAY
+  # ----------------------------------------------------------
+
+  MediSlotApiId:
+    Description: ID of the MediSlot API Gateway.
+    Value: !Ref MediSlotApi
+
+    Export:
+      Name: !Sub "MediSlot-ApiId-${Environment}"
+
+  MediSlotApiUrl:
+    Description: Base URL of the MediSlot API Gateway.
+    Value: !Sub
+      - "https://${ApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+      - ApiId: !Ref MediSlotApi
+
+    Export:
+      Name: !Sub "MediSlot-ApiUrl-${Environment}"
+
+  # ----------------------------------------------------------
+  # AUTHENTICATION LAMBDA
+  # ----------------------------------------------------------
+
+  MediSlotAuthFunctionArn:
+    Description: ARN of the MediSlot Authentication Lambda.
+    Value: !GetAtt MediSlotAuthFunction.Arn
+
+    Export:
+      Name: !Sub "MediSlot-AuthFunctionArn-${Environment}"
+
+  # ----------------------------------------------------------
+  # AUTHORIZATION LAMBDA
+  # ----------------------------------------------------------
+
+  MediSlotAuthorizerFunctionArn:
+    Description: ARN of the MediSlot Authorization Lambda.
+    Value: !GetAtt MediSlotAuthorizerFunction.Arn
+
+    Export:
+      Name: !Sub "MediSlot-AuthorizerFunctionArn-${Environment}"

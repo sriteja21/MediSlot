@@ -34,10 +34,16 @@ env:
   DATA_TEMPLATE: infrastructure/cloudformation/data-stack.yml
   IAM_TEMPLATE: infrastructure/cloudformation/iam-stack.yml
   INIT_TEMPLATE: infrastructure/cloudformation/init-stack.yml
+  APPLICATION_TEMPLATE: infrastructure/cloudformation/application-stack.yml
+
+# ============================================================
+# VALIDATE ALL TEMPLATES
+# ============================================================
 
 jobs:
+
   validate:
-    name: Validate MediSlot Infrastructure
+    name: Validate MediSlot Templates
     runs-on: ubuntu-latest
 
     steps:
@@ -52,57 +58,72 @@ jobs:
       - name: Install validation tools
         run: |
           python -m pip install --upgrade pip
-          pip install cfn-lint
-          pip install aws-sam-cli
+          pip install cfn-lint aws-sam-cli
 
-      # Ignore cfn-lint warnings.
-      - name: Validate CloudFormation templates
+      - name: Check template files
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           for template in \
             "$NETWORK_TEMPLATE" \
             "$DATA_TEMPLATE" \
             "$IAM_TEMPLATE" \
-            "$INIT_TEMPLATE"
+            "$INIT_TEMPLATE" \
+            "$APPLICATION_TEMPLATE"
+          do
+            if [ ! -f "$template" ]; then
+              echo "::error::Template not found: $template"
+              exit 1
+            fi
+
+            echo "Found: $template"
+          done
+
+      - name: Validate CloudFormation templates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for template in \
+            "$NETWORK_TEMPLATE" \
+            "$DATA_TEMPLATE" \
+            "$IAM_TEMPLATE" \
+            "$INIT_TEMPLATE" \
+            "$APPLICATION_TEMPLATE"
           do
             echo "========================================"
             echo "Validating $template"
             echo "========================================"
 
-            if [ ! -f "$template" ]; then
-              echo "ERROR: Template not found: $template"
-              exit 1
-            fi
-
             cfn-lint "$template" --ignore-checks W
           done
 
-      - name: Validate Database Initializer SAM Template
-        env:
-          AWS_DEFAULT_REGION: ap-south-1
-          AWS_REGION: ap-south-1
+      - name: Validate Database Initializer SAM template
         run: |
-          set -e
-
           sam validate \
             --template-file "$INIT_TEMPLATE" \
-            --region ap-south-1
+            --region "$AWS_REGION"
 
-  deploy:
-    name: Deploy MediSlot Infrastructure
+      - name: Validate Authentication and Authorization SAM template
+        run: |
+          sam validate \
+            --template-file "$APPLICATION_TEMPLATE" \
+            --region "$AWS_REGION"
+
+# ============================================================
+# DEPLOY NETWORK STACK
+# ============================================================
+
+  deploy-network:
+    name: Deploy Network Stack
     runs-on: ubuntu-latest
-
     needs: validate
 
-    # Deploy on pushes to any branch or on a manual workflow run.
-    # Pull requests run validation only.
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push'
 
-    # Pushes default to dev.
-    # Manual runs use the environment selected by the user.
     environment: ${{ github.event.inputs.environment || 'dev' }}
 
     steps:
@@ -115,37 +136,10 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify AWS identity
+      - name: Deploy Network Stack
+        shell: bash
         run: |
-          aws sts get-caller-identity
-
-      - name: Display deployment configuration
-        run: |
-          echo "Project: $PROJECT_NAME"
-          echo "Region: $AWS_REGION"
-          echo "Branch: $GITHUB_REF_NAME"
-
-      - name: Check deployment templates
-        run: |
-          set -e
-
-          for template in \
-            "$NETWORK_TEMPLATE" \
-            "$DATA_TEMPLATE" \
-            "$IAM_TEMPLATE" \
-            "$INIT_TEMPLATE"
-          do
-            if [ ! -f "$template" ]; then
-              echo "ERROR: Template not found: $template"
-              exit 1
-            fi
-
-            echo "Found $template"
-          done
-
-      - name: Deploy network stack
-        run: |
-          set -e
+          set -euo pipefail
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-Network-${ENVIRONMENT}"
@@ -158,9 +152,41 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
-      - name: Deploy database stack
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
+
+# ============================================================
+# DEPLOY DATA STACK
+# ============================================================
+
+  deploy-data:
+    name: Deploy Data Stack
+    runs-on: ubuntu-latest
+    needs: deploy-network
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Data Stack
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-Data-${ENVIRONMENT}"
@@ -173,12 +199,47 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
-      - name: Deploy IAM stack
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
+
+# ============================================================
+# DEPLOY IAM STACK
+# ============================================================
+
+  deploy-iam:
+    name: Deploy IAM Stack
+    runs-on: ubuntu-latest
+    needs: deploy-data
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy IAM Stack
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-IAM-${ENVIRONMENT}"
+
+          JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
+          DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
 
           aws cloudformation deploy \
             --template-file "$IAM_TEMPLATE" \
@@ -186,19 +247,95 @@ jobs:
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
-              Environment="$ENVIRONMENT"
+              Environment="$ENVIRONMENT" \
+              Region="$AWS_REGION" \
+              JWTSecretParameterName="$JWT_SECRET_PARAMETER_NAME" \
+              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME"
+
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
+
+# ============================================================
+# BUILD DATABASE INITIALIZER
+# ============================================================
+
+  build-database-initializer:
+    name: Build Database Initializer
+    runs-on: ubuntu-latest
+    needs: deploy-iam
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AWS SAM CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install aws-sam-cli
 
       - name: Build Database Initializer
         run: |
-          set -e
-
           sam build \
             --template-file "$INIT_TEMPLATE" \
             --region "$AWS_REGION"
 
+      - name: Upload built initializer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: medislot-database-initializer
+          path: .aws-sam/build/
+          if-no-files-found: error
+          retention-days: 1
+
+# ============================================================
+# DEPLOY DATABASE INITIALIZER
+# ============================================================
+
+  deploy-database-initializer:
+    name: Deploy Database Initializer
+    runs-on: ubuntu-latest
+    needs: build-database-initializer
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built initializer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: medislot-database-initializer
+          path: .aws-sam/build/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Deploy Database Initializer
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-DatabaseInitializer-${ENVIRONMENT}"
@@ -214,19 +351,172 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
-      - name: Show deployed MediSlot stacks
-        if: success()
-        run: |
-          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
 
-          echo "MediSlot deployment completed."
-          echo "Environment: $ENVIRONMENT"
+# ============================================================
+# BUILD AUTHENTICATION AND AUTHORIZATION APPLICATION
+# ============================================================
+
+  build-application:
+    name: Build Authentication and Authorization
+    runs-on: ubuntu-latest
+    needs: deploy-database-initializer
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AWS SAM CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install aws-sam-cli
+
+      - name: Build Authentication and Authorization Lambdas
+        run: |
+          sam build \
+            --template-file "$APPLICATION_TEMPLATE" \
+            --region "$AWS_REGION"
+
+      - name: Upload built application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: medislot-auth-application
+          path: .aws-sam/build/
+          if-no-files-found: error
+          retention-days: 1
+
+# ============================================================
+# DEPLOY AUTHENTICATION AND AUTHORIZATION APPLICATION
+# ============================================================
+
+  deploy-application:
+    name: Deploy Authentication and Authorization
+    runs-on: ubuntu-latest
+    needs: build-application
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built application artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: medislot-auth-application
+          path: .aws-sam/build/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Authentication and Authorization Stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          STACK_NAME="MediSlot-Application-${ENVIRONMENT}"
+
+          JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
+          DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
+
+          sam deploy \
+            --template-file .aws-sam/build/template.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --resolve-s3 \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              JWTSecretParameterName="$JWT_SECRET_PARAMETER_NAME" \
+              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME"
+
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
+
+# ============================================================
+# DEPLOYMENT SUMMARY
+# ============================================================
+
+  deployment-summary:
+    name: MediSlot Deployment Summary
+    runs-on: ubuntu-latest
+
+    needs:
+      - deploy-network
+      - deploy-data
+      - deploy-iam
+      - deploy-database-initializer
+      - deploy-application
+
+    if: >
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'push')
+
+    steps:
+      - name: Display deployment results
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "MediSlot Deployment Summary"
+          echo "========================================"
+          echo "Environment: ${{ github.event.inputs.environment || 'dev' }}"
           echo "Region: $AWS_REGION"
           echo "Branch: $GITHUB_REF_NAME"
+          echo ""
+          echo "Network: ${{ needs.deploy-network.result }}"
+          echo "Data: ${{ needs.deploy-data.result }}"
+          echo "IAM: ${{ needs.deploy-iam.result }}"
+          echo "Database Initializer: ${{ needs.deploy-database-initializer.result }}"
+          echo "Authentication/Authorization: ${{ needs.deploy-application.result }}"
+          echo "========================================"
+
+          if [[ "${{ needs.deploy-network.result }}" != "success" ||
+                "${{ needs.deploy-data.result }}" != "success" ||
+                "${{ needs.deploy-iam.result }}" != "success" ||
+                "${{ needs.deploy-database-initializer.result }}" != "success" ||
+                "${{ needs.deploy-application.result }}" != "success" ]]; then
+            echo "::error::One or more MediSlot deployment jobs failed or were skipped."
+            exit 1
+          fi
+
+      - name: List deployed MediSlot stacks
+        if: success()
+        run: |
+          aws sts get-caller-identity
 
           aws cloudformation list-stacks \
             --region "$AWS_REGION" \
             --stack-status-filter \
               CREATE_COMPLETE UPDATE_COMPLETE \
+              UPDATE_ROLLBACK_COMPLETE \
             --query "StackSummaries[?contains(StackName, 'MediSlot')].[StackName,StackStatus]" \
             --output table
