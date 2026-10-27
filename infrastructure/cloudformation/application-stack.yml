@@ -123,7 +123,7 @@ Resources:
 
   # ==========================================================
   # SHARED PYTHON LAMBDA LAYER
-  # Shared source of truth: layers/shared-python/python/shared/
+  # Shared source of truth: src/shared/; packaged by GitHub Actions.
   # ==========================================================
 
   SharedPythonLayer:
@@ -131,7 +131,7 @@ Resources:
     Properties:
       LayerName: !Sub "medislot-shared-python-${Environment}"
       Description: Shared Python modules for MediSlot Lambda functions.
-      ContentUri: ../../layers/shared-python/
+      ContentUri: ../../.build/lambda-layers/shared-python/
       CompatibleRuntimes:
         - python3.12
       RetentionPolicy: Retain

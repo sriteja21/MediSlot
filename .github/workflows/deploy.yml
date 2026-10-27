@@ -105,6 +105,27 @@ jobs:
             --template-file "$INIT_TEMPLATE" \
             --region "$AWS_REGION"
 
+      - name: Prepare shared Python Lambda Layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          LAYER_SOURCE="src/shared"
+          LAYER_ROOT=".build/lambda-layers/shared-python"
+          LAYER_PYTHON_DIR="${LAYER_ROOT}/python"
+
+          test -f "${LAYER_SOURCE}/__init__.py"
+          test -f "${LAYER_SOURCE}/config.py"
+          test -f "${LAYER_SOURCE}/database.py"
+          test -f "${LAYER_SOURCE}/logging_utils.py"
+
+          rm -rf "${LAYER_ROOT}"
+          mkdir -p "${LAYER_PYTHON_DIR}"
+          cp -R "${LAYER_SOURCE}" "${LAYER_PYTHON_DIR}/shared"
+
+          echo "Prepared Lambda Layer from ${LAYER_SOURCE}:"
+          find "${LAYER_PYTHON_DIR}/shared" -maxdepth 1 -type f -print
+          test -f "${LAYER_PYTHON_DIR}/shared/__init__.py"
+
       - name: Validate Authentication and Authorization SAM template
         run: |
           sam validate \
@@ -385,6 +406,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install aws-sam-cli
+
+      - name: Prepare shared Python Lambda Layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          LAYER_SOURCE="src/shared"
+          LAYER_ROOT=".build/lambda-layers/shared-python"
+          LAYER_PYTHON_DIR="${LAYER_ROOT}/python"
+
+          test -f "${LAYER_SOURCE}/__init__.py"
+          test -f "${LAYER_SOURCE}/config.py"
+          test -f "${LAYER_SOURCE}/database.py"
+          test -f "${LAYER_SOURCE}/logging_utils.py"
+
+          rm -rf "${LAYER_ROOT}"
+          mkdir -p "${LAYER_PYTHON_DIR}"
+          cp -R "${LAYER_SOURCE}" "${LAYER_PYTHON_DIR}/shared"
+
+          echo "Prepared Lambda Layer from ${LAYER_SOURCE}:"
+          find "${LAYER_PYTHON_DIR}/shared" -maxdepth 1 -type f -print
+          test -f "${LAYER_PYTHON_DIR}/shared/__init__.py"
 
       - name: Build Authentication and Authorization Lambdas
         run: |
