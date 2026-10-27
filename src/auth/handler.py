@@ -713,13 +713,34 @@ def rotate_refresh_token(
     token_item: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
     """
-    Atomically consume the old refresh token and store its replacement.
+    Atomically consume an existing refresh token and create its replacement.
 
-    If two requests attempt to refresh the same token concurrently,
-    only one transaction can consume the old token successfully.
+    The old token must exist, belong to the same user, and remain unexpired.
+    The transaction prevents the same refresh token from being reused.
     """
 
     now = int(time.time())
+
+    # Validate the existing token record.
+    try:
+        old_expires_at = int(token_item["expiresAt"])
+        user_id = str(token_item["userId"])
+        role = str(token_item["role"])
+
+        if not user_id or not role:
+            raise ValueError("Missing user information.")
+
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        logger.warning(
+            "Refresh-token rotation rejected because the stored record "
+            "is malformed."
+        )
+        raise ValueError(
+            "Refresh token is invalid or expired."
+        ) from exc
+
+    if old_expires_at <= now:
+        raise ValueError("Refresh token is invalid or expired.")
 
     old_hash = hash_refresh_token(old_refresh_token)
 
@@ -733,66 +754,87 @@ def rotate_refresh_token(
         tz=timezone.utc,
     ).isoformat()
 
-    new_item = {
-        "tokenHash": new_hash,
-        "userId": str(token_item["userId"]),
-        "role": token_item["role"],
-        "issuedAt": issued_at,
-        "expiresAt": new_expires_at,
-        "ttl": new_expires_at,
-    }
-
-    # Sign the access token before consuming the old refresh token.
-    # If SSM/JWT signing fails, the existing session remains usable.
-    access_token, claims = create_access_token(
-        str(token_item["userId"]),
-        token_item["role"],
-    )
+    # Generate the access token before consuming the old refresh token.
+    access_token, claims = create_access_token(user_id, role)
 
     client = dynamodb.meta.client
 
-    client.transact_write_items(
-        TransactItems=[
-            {
-                "Delete": {
-                    "TableName": REFRESH_TOKENS_TABLE_NAME,
-                    "Key": {
-                        "tokenHash": {"S": old_hash},
-                    },
-                    "ConditionExpression": (
-                        "attribute_exists(tokenHash) "
-                        "AND expiresAt > :now "
-                        "AND userId = :user_id"
-                    ),
-                    "ExpressionAttributeValues": {
-                        ":now": {"N": str(now)},
-                        ":user_id": {
-                            "S": str(token_item["userId"])
+    try:
+        client.transact_write_items(
+            TransactItems=[
+                {
+                    "Delete": {
+                        "TableName": REFRESH_TOKENS_TABLE_NAME,
+                        "Key": {
+                            "tokenHash": {"S": old_hash},
+                        },
+                        "ConditionExpression": (
+                            "attribute_exists(tokenHash) "
+                            "AND expiresAt = :expected_expiry "
+                            "AND expiresAt > :now "
+                            "AND userId = :user_id"
+                        ),
+                        "ExpressionAttributeValues": {
+                            ":expected_expiry": {
+                                "N": str(old_expires_at)
+                            },
+                            ":now": {
+                                "N": str(now)
+                            },
+                            ":user_id": {
+                                "S": user_id
+                            },
                         },
                     },
                 },
-            },
-            {
-                "Put": {
-                    "TableName": REFRESH_TOKENS_TABLE_NAME,
-                    "Item": {
-                        "tokenHash": {"S": new_hash},
-                        "userId": {
-                            "S": str(token_item["userId"])
+                {
+                    "Put": {
+                        "TableName": REFRESH_TOKENS_TABLE_NAME,
+                        "Item": {
+                            "tokenHash": {"S": new_hash},
+                            "userId": {"S": user_id},
+                            "role": {"S": role},
+                            "issuedAt": {"S": issued_at},
+                            "expiresAt": {
+                                "N": str(new_expires_at)
+                            },
+                            "ttl": {
+                                "N": str(new_expires_at)
+                            },
                         },
-                        "role": {"S": token_item["role"]},
-                        "issuedAt": {"S": issued_at},
-                        "expiresAt": {
-                            "N": str(new_expires_at)
-                        },
-                        "ttl": {"N": str(new_expires_at)},
+                        "ConditionExpression": (
+                            "attribute_not_exists(tokenHash)"
+                        ),
                     },
-                    "ConditionExpression": (
-                        "attribute_not_exists(tokenHash)"
-                    ),
                 },
-            },
-        ],
+            ]
+        )
+
+    except ClientError as exc:
+        error_code = exc.response.get(
+            "Error", {}
+        ).get("Code", "Unknown")
+
+        logger.warning(
+            "Refresh-token rotation transaction failed. "
+            "error_code=%s",
+            error_code,
+        )
+
+        if error_code in (
+            "TransactionCanceledException",
+            "ConditionalCheckFailedException",
+        ):
+            raise ValueError(
+                "Refresh token is invalid, expired, or already used."
+            ) from exc
+
+        raise
+
+    logger.info(
+        "Refresh-token rotation succeeded. user_id=%s role=%s",
+        user_id,
+        role,
     )
 
     return access_token, new_refresh_token, claims
