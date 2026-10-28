@@ -91,6 +91,9 @@ ALLOWED_GENDERS = {"female", "male", "other", "undisclosed"}
 
 ssm_client = boto3.client("ssm", region_name=AWS_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
+# Low-level client for TransactWriteItems. The resource's meta.client
+# re-serializes values, which breaks pre-typed items like {"N": "123"}.
+dynamodb_client = boto3.client("dynamodb", region_name=AWS_REGION)
 
 refresh_tokens_table = dynamodb.Table(
     REFRESH_TOKENS_TABLE_NAME
@@ -707,16 +710,21 @@ def revoke_refresh_token(refresh_token: str) -> bool:
 
         raise
 
+
 def rotate_refresh_token(
     old_refresh_token: str,
     token_item: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
     """
     Atomically consume an existing refresh token and create its replacement.
+
+    The old token must exist, belong to the same user, and remain unexpired.
+    The transaction prevents the same refresh token from being reused.
     """
 
     now = int(time.time())
 
+    # Validate the existing token record.
     try:
         old_expires_at = int(token_item["expiresAt"])
         user_id = str(token_item["userId"])
@@ -727,17 +735,15 @@ def rotate_refresh_token(
 
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         logger.warning(
-            "Refresh-token rotation rejected because the stored record is malformed."
+            "Refresh-token rotation rejected because the stored record "
+            "is malformed."
         )
-
         raise ValueError(
             "Refresh token is invalid or expired."
         ) from exc
 
     if old_expires_at <= now:
-        raise ValueError(
-            "Refresh token is invalid or expired."
-        )
+        raise ValueError("Refresh token is invalid or expired.")
 
     old_hash = hash_refresh_token(old_refresh_token)
 
@@ -751,12 +757,10 @@ def rotate_refresh_token(
         tz=timezone.utc,
     ).isoformat()
 
-    access_token, claims = create_access_token(
-        user_id,
-        role,
-    )
+    # Generate the access token before consuming the old refresh token.
+    access_token, claims = create_access_token(user_id, role)
 
-    client = dynamodb.meta.client
+    client = dynamodb_client
 
     try:
         client.transact_write_items(
@@ -765,56 +769,59 @@ def rotate_refresh_token(
                     "Delete": {
                         "TableName": REFRESH_TOKENS_TABLE_NAME,
                         "Key": {
-                            "tokenHash": {
-                                "S": old_hash
-                            }
+                            "tokenHash": {"S": old_hash},
                         },
-                        "ConditionExpression":
-                            "attribute_exists(tokenHash)"
-                    }
+                        "ConditionExpression": (
+                            "attribute_exists(tokenHash) "
+                            "AND expiresAt = :expected_expiry "
+                            "AND expiresAt > :now "
+                            "AND userId = :user_id"
+                        ),
+                        "ExpressionAttributeValues": {
+                            ":expected_expiry": {
+                                "N": str(old_expires_at)
+                            },
+                            ":now": {
+                                "N": str(now)
+                            },
+                            ":user_id": {
+                                "S": user_id
+                            },
+                        },
+                    },
                 },
                 {
                     "Put": {
                         "TableName": REFRESH_TOKENS_TABLE_NAME,
                         "Item": {
-                            "tokenHash": {
-                                "S": new_hash
-                            },
-                            "userId": {
-                                "S": user_id
-                            },
-                            "role": {
-                                "S": role
-                            },
-                            "issuedAt": {
-                                "S": issued_at
-                            },
+                            "tokenHash": {"S": new_hash},
+                            "userId": {"S": user_id},
+                            "role": {"S": role},
+                            "issuedAt": {"S": issued_at},
                             "expiresAt": {
                                 "N": str(new_expires_at)
                             },
                             "ttl": {
                                 "N": str(new_expires_at)
-                            }
+                            },
                         },
-                        "ConditionExpression":
+                        "ConditionExpression": (
                             "attribute_not_exists(tokenHash)"
-                    }
-                }
+                        ),
+                    },
+                },
             ]
         )
 
     except ClientError as exc:
-        logger.exception(
-            "Refresh-token rotation transaction failed. response=%s",
-            json.dumps(exc.response, default=str)
-        )
-
         error_code = exc.response.get(
-            "Error",
-            {}
-        ).get(
-            "Code",
-            "Unknown"
+            "Error", {}
+        ).get("Code", "Unknown")
+
+        logger.warning(
+            "Refresh-token rotation transaction failed. "
+            "error_code=%s",
+            error_code,
         )
 
         if error_code in (
@@ -833,11 +840,9 @@ def rotate_refresh_token(
         role,
     )
 
-    return (
-        access_token,
-        new_refresh_token,
-        claims,
-    )
+    return access_token, new_refresh_token, claims
+
+
 # ============================================================
 # DATABASE HELPERS
 # ============================================================
@@ -1278,6 +1283,14 @@ def refresh_session(
                 token_item,
             )
         )
+
+    except ValueError as exc:
+        # rotate_refresh_token raises ValueError for expired, reused or
+        # malformed tokens. These are authentication failures (401).
+        return {
+            "statusCode": 401,
+            "body": {"message": str(exc)},
+        }
 
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
