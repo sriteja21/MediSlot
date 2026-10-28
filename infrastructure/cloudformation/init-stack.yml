@@ -1,0 +1,181 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  MediSlot database initializer. Deploys a Lambda function that can be invoked manually
+  to initialize and verify the schema in the existing RDS MySQL database. No custom resource is created.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment.
+
+Resources:
+  # ==========================================================
+  # DATABASE INITIALIZER SECURITY GROUP
+  # ==========================================================
+
+  DatabaseInitializerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "MediSlot database initializer Lambda (${Environment})"
+      VpcId:
+        Fn::ImportValue: !Sub "MediSlot-VpcId-${Environment}"
+      Tags:
+        - Key: Name
+          Value: !Sub "medislot-init-lambda-sg-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================
+  # OUTBOUND MYSQL ACCESS TO RDS
+  # ==========================================================
+
+  DatabaseInitializerToRDSEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref DatabaseInitializerSecurityGroup
+      Description: Allow MySQL traffic to the existing RDS security group
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      DestinationSecurityGroupId:
+        Fn::ImportValue: !Sub "MediSlot-RDSSecurityGroupId-${Environment}"
+
+  # ==========================================================
+  # OUTBOUND HTTPS ACCESS TO SSM AND S3 VPC ENDPOINTS
+  # ==========================================================
+
+  DatabaseInitializerHttpsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref DatabaseInitializerSecurityGroup
+      Description: Allow HTTPS to the SSM interface endpoint and S3 gateway endpoint
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+
+  # ==========================================================
+  # INBOUND MYSQL ACCESS FROM INITIALIZER TO RDS
+  # ==========================================================
+
+  DatabaseInitializerToRDSIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub "MediSlot-RDSSecurityGroupId-${Environment}"
+      Description: Allow MySQL traffic from the MediSlot database initializer
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref DatabaseInitializerSecurityGroup
+
+  # ==========================================================
+  # DATABASE INITIALIZER IAM ROLE
+  # ==========================================================
+
+  DatabaseInitializerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MediSlot-DBInitializer-Role-${Environment}"
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+
+      Policies:
+        - PolicyName: ReadDatabasePasswordFromSSM
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/database/master-password"
+
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-db-initializer-${Environment}:*"
+
+  # ==========================================================
+  # DATABASE INITIALIZER LAMBDA
+  # ==========================================================
+
+  DatabaseInitializerFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - DatabaseInitializerToRDSIngress
+
+    Properties:
+      FunctionName: !Sub "medislot-db-initializer-${Environment}"
+      Description: Initialize and verify MediSlot MySQL schema
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      CodeUri: ../../src/init_lambda/
+      MemorySize: 512
+      Timeout: 900
+      Role: !GetAtt DatabaseInitializerRole.Arn
+
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref DatabaseInitializerSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue: !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+
+      Environment:
+        Variables:
+          DB_HOST:
+            Fn::ImportValue: !Sub "MediSlot-DatabaseEndpoint-${Environment}"
+          DB_PORT:
+            Fn::ImportValue: !Sub "MediSlot-DatabasePort-${Environment}"
+          DB_NAME:
+            Fn::ImportValue: !Sub "MediSlot-DatabaseName-${Environment}"
+          DB_USERNAME: medislot_admin
+          DB_PASSWORD_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/database/master-password"
+
+      Tags:
+        Application: MediSlot
+        Environment: !Ref Environment
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+
+Outputs:
+  DatabaseInitializerFunctionArn:
+    Description: ARN of the database initializer Lambda
+    Value: !GetAtt DatabaseInitializerFunction.Arn
+    Export:
+      Name: !Sub "MediSlot-DBInitializerFunctionArn-${Environment}"
+
+  DatabaseInitializerSecurityGroupId:
+    Description: Security group used by the initializer Lambda
+    Value: !Ref DatabaseInitializerSecurityGroup
+    Export:
+      Name: !Sub "MediSlot-DBInitializerSecurityGroupId-${Environment}"
