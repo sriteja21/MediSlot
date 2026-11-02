@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+
+{% block title %}Blackout Dates | MediSlot{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  {% include "doctor/_sidebar.html" %}
+
+  <main class="main-content">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Blackout Dates</h1>
+        <p class="page-subtitle">Block specific calendar dates from slot materialisation (leaves, conferences, public holidays)</p>
+      </div>
+      <div>
+        <button type="button" class="btn btn-primary" onclick="openAddBlackoutModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          Add Blackout Date
+        </button>
+      </div>
+    </div>
+
+    <!-- Alert Banner -->
+    <div id="blackoutAlert" style="display: none; margin-bottom: 1.5rem;">
+      <div id="blackoutAlertContent" class="alert">
+        <span id="blackoutAlertText"></span>
+        <button type="button" class="alert-close" onclick="document.getElementById('blackoutAlert').style.display='none'">&times;</button>
+      </div>
+    </div>
+
+    <!-- Blackouts Card -->
+    <div class="card">
+      <div id="blackoutLoading" class="loading-container">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading blackout schedule...</p>
+      </div>
+
+      <div id="blackoutTableContainer" class="table-container" style="display: none;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Blackout Date</th>
+              <th>Reason / Purpose</th>
+              <th>Status</th>
+              <th style="text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="blackoutTableBody">
+            <!-- Populated via JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <div id="blackoutEmptyState" class="empty-state" style="display: none;">
+        <svg class="empty-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+        </svg>
+        <div class="empty-title">No Blackout Dates Scheduled</div>
+        <p class="empty-desc">You are available for consultations on all regular weekdays configured in your availability patterns.</p>
+        <button type="button" class="btn btn-teal btn-sm" style="margin-top: 1rem;" onclick="openAddBlackoutModal()">
+          + Add Blackout Date
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Add Blackout Modal -->
+<div id="addBlackoutModal" class="modal-backdrop">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 class="modal-title">New Blackout Date</h3>
+      <button type="button" class="modal-close" onclick="closeModal('addBlackoutModal')">&times;</button>
+    </div>
+    <form id="addBlackoutForm" onsubmit="handleAddBlackoutSubmit(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="blackoutDateInput">Date <span style="color: var(--danger)">*</span></label>
+          <input
+            type="date"
+            id="blackoutDateInput"
+            class="form-control"
+            required
+          >
+          <div class="form-hint">Slots will be skipped for this entire calendar day.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="blackoutReason">Reason / Notes</label>
+          <input
+            type="text"
+            id="blackoutReason"
+            class="form-control"
+            placeholder="E.g., Medical Conference, Annual Leave, Out of Station"
+            maxlength="200"
+          >
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addBlackoutModal')">Cancel</button>
+        <button type="submit" id="addBlackoutSubmitBtn" class="btn btn-primary">Save Blackout Date</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    // Set min date to today
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('blackoutDateInput').min = today;
+    document.getElementById('blackoutDateInput').value = today;
+
+    loadBlackouts();
+  });
+
+  function showAlert(msg, type = 'success') {
+    const banner = document.getElementById('blackoutAlert');
+    const content = document.getElementById('blackoutAlertContent');
+    const text = document.getElementById('blackoutAlertText');
+
+    content.className = `alert alert-${type}`;
+    text.textContent = msg;
+    banner.style.display = 'block';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openAddBlackoutModal() {
+    document.getElementById('addBlackoutForm').reset();
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('blackoutDateInput').min = today;
+    document.getElementById('blackoutDateInput').value = today;
+    document.getElementById('addBlackoutModal').classList.add('show');
+  }
+
+  function closeModal(id) {
+    document.getElementById(id).classList.remove('show');
+  }
+
+  async function loadBlackouts() {
+    const loading = document.getElementById('blackoutLoading');
+    const tableContainer = document.getElementById('blackoutTableContainer');
+    const emptyState = document.getElementById('blackoutEmptyState');
+    const tbody = document.getElementById('blackoutTableBody');
+
+    loading.style.display = 'flex';
+    tableContainer.style.display = 'none';
+    emptyState.style.display = 'none';
+
+    try {
+      const resp = await fetch('/api/doctor/blackouts');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const blackouts = Array.isArray(data) ? data : (data.blackout_dates || []);
+
+      loading.style.display = 'none';
+
+      if (blackouts.length === 0) {
+        emptyState.style.display = 'block';
+        return;
+      }
+
+      tbody.innerHTML = '';
+      blackouts.forEach(b => {
+        const tr = document.createElement('tr');
+        const rawDate = b.blackout_date || '';
+        const formattedDate = formatDateDisplay(rawDate);
+
+        tr.innerHTML = `
+          <td>
+            <div style="font-weight: 600; color: #fff;">${formattedDate}</div>
+            <div style="font-size: 0.8rem; color: var(--text-dim); font-family: monospace;">${escapeHtml(rawDate)}</div>
+          </td>
+          <td>
+            <span style="color: var(--text);">${escapeHtml(b.reason || 'Unavailable')}</span>
+          </td>
+          <td>
+            <span class="badge badge-blocked">Blacked Out</span>
+          </td>
+          <td style="text-align: right;">
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="handleDeleteBlackout('${escapeHtml(b.id)}')">
+              Remove
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      tableContainer.style.display = 'block';
+
+    } catch (err) {
+      console.warn('Blackouts fetch error:', err);
+      loading.style.display = 'none';
+      showAlert('Could not load blackout dates from API. Please try again.', 'danger');
+      emptyState.style.display = 'block';
+    }
+  }
+
+  async function handleAddBlackoutSubmit(e) {
+    e.preventDefault();
+    const btn = document.getElementById('addBlackoutSubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="margin-right: 6px;"></span> Saving...';
+
+    const payload = {
+      blackout_date: document.getElementById('blackoutDateInput').value,
+      reason: document.getElementById('blackoutReason').value.trim() || 'Unavailable',
+    };
+
+    try {
+      const resp = await fetch('/doctor/blackouts/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        closeModal('addBlackoutModal');
+        showAlert(`Blackout date (${payload.blackout_date}) scheduled successfully!`, 'success');
+        await loadBlackouts();
+      } else {
+        showAlert(resData.message || 'Failed to add blackout date.', 'danger');
+      }
+    } catch (err) {
+      showAlert('Network error while scheduling blackout date.', 'danger');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save Blackout Date';
+    }
+  }
+
+  async function handleDeleteBlackout(id) {
+    if (!confirm('Are you sure you want to remove this blackout date? Slots will be enabled on this day during future materialisations.')) {
+      return;
+    }
+
+    try {
+      const resp = await fetch(`/doctor/blackouts/${encodeURIComponent(id)}/delete`, {
+        method: 'POST',
+      });
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        showAlert('Blackout date removed successfully.', 'success');
+        await loadBlackouts();
+      } else {
+        showAlert(resData.message || 'Failed to remove blackout date.', 'danger');
+      }
+    } catch (err) {
+      showAlert('Network error occurred while removing blackout date.', 'danger');
+    }
+  }
+
+  function formatDateDisplay(dateStr) {
+    if (!dateStr) return '—';
+    try {
+      const parts = dateStr.split('-');
+      const d = new Date(parts[0], parts[1] - 1, parts[2]);
+      return d.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (e) {
+      return dateStr;
+    }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+</script>
+{% endblock %}

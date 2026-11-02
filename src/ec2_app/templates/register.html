@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+
+{% block title %}Doctor Registration | MediSlot{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+  <div class="auth-card auth-card-wide">
+    <div class="auth-header">
+      <div class="auth-logo">M</div>
+      <h1 class="auth-title">Doctor Registration</h1>
+      <p class="auth-tagline">Create your provider profile to manage availability and appointment slots</p>
+    </div>
+
+    <form action="{{ url_for('register') }}" method="POST">
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label for="full_name">Full Name <span style="color: var(--danger)">*</span></label>
+          <input
+            type="text"
+            id="full_name"
+            name="full_name"
+            class="form-control"
+            placeholder="Dr. Sarah Jenkins"
+            required
+            autocomplete="name"
+          >
+        </div>
+
+        <div class="form-group">
+          <label for="email">Email Address <span style="color: var(--danger)">*</span></label>
+          <input
+            type="email"
+            id="email"
+            name="email"
+            class="form-control"
+            placeholder="sjenkins@hospital.org"
+            required
+            autocomplete="email"
+          >
+        </div>
+      </div>
+
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label for="password">Password <span style="color: var(--danger)">*</span></label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            class="form-control"
+            placeholder="Minimum 10 chars, letters & numbers"
+            required
+            autocomplete="new-password"
+          >
+          <div class="form-hint">Must be at least 10 characters with numbers and letters.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="licence_number">Medical Licence Number <span style="color: var(--danger)">*</span></label>
+          <input
+            type="text"
+            id="licence_number"
+            name="licence_number"
+            class="form-control"
+            placeholder="MCI-104928"
+            required
+          >
+        </div>
+      </div>
+
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label for="specialisation_id">Specialisation ID <span style="color: var(--danger)">*</span></label>
+          <input
+            type="number"
+            id="specialisation_id"
+            name="specialisation_id"
+            class="form-control"
+            placeholder="1"
+            value="1"
+            min="1"
+            required
+          >
+          <div class="form-hint">E.g., 1 for General Medicine, 2 for Cardiology.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="hospital_id">Hospital ID (UUID) <span style="color: var(--danger)">*</span></label>
+          <input
+            type="text"
+            id="hospital_id"
+            name="hospital_id"
+            class="form-control"
+            placeholder="a0000000-0000-0000-0000-000000000001"
+            value="a0000000-0000-0000-0000-000000000001"
+            required
+          >
+          <div class="form-hint">Valid 36-character UUID of your affiliated hospital.</div>
+        </div>
+      </div>
+
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label for="years_experience">Years of Experience <span style="color: var(--danger)">*</span></label>
+          <input
+            type="number"
+            id="years_experience"
+            name="years_experience"
+            class="form-control"
+            placeholder="8"
+            value="5"
+            min="0"
+            max="60"
+            required
+          >
+        </div>
+
+        <div class="form-group">
+          <label for="timezone">Clinical Timezone <span style="color: var(--danger)">*</span></label>
+          <input
+            type="text"
+            id="timezone"
+            name="timezone"
+            class="form-control"
+            value="Asia/Kolkata"
+            placeholder="Asia/Kolkata"
+            required
+          >
+          <div class="form-hint">IANA format (e.g. Asia/Kolkata, America/New_York, UTC)</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="qualifications">Qualifications & Degrees</label>
+        <textarea
+          id="qualifications"
+          name="qualifications"
+          class="form-control"
+          placeholder="MBBS, MD - Internal Medicine, Fellowship in Critical Care"
+          rows="3"
+        ></textarea>
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem; padding: 0.9rem;">
+        Create Doctor Account
+      </button>
+    </form>
+
+    <div class="auth-footer">
+      <span>Already have a doctor account?</span>
+      <a href="{{ url_for('login') }}" style="font-weight: 600; margin-left: 0.35rem;">Sign In</a>
+    </div>
+
+    <div class="auth-notice">
+      Patient registration is handled separately via the MediSlot Patient Portal.
+    </div>
+  </div>
+</div>
+{% endblock %}

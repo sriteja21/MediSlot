@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In | MediSlot Doctor Portal{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="auth-logo">M</div>
+      <h1 class="auth-title">MediSlot</h1>
+      <p class="auth-tagline">Intelligent Medical Slot & Schedule Management</p>
+    </div>
+
+    <form action="{{ url_for('login') }}" method="POST">
+      <div class="form-group">
+        <label for="email">Doctor Email Address</label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          class="form-control"
+          placeholder="doctor@hospital.org"
+          required
+          autofocus
+          autocomplete="username"
+        >
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input
+          type="password"
+          id="password"
+          name="password"
+          class="form-control"
+          placeholder="••••••••••••"
+          required
+          autocomplete="current-password"
+        >
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem; padding: 0.85rem;">
+        Sign In
+      </button>
+    </form>
+
+    <div class="auth-footer">
+      <span>Don't have a doctor account?</span>
+      <a href="{{ url_for('register') }}" style="font-weight: 600; margin-left: 0.35rem;">Register Here</a>
+    </div>
+
+    <div class="auth-notice">
+      Notice: Patient portal is accessed separately via the MediSlot Patient App.
+    </div>
+  </div>
+</div>
+{% endblock %}

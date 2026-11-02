@@ -1,0 +1,451 @@
+{% extends "base.html" %}
+
+{% block title %}Consultation Types | MediSlot{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  {% include "doctor/_sidebar.html" %}
+
+  <main class="main-content">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Consultation Types</h1>
+        <p class="page-subtitle">Configure consultation formats, durations, clinical fees, and patient capacities</p>
+      </div>
+      <div>
+        <button type="button" class="btn btn-primary" onclick="openAddModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          Add Consultation Type
+        </button>
+      </div>
+    </div>
+
+    <!-- Alert Banner -->
+    <div id="typesAlert" style="display: none; margin-bottom: 1.5rem;">
+      <div id="typesAlertContent" class="alert">
+        <span id="typesAlertText"></span>
+        <button type="button" class="alert-close" onclick="document.getElementById('typesAlert').style.display='none'">&times;</button>
+      </div>
+    </div>
+
+    <!-- Types Table Card -->
+    <div class="card">
+      <div id="typesLoading" class="loading-container">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading consultation types...</p>
+      </div>
+
+      <div id="typesTableContainer" class="table-container" style="display: none;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Name</th>
+              <th>Duration</th>
+              <th>Fee Amount</th>
+              <th>Capacity</th>
+              <th>Status</th>
+              <th style="text-align: right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="typesTableBody">
+            <!-- Populated via JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <div id="typesEmptyState" class="empty-state" style="display: none;">
+        <svg class="empty-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+        </svg>
+        <div class="empty-title">No Consultation Types Defined</div>
+        <p class="empty-desc">Create your first consultation type to start accepting scheduled patient bookings.</p>
+        <button type="button" class="btn btn-teal btn-sm" style="margin-top: 1rem;" onclick="openAddModal()">
+          + Add First Type
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Add Modal -->
+<div id="addModal" class="modal-backdrop">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 class="modal-title">New Consultation Type</h3>
+      <button type="button" class="modal-close" onclick="closeModal('addModal')">&times;</button>
+    </div>
+    <form id="addTypeForm" onsubmit="handleAddTypeSubmit(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="addKind">Consultation Kind <span style="color: var(--danger)">*</span></label>
+          <select id="addKind" class="form-control" required onchange="handleKindChange(this, 'addCapacity')">
+            <option value="STANDARD" selected>STANDARD (General Consultation)</option>
+            <option value="QUICK">QUICK (Follow-up / Brief)</option>
+            <option value="DETAILED">DETAILED (Comprehensive / Specialist)</option>
+            <option value="HEALTH_CAMP">HEALTH_CAMP (Group / Mass Screening)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="addName">Display Name <span style="color: var(--danger)">*</span></label>
+          <input
+            type="text"
+            id="addName"
+            class="form-control"
+            placeholder="E.g., Comprehensive Cardiac Review"
+            required
+          >
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="addDuration">Duration (Minutes) <span style="color: var(--danger)">*</span></label>
+            <input
+              type="number"
+              id="addDuration"
+              class="form-control"
+              value="30"
+              min="5"
+              max="240"
+              step="5"
+              required
+            >
+          </div>
+
+          <div class="form-group">
+            <label for="addFee">Fee Amount (₹) <span style="color: var(--danger)">*</span></label>
+            <input
+              type="number"
+              id="addFee"
+              class="form-control"
+              value="500.00"
+              min="0"
+              step="10"
+              required
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="addCapacity">Patient Capacity <span style="color: var(--danger)">*</span></label>
+          <input
+            type="number"
+            id="addCapacity"
+            class="form-control"
+            value="1"
+            min="1"
+            max="1"
+            required
+          >
+          <div id="addCapacityHint" class="form-hint">Capacity is fixed at 1 for individual consultation types.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button>
+        <button type="submit" id="addSubmitBtn" class="btn btn-primary">Create Type</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="modal-backdrop">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 class="modal-title">Edit Consultation Type</h3>
+      <button type="button" class="modal-close" onclick="closeModal('editModal')">&times;</button>
+    </div>
+    <form id="editTypeForm" onsubmit="handleEditTypeSubmit(event)">
+      <input type="hidden" id="editTypeId">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="editName">Display Name <span style="color: var(--danger)">*</span></label>
+          <input
+            type="text"
+            id="editName"
+            class="form-control"
+            required
+          >
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="editDuration">Duration (Minutes) <span style="color: var(--danger)">*</span></label>
+            <input
+              type="number"
+              id="editDuration"
+              class="form-control"
+              min="5"
+              max="240"
+              step="5"
+              required
+            >
+          </div>
+
+          <div class="form-group">
+            <label for="editFee">Fee Amount (₹) <span style="color: var(--danger)">*</span></label>
+            <input
+              type="number"
+              id="editFee"
+              class="form-control"
+              min="0"
+              step="10"
+              required
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="editCapacity">Patient Capacity</label>
+          <input
+            type="number"
+            id="editCapacity"
+            class="form-control"
+            min="1"
+            max="10"
+            required
+          >
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
+        <button type="submit" id="editSubmitBtn" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let consultationTypesList = [];
+
+  document.addEventListener('DOMContentLoaded', () => {
+    loadConsultationTypes();
+  });
+
+  function showAlert(msg, type = 'success') {
+    const banner = document.getElementById('typesAlert');
+    const content = document.getElementById('typesAlertContent');
+    const text = document.getElementById('typesAlertText');
+
+    content.className = `alert alert-${type}`;
+    text.textContent = msg;
+    banner.style.display = 'block';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function handleKindChange(selectElem, capacityInputId) {
+    const input = document.getElementById(capacityInputId);
+    const hint = document.getElementById('addCapacityHint');
+    if (selectElem.value === 'HEALTH_CAMP') {
+      input.min = 2;
+      input.max = 10;
+      input.value = 5;
+      if (hint) hint.textContent = 'Health Camps accommodate between 2 and 10 patients per slot.';
+    } else {
+      input.min = 1;
+      input.max = 1;
+      input.value = 1;
+      if (hint) hint.textContent = 'Capacity is fixed at 1 for individual consultations.';
+    }
+  }
+
+  function openAddModal() {
+    document.getElementById('addTypeForm').reset();
+    handleKindChange(document.getElementById('addKind'), 'addCapacity');
+    document.getElementById('addModal').classList.add('show');
+  }
+
+  function openEditModal(id) {
+    const item = consultationTypesList.find(t => String(t.id) === String(id));
+    if (!item) return;
+
+    document.getElementById('editTypeId').value = item.id;
+    document.getElementById('editName').value = item.name || '';
+    document.getElementById('editDuration').value = item.duration_minutes || 30;
+    document.getElementById('editFee').value = parseFloat(item.fee_amount || 0).toFixed(2);
+    document.getElementById('editCapacity').value = item.capacity || 1;
+
+    document.getElementById('editModal').classList.add('show');
+  }
+
+  function closeModal(modalId) {
+    document.getElementById(modalId).classList.remove('show');
+  }
+
+  async function loadConsultationTypes() {
+    const loading = document.getElementById('typesLoading');
+    const tableContainer = document.getElementById('typesTableContainer');
+    const emptyState = document.getElementById('typesEmptyState');
+    const tbody = document.getElementById('typesTableBody');
+
+    loading.style.display = 'flex';
+    tableContainer.style.display = 'none';
+    emptyState.style.display = 'none';
+
+    try {
+      const resp = await fetch('/api/doctor/consultation-types?all=true');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      consultationTypesList = Array.isArray(data) ? data : (data.consultation_types || []);
+
+      loading.style.display = 'none';
+
+      if (consultationTypesList.length === 0) {
+        emptyState.style.display = 'block';
+        return;
+      }
+
+      tbody.innerHTML = '';
+      consultationTypesList.forEach(ct => {
+        const tr = document.createElement('tr');
+        const kindBadge = ct.kind === 'HEALTH_CAMP' ? 'badge-partial' :
+                          ct.kind === 'QUICK' ? 'badge-open' : 'badge-primary';
+        const isActive = ct.is_active !== false && ct.is_active !== 0;
+
+        tr.innerHTML = `
+          <td><span class="badge ${kindBadge}">${escapeHtml(ct.kind || 'STANDARD')}</span></td>
+          <td style="font-weight: 600;">${escapeHtml(ct.name)}</td>
+          <td>${ct.duration_minutes} mins</td>
+          <td>₹${parseFloat(ct.fee_amount || 0).toFixed(2)}</td>
+          <td><span class="badge badge-secondary">${ct.capacity} seat${ct.capacity > 1 ? 's' : ''}</span></td>
+          <td>
+            <span class="badge ${isActive ? 'badge-open' : 'badge-blocked'}">
+              ${isActive ? 'Active' : 'Inactive'}
+            </span>
+          </td>
+          <td style="text-align: right; white-space: nowrap;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openEditModal('${escapeHtml(ct.id)}')">
+              Edit
+            </button>
+            <button type="button" class="btn btn-outline-danger btn-sm" style="margin-left: 6px;" onclick="handleDeleteType('${escapeHtml(ct.id)}')">
+              Deactivate
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      tableContainer.style.display = 'block';
+
+    } catch (err) {
+      console.warn('Consultation types fetch error:', err);
+      loading.style.display = 'none';
+      showAlert('Could not load consultation types from API. Please try again.', 'danger');
+      emptyState.style.display = 'block';
+    }
+  }
+
+  async function handleAddTypeSubmit(e) {
+    e.preventDefault();
+    const btn = document.getElementById('addSubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="margin-right: 6px;"></span> Creating...';
+
+    const payload = {
+      kind: document.getElementById('addKind').value,
+      name: document.getElementById('addName').value.trim(),
+      duration_minutes: parseInt(document.getElementById('addDuration').value),
+      fee_amount: parseFloat(document.getElementById('addFee').value),
+      capacity: parseInt(document.getElementById('addCapacity').value),
+    };
+
+    try {
+      const resp = await fetch('/doctor/consultation-types/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        closeModal('addModal');
+        showAlert(`Consultation type "${payload.name}" created successfully!`, 'success');
+        await loadConsultationTypes();
+      } else {
+        showAlert(resData.message || 'Failed to create consultation type.', 'danger');
+      }
+    } catch (err) {
+      showAlert('Network error while creating consultation type.', 'danger');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Create Type';
+    }
+  }
+
+  async function handleEditTypeSubmit(e) {
+    e.preventDefault();
+    const btn = document.getElementById('editSubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="margin-right: 6px;"></span> Saving...';
+
+    const typeId = document.getElementById('editTypeId').value;
+    const payload = {
+      name: document.getElementById('editName').value.trim(),
+      duration_minutes: parseInt(document.getElementById('editDuration').value),
+      fee_amount: parseFloat(document.getElementById('editFee').value),
+      capacity: parseInt(document.getElementById('editCapacity').value),
+    };
+
+    try {
+      const resp = await fetch(`/doctor/consultation-types/${encodeURIComponent(typeId)}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        closeModal('editModal');
+        showAlert('Consultation type updated successfully!', 'success');
+        await loadConsultationTypes();
+      } else {
+        showAlert(resData.message || 'Failed to update consultation type.', 'danger');
+      }
+    } catch (err) {
+      showAlert('Network error while updating consultation type.', 'danger');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save Changes';
+    }
+  }
+
+  async function handleDeleteType(id) {
+    if (!confirm('Are you sure you want to deactivate this consultation type? Existing booked appointments will not be affected.')) {
+      return;
+    }
+
+    try {
+      const resp = await fetch(`/doctor/consultation-types/${encodeURIComponent(id)}/delete`, {
+        method: 'POST',
+      });
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        showAlert('Consultation type deactivated successfully.', 'success');
+        await loadConsultationTypes();
+      } else {
+        showAlert(resData.message || 'Failed to deactivate consultation type.', 'danger');
+      }
+    } catch (err) {
+      showAlert('Network error occurred while deactivating consultation type.', 'danger');
+    }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+</script>
+{% endblock %}
