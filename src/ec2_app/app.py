@@ -11,6 +11,7 @@ import os
 from functools import wraps
 from typing import Any
 
+import boto3
 import requests
 from flask import (
     Flask,
@@ -20,6 +21,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -32,9 +34,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("medislot_ec2_app")
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY")
+SECRET_PARAMETER_NAME = os.environ.get("FLASK_SECRET_PARAMETER_NAME")
+if SECRET_PARAMETER_NAME:
+    app.secret_key = boto3.client(
+        "ssm",
+        region_name=os.environ.get("AWS_REGION"),
+    ).get_parameter(
+        Name=SECRET_PARAMETER_NAME,
+        WithDecryption=True,
+    )["Parameter"]["Value"]
+else:
+    app.secret_key = os.environ.get("SECRET_KEY")
 if not app.secret_key:
-    raise RuntimeError("SECRET_KEY must be configured for the Flask application.")
+    raise RuntimeError("Configure a Flask secret in SSM or SECRET_KEY for local development.")
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in {"true", "1"}
 app.config.update(
@@ -150,13 +162,13 @@ def update_cookies_after_refresh(response):
 
 
 def login_required(f):
-    """Ensure user has authentication cookies before serving page."""
+    """Ensure a doctor session exists before serving a doctor page."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         access_token = request.cookies.get("access_token")
         refresh_token = request.cookies.get("refresh_token")
-        if not access_token and not refresh_token:
-            flash("Please sign in to access your doctor dashboard.", "warning")
+        if (not access_token and not refresh_token) or session.get("role") != "doctor":
+            flash("Please sign in with a doctor account to continue.", "warning")
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated_function
@@ -168,9 +180,11 @@ def login_required(f):
 
 @app.route("/", methods=["GET"])
 def index():
-    """Redirect to doctor dashboard if authenticated, else to login."""
-    if request.cookies.get("access_token") or request.cookies.get("refresh_token"):
+    """Send authenticated users to the dashboard for their role."""
+    if session.get("role") == "doctor":
         return redirect(url_for("doctor_dashboard"))
+    if session.get("role") == "patient":
+        return redirect(url_for("patient_dashboard"))
     return redirect(url_for("login"))
 
 
@@ -181,10 +195,10 @@ def health_check():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    """Render login page or process doctor login."""
+    """Render unified login or process credentials for either role."""
     if request.method == "GET":
-        if request.cookies.get("access_token"):
-            return redirect(url_for("doctor_dashboard"))
+        if session.get("role") in {"doctor", "patient"}:
+            return redirect(url_for("index"))
         return render_template("login.html")
 
     email = request.form.get("email", "").strip()
@@ -196,17 +210,26 @@ def login():
 
     status, res = api_call(
         "POST",
-        "/auth/doctors/login",
+        "/auth/login",
         json_body={"email": email, "password": password},
     )
 
     if status == 200 and "access_token" in res:
+        user = res.get("user") or {}
+        role = user.get("role")
+        if role not in {"doctor", "patient"}:
+            flash("This account has an unsupported role.", "danger")
+            return redirect(url_for("login"))
+
         access_token = res["access_token"]
         refresh_token = res.get("refresh_token")
         expires_in = int(res.get("expires_in", 900))
         refresh_expires_in = int(res.get("refresh_expires_in", 7 * 86400))
 
-        resp = redirect(url_for("doctor_dashboard"))
+        session.clear()
+        session["role"] = role
+        session["user_id"] = user.get("user_id")
+        resp = redirect(url_for("index"))
         resp.set_cookie(
             "access_token",
             access_token,
@@ -303,6 +326,7 @@ def logout():
             logger.warning("Logout notification to API Gateway failed: %s", exc)
 
     resp = redirect(url_for("login"))
+    session.clear()
     resp.delete_cookie("access_token")
     resp.delete_cookie("refresh_token")
     flash("You have been signed out successfully.", "info")
@@ -318,6 +342,17 @@ def logout():
 def doctor_dashboard():
     """Serve the doctor main dashboard overview."""
     return render_template("doctor/dashboard.html", active_page="dashboard")
+
+
+@app.route("/patient/dashboard", methods=["GET"])
+def patient_dashboard():
+    if (
+        (not request.cookies.get("access_token") and not request.cookies.get("refresh_token"))
+        or session.get("role") != "patient"
+    ):
+        flash("Please sign in with a patient account to continue.", "warning")
+        return redirect(url_for("login"))
+    return render_template("patient/dashboard.html")
 
 
 @app.route("/doctor/profile", methods=["GET"])
@@ -416,6 +451,15 @@ def create_availability():
 def delete_availability(id: str):
     """Proxy deletion of availability pattern to DELETE /doctors/me/availability/<id>."""
     status, res = api_call("DELETE", f"/doctors/me/availability/{id}")
+    return jsonify(res), status
+
+
+@app.route("/doctor/availability/<id>/update", methods=["POST"])
+def update_availability(id: str):
+    data = request.get_json(silent=True) or request.form.to_dict()
+    if "day_of_week" in data:
+        data["day_of_week"] = int(data["day_of_week"])
+    status, res = api_call("PATCH", f"/doctors/me/availability/{id}", json_body=data)
     return jsonify(res), status
 
 

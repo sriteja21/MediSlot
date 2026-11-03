@@ -62,6 +62,10 @@ SLOTS_TABLE_NAME = (
     or os.environ.get("SLOTS_TABLE")
     or f"MediSlot-Slots-{ENVIRONMENT}"
 )
+SLOT_MATERIALISER_FUNCTION_NAME = os.environ.get(
+    "SLOT_MATERIALISER_FUNCTION_NAME",
+    "",
+)
 
 PROFILE_PHOTO_BUCKET = (
     os.environ.get("PROFILE_PHOTO_BUCKET")
@@ -83,7 +87,7 @@ ROUTE_METHODS = {
     "/doctors/me/consultation-types": {"GET", "POST"},
     "/doctors/me/consultation-types/{id}": {"PATCH", "DELETE"},
     "/doctors/me/availability": {"GET", "POST"},
-    "/doctors/me/availability/{id}": {"DELETE"},
+    "/doctors/me/availability/{id}": {"PATCH", "DELETE"},
     "/doctors/me/blackouts": {"GET", "POST"},
     "/doctors/me/blackouts/{id}": {"DELETE"},
     "/doctors/me/schedule": {"GET"},
@@ -94,6 +98,7 @@ ROUTE_METHODS = {
 _s3_client = None
 _dynamodb_resource = None
 _slots_table = None
+_lambda_client = None
 _doctor_columns_cache = None
 
 
@@ -112,6 +117,25 @@ def get_slots_table():
         _dynamodb_resource = boto3.resource("dynamodb", region_name=AWS_REGION)
         _slots_table = _dynamodb_resource.Table(SLOTS_TABLE_NAME)
     return _slots_table
+
+
+def trigger_slot_materialisation() -> None:
+    global _lambda_client
+    if not SLOT_MATERIALISER_FUNCTION_NAME:
+        logger.warning("Slot materializer function name is not configured.")
+        return
+
+    if _lambda_client is None:
+        _lambda_client = boto3.client("lambda", region_name=AWS_REGION)
+
+    try:
+        _lambda_client.invoke(
+            FunctionName=SLOT_MATERIALISER_FUNCTION_NAME,
+            InvocationType="Event",
+            Payload=b"{}",
+        )
+    except Exception:
+        logger.exception("Could not trigger slot materialization.")
 
 
 def get_local_day_utc_bounds(day: date, timezone_name: str) -> tuple[datetime, datetime]:
@@ -415,6 +439,16 @@ def get_doctor_profile(doctor_id: str) -> dict[str, Any]:
     doctor["is_active"] = bool(doctor["is_active"])
     doctor["years_experience"] = int(doctor["years_experience"] or 0)
 
+    if doctor.get("photo_s3_key") and PROFILE_PHOTO_BUCKET:
+        doctor["photo_url"] = get_s3_client().generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": PROFILE_PHOTO_BUCKET,
+                "Key": doctor["photo_s3_key"],
+            },
+            ExpiresIn=3600,
+        )
+
     return format_response(200, doctor)
 
 
@@ -498,7 +532,10 @@ def update_doctor_profile(doctor_id: str, body: dict[str, Any]) -> dict[str, Any
     return get_doctor_profile(doctor_id)
 
 
-def get_photo_upload_url(doctor_id: str) -> dict[str, Any]:
+def get_photo_upload_url(
+    doctor_id: str,
+    content_type: str,
+) -> dict[str, Any]:
     """
     GET /doctors/me/photo-upload-url
     Generate a presigned S3 PUT URL for uploading doctor profile photo.
@@ -507,7 +544,16 @@ def get_photo_upload_url(doctor_id: str) -> dict[str, Any]:
     if not bucket:
         raise RuntimeError("PROFILE_PHOTO_BUCKET environment variable is not configured.")
 
-    s3_key = f"doctors/{doctor_id}/profile.jpg"
+    extensions = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+    }
+    extension = extensions.get(content_type)
+    if not extension:
+        raise ValueError("Photo must be JPEG, PNG, or WebP.")
+
+    s3_key = f"doctors/{doctor_id}/profile.{extension}"
     s3 = get_s3_client()
 
     upload_url = s3.generate_presigned_url(
@@ -515,25 +561,21 @@ def get_photo_upload_url(doctor_id: str) -> dict[str, Any]:
         Params={
             "Bucket": bucket,
             "Key": s3_key,
-            "ContentType": "image/jpeg",
+            "ContentType": content_type,
         },
         ExpiresIn=300,
     )
 
-    # Persist photo_s3_key to doctor record if not already set
-    try:
-        execute_write(
-            "UPDATE doctors SET photo_s3_key = %s WHERE id = %s AND (photo_s3_key IS NULL OR photo_s3_key = '')",
-            (s3_key, doctor_id),
-        )
-    except Exception as exc:
-        logger.warning("Could not pre-populate photo_s3_key in database: %s", exc)
+    execute_write(
+        "UPDATE doctors SET photo_s3_key = %s WHERE id = %s",
+        (s3_key, doctor_id),
+    )
 
     return format_response(
         200,
         {
             "upload_url": upload_url,
-            "s3_key": s3_key,
+            "photo_key": s3_key,
             "expires_in": 300,
         },
     )
@@ -548,18 +590,18 @@ def list_consultation_types(doctor_id: str, query_params: dict[str, str]) -> dic
 
     if include_all:
         query = """
-            SELECT id, doctor_id, kind, name, duration_minutes, fee_amount, capacity, is_active
+            SELECT id, doctor_id, kind, duration_minutes, fee_amount, capacity, is_active
             FROM consultation_types
             WHERE doctor_id = %s
-            ORDER BY name ASC
+            ORDER BY kind ASC
         """
         rows = execute_query(query, (doctor_id,))
     else:
         query = """
-            SELECT id, doctor_id, kind, name, duration_minutes, fee_amount, capacity, is_active
+            SELECT id, doctor_id, kind, duration_minutes, fee_amount, capacity, is_active
             FROM consultation_types
             WHERE doctor_id = %s AND is_active = TRUE
-            ORDER BY name ASC
+            ORDER BY kind ASC
         """
         rows = execute_query(query, (doctor_id,))
 
@@ -575,7 +617,7 @@ def list_consultation_types(doctor_id: str, query_params: dict[str, str]) -> dic
 def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """
     POST /doctors/me/consultation-types
-    Create a new consultation type: kind, name, duration_minutes, fee_amount, capacity.
+    Create a consultation type using kind, duration, fee, and capacity.
     """
     kind = body.get("kind")
     if not isinstance(kind, str) or kind.upper() not in ALLOWED_CONSULTATION_KINDS:
@@ -583,11 +625,6 @@ def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, 
             f"kind must be one of: {', '.join(sorted(ALLOWED_CONSULTATION_KINDS))}."
         )
     kind = kind.upper()
-
-    name = body.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("name is required.")
-    name = name.strip()[:100]
 
     duration_minutes = body.get("duration_minutes")
     if (
@@ -623,32 +660,32 @@ def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, 
             raise ValueError(f"capacity for {kind} must be 1.")
         capacity = 1
 
-    # Check for duplicate name
+    # Keep one consultation configuration per kind for each doctor.
     existing = execute_query(
-        "SELECT id FROM consultation_types WHERE doctor_id = %s AND name = %s",
-        (doctor_id, name),
+        "SELECT id FROM consultation_types WHERE doctor_id = %s AND kind = %s",
+        (doctor_id, kind),
     )
     if existing:
         return format_response(
             409,
-            {"error": f"A consultation type named '{name}' already exists for this doctor."},
+            {"error": f"A {kind} consultation type already exists for this doctor."},
         )
 
     new_id = str(uuid.uuid4())
     execute_write(
         """
         INSERT INTO consultation_types (
-            id, doctor_id, kind, name, duration_minutes, fee_amount, capacity, is_active
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+            id, doctor_id, kind, duration_minutes, fee_amount, capacity, is_active
+        ) VALUES (%s, %s, %s, %s, %s, %s, TRUE)
         """,
-        (new_id, doctor_id, kind, name, duration_minutes, fee_decimal, capacity),
+        (new_id, doctor_id, kind, duration_minutes, fee_decimal, capacity),
     )
+    trigger_slot_materialisation()
 
     created_record = {
         "id": new_id,
         "doctor_id": doctor_id,
         "kind": kind,
-        "name": name,
         "duration_minutes": duration_minutes,
         "fee_amount": float(fee_decimal),
         "capacity": capacity,
@@ -664,7 +701,7 @@ def update_consultation_type(
 ) -> dict[str, Any]:
     """
     PATCH /doctors/me/consultation-types/{id}
-    Update consultation type (name, fee_amount, duration_minutes, capacity, is_active).
+    Update consultation type fee, duration, capacity, or active status.
     """
     rows = execute_query(
         "SELECT * FROM consultation_types WHERE id = %s AND doctor_id = %s",
@@ -677,25 +714,6 @@ def update_consultation_type(
     kind = existing["kind"]
     update_clauses: list[str] = []
     params: list[Any] = []
-
-    if "name" in body:
-        name = body["name"]
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("name must be a non-empty string.")
-        name = name.strip()[:100]
-
-        # Check duplicate name on other records
-        duplicate = execute_query(
-            "SELECT id FROM consultation_types WHERE doctor_id = %s AND name = %s AND id != %s",
-            (doctor_id, name, ct_id),
-        )
-        if duplicate:
-            return format_response(
-                409,
-                {"error": f"A consultation type named '{name}' already exists."},
-            )
-        update_clauses.append("name = %s")
-        params.append(name)
 
     if "fee_amount" in body:
         try:
@@ -738,6 +756,7 @@ def update_consultation_type(
     sql = f"UPDATE consultation_types SET {', '.join(update_clauses)} WHERE id = %s AND doctor_id = %s"
     params.extend([ct_id, doctor_id])
     execute_write(sql, tuple(params))
+    trigger_slot_materialisation()
 
     # Fetch updated record
     updated_rows = execute_query(
@@ -769,6 +788,7 @@ def delete_consultation_type(doctor_id: str, ct_id: str) -> dict[str, Any]:
         "UPDATE consultation_types SET is_active = FALSE WHERE id = %s AND doctor_id = %s",
         (ct_id, doctor_id),
     )
+    trigger_slot_materialisation()
     return format_response(
         200,
         {
@@ -792,7 +812,7 @@ def list_availability(doctor_id: str) -> dict[str, Any]:
             ap.start_local_time,
             ap.end_local_time,
             ap.consultation_type_id,
-            ct.name AS consultation_type_name,
+            ct.kind AS consultation_type_name,
             ct.duration_minutes,
             ct.fee_amount,
             ap.is_active,
@@ -881,6 +901,7 @@ def create_availability(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """,
         (pattern_id, doctor_id, day_of_week, start_local_time, end_local_time, ct_id),
     )
+    trigger_slot_materialisation()
 
     created_pattern = {
         "id": pattern_id,
@@ -910,11 +931,87 @@ def delete_availability(doctor_id: str, pattern_id: str) -> dict[str, Any]:
         "DELETE FROM availability_patterns WHERE id = %s AND doctor_id = %s",
         (pattern_id, doctor_id),
     )
+    trigger_slot_materialisation()
     return format_response(
         200,
         {
             "message": "Availability pattern deleted successfully.",
             "id": pattern_id,
+        },
+    )
+
+
+def update_availability(
+    doctor_id: str,
+    pattern_id: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    if not body:
+        raise ValueError("Request body cannot be empty.")
+
+    existing_rows = execute_query(
+        "SELECT id FROM availability_patterns WHERE id = %s AND doctor_id = %s",
+        (pattern_id, doctor_id),
+    )
+    if not existing_rows:
+        return format_response(404, {"error": "Availability pattern not found."})
+
+    day_of_week = body.get("day_of_week")
+    if (
+        isinstance(day_of_week, bool)
+        or not isinstance(day_of_week, int)
+        or not 1 <= day_of_week <= 7
+    ):
+        raise ValueError("day_of_week must be an integer from 1 to 7.")
+
+    start_local_time = _validate_time_str(body.get("start_local_time"), "start_local_time")
+    end_local_time = _validate_time_str(body.get("end_local_time"), "end_local_time")
+    if end_local_time <= start_local_time:
+        raise ValueError("end_local_time must be after start_local_time.")
+
+    consultation_type_id = body.get("consultation_type_id")
+    if not isinstance(consultation_type_id, str) or not consultation_type_id.strip():
+        raise ValueError("consultation_type_id is required.")
+    consultation_type_id = consultation_type_id.strip()
+
+    consultation_rows = execute_query(
+        """
+        SELECT id FROM consultation_types
+        WHERE id = %s AND doctor_id = %s AND is_active = TRUE
+        """,
+        (consultation_type_id, doctor_id),
+    )
+    if not consultation_rows:
+        raise ValueError("consultation_type_id must identify an active type belonging to this doctor.")
+
+    execute_write(
+        """
+        UPDATE availability_patterns
+        SET day_of_week = %s,
+            start_local_time = %s,
+            end_local_time = %s,
+            consultation_type_id = %s
+        WHERE id = %s AND doctor_id = %s
+        """,
+        (
+            day_of_week,
+            start_local_time,
+            end_local_time,
+            consultation_type_id,
+            pattern_id,
+            doctor_id,
+        ),
+    )
+    trigger_slot_materialisation()
+    return format_response(
+        200,
+        {
+            "id": pattern_id,
+            "doctor_id": doctor_id,
+            "day_of_week": day_of_week,
+            "start_local_time": start_local_time,
+            "end_local_time": end_local_time,
+            "consultation_type_id": consultation_type_id,
         },
     )
 
@@ -992,6 +1089,7 @@ def create_blackout(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
         "INSERT INTO blackout_dates (id, doctor_id, blackout_date, reason) VALUES (%s, %s, %s, %s)",
         (blackout_id, doctor_id, b_date.isoformat(), clean_reason),
     )
+    trigger_slot_materialisation()
 
     created_blackout = {
         "id": blackout_id,
@@ -1018,6 +1116,7 @@ def delete_blackout(doctor_id: str, blackout_id: str) -> dict[str, Any]:
         "DELETE FROM blackout_dates WHERE id = %s AND doctor_id = %s",
         (blackout_id, doctor_id),
     )
+    trigger_slot_materialisation()
     return format_response(
         200,
         {
@@ -1104,21 +1203,23 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
     # Retrieve appointments on this date from RDS
     appointments_query = """
         SELECT
-            id,
-            patient_id,
-            doctor_id,
-            consultation_type_id,
-            slot_id,
-            slot_start_utc,
-            slot_end_utc,
-            status,
-            fee_amount,
-            booked_at
-        FROM appointments
-        WHERE doctor_id = %s
-          AND slot_start_utc >= %s
-          AND slot_start_utc < %s
-        ORDER BY slot_start_utc ASC
+                        a.id,
+                        a.patient_id,
+                        p.full_name AS patient_name,
+                        a.doctor_id,
+                        a.consultation_type_id,
+                        a.slot_id,
+                        a.slot_start_utc,
+                        a.slot_end_utc,
+                        a.status,
+                        a.fee_amount,
+                        a.booked_at
+                FROM appointments a
+                LEFT JOIN patients p ON p.id = a.patient_id
+                WHERE a.doctor_id = %s
+                    AND a.slot_start_utc >= %s
+                    AND a.slot_start_utc < %s
+                ORDER BY a.slot_start_utc ASC
     """
     appointments = execute_query(
         appointments_query,
@@ -1310,7 +1411,10 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
                 return update_doctor_profile(doctor_id, body)
 
         elif route_pattern == "/doctors/me/photo-upload-url":
-            return get_photo_upload_url(doctor_id)
+            return get_photo_upload_url(
+                doctor_id,
+                str(query_params.get("content_type") or ""),
+            )
 
         elif route_pattern == "/doctors/me/consultation-types":
             if method == "GET":
@@ -1335,6 +1439,8 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
         elif route_pattern == "/doctors/me/availability/{id}":
             if not resource_id:
                 return format_response(400, {"error": "Availability pattern ID is required in URL path."})
+            if method == "PATCH":
+                return update_availability(doctor_id, resource_id, body)
             return delete_availability(doctor_id, resource_id)
 
         elif route_pattern == "/doctors/me/blackouts":

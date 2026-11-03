@@ -405,6 +405,7 @@ Resources:
           SLOTS_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-SlotsTableName-${Environment}"
+          SLOT_MATERIALISER_FUNCTION_NAME: !Sub "MediSlot-SlotMaterialiser-${Environment}"
       Events:
         DoctorProfileGet:
           Type: Api
@@ -466,6 +467,12 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /doctors/me/availability/{id}
             Method: DELETE
+        AvailabilityPatch:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/availability/{id}
+            Method: PATCH
         BlackoutsGet:
           Type: Api
           Properties:
@@ -527,12 +534,6 @@ Resources:
           SLOTS_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-SlotsTableName-${Environment}"
-      Events:
-        DailyMaterialisation:
-          Type: Schedule
-          Properties:
-            Schedule: "cron(0 0 * * ? *)"
-            Enabled: true
 
 # ============================================================
 # OUTPUTS

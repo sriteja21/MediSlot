@@ -371,6 +371,45 @@ def execute_schema(
         raise
 
 
+def migrate_consultation_type_name(connection: Connection) -> None:
+    """Remove the legacy consultation display-name column if it exists."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'consultation_types'
+              AND COLUMN_NAME = 'name'
+            """,
+            (DB_NAME,),
+        )
+        column_exists = cursor.fetchone()[0] > 0
+
+        if not column_exists:
+            return
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'consultation_types'
+              AND INDEX_NAME = 'uq_ct_doctor_name'
+            """,
+            (DB_NAME,),
+        )
+        index_exists = cursor.fetchone()[0] > 0
+
+        if index_exists:
+            cursor.execute(
+                "ALTER TABLE consultation_types DROP INDEX uq_ct_doctor_name"
+            )
+        cursor.execute("ALTER TABLE consultation_types DROP COLUMN name")
+
+    logger.info("Removed legacy consultation_types.name column.")
+
+
 # ============================================================
 # SCHEMA VERIFICATION
 # ============================================================
@@ -470,6 +509,8 @@ def initialize_database() -> dict[str, Any]:
             connection=connection,
             statements=statements,
         )
+
+        migrate_consultation_type_name(connection)
 
         verified_tables = verify_schema(connection)
 

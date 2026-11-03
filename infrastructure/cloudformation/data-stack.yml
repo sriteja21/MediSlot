@@ -107,26 +107,6 @@ Conditions:
 Resources:
 
   # ==========================================================
-  # SSM DATABASE MASTER PASSWORD (TEMPORARY STRING)
-  # ==========================================================
-
-  # WARNING: SSM Type String is not encrypted. Use SecureString for
-  # production or any environment containing real/sensitive data.
-  MediSlotDatabaseMasterPasswordParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub "/MediSlot/${Environment}/database/master-password"
-      Type: String
-      Value: !Ref DBMasterPassword
-      Description: !Sub "MediSlot ${Environment} RDS master password (temporary String parameter)"
-      Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
-        DataClassification: Sensitive
-
-  # ==========================================================
   # RDS SUBNET GROUP
   # ==========================================================
 

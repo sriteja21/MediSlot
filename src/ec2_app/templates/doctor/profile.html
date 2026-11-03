@@ -94,6 +94,7 @@
               id="full_name"
               name="full_name"
               class="form-control"
+              disabled
               required
             >
           </div>
@@ -108,6 +109,7 @@
                 class="form-control"
                 min="0"
                 max="65"
+                disabled
                 required
               >
             </div>
@@ -120,6 +122,7 @@
                 name="languages"
                 class="form-control"
                 placeholder="English, Hindi, Telugu, Marathi"
+                disabled
               >
               <div class="form-hint">Separate languages with commas.</div>
             </div>
@@ -133,14 +136,33 @@
               class="form-control"
               rows="4"
               placeholder="MBBS, MD - Cardiology, FACC"
+              disabled
             ></textarea>
           </div>
 
           <div style="display: flex; justify-content: flex-end; gap: 1rem; margin-top: 1.5rem;">
             <button
+              type="button"
+              id="editProfileBtn"
+              class="btn btn-secondary"
+              onclick="setProfileEditing(true)"
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              id="cancelProfileBtn"
+              class="btn btn-secondary"
+              onclick="cancelProfileEdit()"
+              hidden
+            >
+              Cancel
+            </button>
+            <button
               type="submit"
               id="saveProfileBtn"
               class="btn btn-primary"
+              disabled
             >
               <span id="saveProfileBtnText">Save Changes</span>
             </button>
@@ -155,6 +177,7 @@
 {% block scripts %}
 <script>
   let currentProfileData = {};
+  const profileFieldIds = ['full_name', 'years_experience', 'languages', 'qualifications'];
 
   document.addEventListener('DOMContentLoaded', () => {
     loadProfile();
@@ -209,14 +232,36 @@
         sidebarName.textContent = `Dr. ${data.full_name}`;
       }
 
+      setProfileEditing(false);
+
     } catch (err) {
       console.warn('Failed to load doctor profile:', err);
       showAlert('Could not load profile from API Gateway. Default values displayed.', 'warning');
     }
   }
 
+  function setProfileEditing(isEditing) {
+    profileFieldIds.forEach(id => {
+      document.getElementById(id).disabled = !isEditing;
+    });
+    document.getElementById('editProfileBtn').hidden = isEditing;
+    document.getElementById('cancelProfileBtn').hidden = !isEditing;
+    document.getElementById('saveProfileBtn').disabled = !isEditing;
+  }
+
+  function cancelProfileEdit() {
+    document.getElementById('full_name').value = currentProfileData.full_name || '';
+    document.getElementById('years_experience').value = currentProfileData.years_experience ?? 0;
+    document.getElementById('qualifications').value = currentProfileData.qualifications || '';
+    document.getElementById('languages').value = Array.isArray(currentProfileData.languages)
+      ? currentProfileData.languages.join(', ')
+      : (currentProfileData.languages || '');
+    setProfileEditing(false);
+  }
+
   async function handleProfileSubmit(e) {
     e.preventDefault();
+    if (document.getElementById('saveProfileBtn').disabled) return;
     const btn = document.getElementById('saveProfileBtn');
     const btnText = document.getElementById('saveProfileBtnText');
 
@@ -243,11 +288,13 @@
       const resData = await resp.json();
 
       if (resp.ok) {
+        currentProfileData = { ...currentProfileData, ...payload };
         showAlert('Profile updated successfully!', 'success');
         const sidebarName = document.getElementById('sidebarDoctorName');
         if (sidebarName && payload.full_name) {
           sidebarName.textContent = `Dr. ${payload.full_name}`;
         }
+        setProfileEditing(false);
       } else {
         showAlert(resData.message || 'Failed to update profile.', 'danger');
       }

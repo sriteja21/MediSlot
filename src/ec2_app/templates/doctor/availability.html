@@ -92,7 +92,7 @@
 <div id="addPatternModal" class="modal-backdrop">
   <div class="modal-dialog">
     <div class="modal-header">
-      <h3 class="modal-title">New Weekly Availability Pattern</h3>
+      <h3 class="modal-title" id="patternModalTitle">New Weekly Availability Pattern</h3>
       <button type="button" class="modal-close" onclick="closeModal('addPatternModal')">&times;</button>
     </div>
     <form id="addPatternForm" onsubmit="handleAddPatternSubmit(event)">
@@ -174,6 +174,8 @@
   };
 
   let consultationTypes = [];
+  let availabilityPatterns = [];
+  let editingPatternId = null;
 
   document.addEventListener('DOMContentLoaded', async () => {
     await Promise.all([
@@ -194,9 +196,26 @@
   }
 
   function openAddPatternModal() {
+    editingPatternId = null;
     document.getElementById('addPatternForm').reset();
     document.getElementById('patternStartTime').value = '09:00';
     document.getElementById('patternEndTime').value = '17:00';
+    document.getElementById('patternModalTitle').textContent = 'New Weekly Availability Pattern';
+    document.getElementById('addPatternSubmitBtn').textContent = 'Add Pattern';
+    document.getElementById('addPatternModal').classList.add('show');
+  }
+
+  function openEditPatternModal(id) {
+    const pattern = availabilityPatterns.find(item => String(item.id) === String(id));
+    if (!pattern) return;
+
+    editingPatternId = pattern.id;
+    document.getElementById('patternDay').value = pattern.day_of_week;
+    document.getElementById('patternStartTime').value = formatTime(pattern.start_local_time);
+    document.getElementById('patternEndTime').value = formatTime(pattern.end_local_time);
+    document.getElementById('patternConsultationType').value = pattern.consultation_type_id;
+    document.getElementById('patternModalTitle').textContent = 'Edit Weekly Availability Pattern';
+    document.getElementById('addPatternSubmitBtn').textContent = 'Save Pattern';
     document.getElementById('addPatternModal').classList.add('show');
   }
 
@@ -217,7 +236,7 @@
       consultationTypes.forEach(ct => {
         const opt = document.createElement('option');
         opt.value = ct.id;
-        opt.textContent = `${ct.name} (${ct.duration_minutes}m, ₹${parseFloat(ct.fee_amount || 0).toFixed(0)})`;
+        opt.textContent = `${ct.kind} (${ct.duration_minutes}m, ₹${parseFloat(ct.fee_amount || 0).toFixed(0)})`;
         select.appendChild(opt);
       });
     } catch (err) {
@@ -240,6 +259,7 @@
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       const patterns = Array.isArray(data) ? data : (data.availability_patterns || []);
+      availabilityPatterns = patterns;
 
       loading.style.display = 'none';
 
@@ -261,7 +281,7 @@
 
         // Find type name if mapped
         const matchedType = consultationTypes.find(ct => String(ct.id) === String(p.consultation_type_id));
-        const typeName = matchedType ? matchedType.name : (p.consultation_type_name || 'Standard Consultation');
+        const typeName = matchedType ? matchedType.kind : (p.consultation_type_name || 'Consultation');
 
         tr.innerHTML = `
           <td>
@@ -278,6 +298,9 @@
             <span class="badge badge-open">Active</span>
           </td>
           <td style="text-align: right;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openEditPatternModal('${escapeHtml(p.id)}')">
+              Edit
+            </button>
             <button type="button" class="btn btn-outline-danger btn-sm" onclick="handleDeletePattern('${escapeHtml(p.id)}')">
               Delete
             </button>
@@ -319,8 +342,13 @@
       consultation_type_id: document.getElementById('patternConsultationType').value,
     };
 
+    const updateId = editingPatternId;
+    const endpoint = updateId
+      ? `/doctor/availability/${encodeURIComponent(updateId)}/update`
+      : '/doctor/availability/create';
+
     try {
-      const resp = await fetch('/doctor/availability/create', {
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -330,7 +358,10 @@
 
       if (resp.ok) {
         closeModal('addPatternModal');
-        showAlert('Availability pattern added! Slots will be automatically generated.', 'success');
+        showAlert(
+          updateId ? 'Availability pattern updated.' : 'Availability pattern added.',
+          'success'
+        );
         await loadAvailability();
       } else {
         showAlert(resData.message || 'Failed to add availability pattern.', 'danger');
@@ -339,7 +370,7 @@
       showAlert('Network error while creating availability pattern.', 'danger');
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Add Pattern';
+      btn.textContent = editingPatternId ? 'Save Pattern' : 'Add Pattern';
     }
   }
 

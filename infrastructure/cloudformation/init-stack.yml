@@ -109,7 +109,19 @@ Resources:
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
-                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/database/master-password"
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/database/master-password-secure"
+
+        - PolicyName: DecryptDatabasePasswordFromSsm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${AWS::Region}.${AWS::URLSuffix}"
 
         - PolicyName: CloudWatchLogs
           PolicyDocument:
@@ -157,7 +169,7 @@ Resources:
           DB_NAME:
             Fn::ImportValue: !Sub "MediSlot-DatabaseName-${Environment}"
           DB_USERNAME: medislot_admin
-          DB_PASSWORD_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/database/master-password"
+          DB_PASSWORD_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/database/master-password-secure"
 
       Tags:
         Application: MediSlot

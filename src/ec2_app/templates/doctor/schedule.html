@@ -187,6 +187,13 @@
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       const slots = Array.isArray(data) ? data : (data.slots || []);
+      const appointments = data.appointments || [];
+      const appointmentsBySlot = new Map();
+      appointments.forEach(appointment => {
+        const key = String(appointment.slot_id || '');
+        if (!appointmentsBySlot.has(key)) appointmentsBySlot.set(key, []);
+        appointmentsBySlot.get(key).push(appointment);
+      });
 
       loading.style.display = 'none';
 
@@ -240,31 +247,42 @@
         const pct = Math.min(100, Math.round((booked / capacity) * 100));
         const startTimeStr = formatIsoTime(slot.start_time);
         const endTimeStr = formatIsoTime(slot.end_time);
+        const slotId = String(slot.slot_id || slot.slotId || '');
+        const slotAppointments = appointmentsBySlot.get(slotId) || [];
+        const appointmentDetails = slotAppointments.length
+          ? slotAppointments.map(appointment => `
+              <article class="slot-appointment">
+                <strong>${escapeHtml(appointment.patient_name || `Patient ${appointment.patient_id || ''}`)}</strong>
+                <span>${escapeHtml(appointment.status || 'Booked')} · ${escapeHtml(appointment.id || '')}</span>
+                <span>Fee: ₹${parseFloat(appointment.fee_amount || 0).toFixed(2)}</span>
+              </article>
+            `).join('')
+          : `<p class="slot-vacancy">No bookings. ${Math.max(0, capacity - booked)} seat${capacity - booked === 1 ? '' : 's'} available.</p>`;
 
         const card = document.createElement('div');
         card.className = `slot-card status-${statusClass}`;
         card.innerHTML = `
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
-            <div class="slot-time">${startTimeStr} – ${endTimeStr}</div>
-            <span class="badge ${statusBadgeClass}">${statusLabel}</span>
-          </div>
-
-          <div class="slot-type">
-            ${escapeHtml(slot.consultation_type_name || 'Standard Consultation')}
-          </div>
-
-          <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.75rem;">
-            <span>Capacity & Bookings</span>
-            <span><strong style="color: #fff;">${booked}</strong> / ${capacity} booked</span>
-          </div>
-
-          <div class="slot-capacity-bar">
-            <div class="slot-capacity-fill fill-${statusClass}" style="width: ${pct}%;"></div>
-          </div>
-
-          <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.65rem; font-family: monospace;">
-            ID: ${escapeHtml(slot.slot_id || slot.slotId || '')}
-          </div>
+          <details class="slot-expander">
+            <summary>
+              <div class="slot-summary-line">
+                <span class="slot-time">${startTimeStr} – ${endTimeStr}</span>
+                <span class="badge ${statusBadgeClass}">${statusLabel}</span>
+              </div>
+              <div class="slot-type">${escapeHtml(slot.consultation_type_name || 'Consultation')}</div>
+              <div class="slot-booking-count">
+                <span>Capacity</span>
+                <span><strong>${booked}</strong> / ${capacity} booked</span>
+              </div>
+              <div class="slot-capacity-bar">
+                <div class="slot-capacity-fill fill-${statusClass}" style="width: ${pct}%;"></div>
+              </div>
+            </summary>
+            <div class="slot-expanded">
+              <div class="slot-expanded-id">Slot ${escapeHtml(slotId)}</div>
+              <h3>Appointments</h3>
+              ${appointmentDetails}
+            </div>
+          </details>
         `;
         grid.appendChild(card);
       });

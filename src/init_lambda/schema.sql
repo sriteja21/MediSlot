@@ -131,13 +131,11 @@ CREATE TABLE IF NOT EXISTS consultation_types (
     id CHAR(36) PRIMARY KEY,
     doctor_id CHAR(36) NOT NULL,
     kind ENUM('QUICK', 'STANDARD', 'DETAILED', 'HEALTH_CAMP') NOT NULL,
-    name VARCHAR(100) NOT NULL,
     duration_minutes SMALLINT UNSIGNED NOT NULL,
     fee_amount DECIMAL(10,2) NOT NULL,
     capacity TINYINT UNSIGNED NOT NULL DEFAULT 1,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
-    UNIQUE KEY uq_ct_doctor_name (doctor_id, name),
     KEY idx_ct_doctor (doctor_id, is_active),
 
     CONSTRAINT fk_ct_doc

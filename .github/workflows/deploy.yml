@@ -210,6 +210,8 @@ jobs:
 
       - name: Deploy Data Stack
         shell: bash
+        env:
+          DB_MASTER_PASSWORD: ${{ secrets.MEDISLOT_DB_MASTER_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -221,9 +223,21 @@ jobs:
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
-              DBMasterPassword="${{ secrets.MEDISLOT_DB_MASTER_PASSWORD }}"
+              DBMasterPassword="$DB_MASTER_PASSWORD"
+
+          aws ssm put-parameter \
+            --name "/MediSlot/${ENVIRONMENT}/database/master-password-secure" \
+            --type SecureString \
+            --value "$DB_MASTER_PASSWORD" \
+            --overwrite \
+            --region "$AWS_REGION" > /dev/null
+
+          aws ssm delete-parameter \
+            --name "/MediSlot/${ENVIRONMENT}/database/master-password" \
+            --region "$AWS_REGION" 2>/dev/null || true
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -587,15 +601,13 @@ jobs:
           aws s3 cp "$ARTIFACT_PATH" "s3://${REPORTS_BUCKET}/${ARTIFACT_KEY}" \
             --region "$AWS_REGION"
 
-          PARAMETERS=(Environment="$ENVIRONMENT" AppArtifactKey="$ARTIFACT_KEY")
-          CERTIFICATE_ARN="${{ vars.MEDISLOT_ACM_CERTIFICATE_ARN }}"
-          PORTAL_DOMAIN="${{ vars.MEDISLOT_PORTAL_DOMAIN }}"
-          if [[ -n "$CERTIFICATE_ARN" ]]; then
-            PARAMETERS+=(SSLCertificateArn="$CERTIFICATE_ARN")
-          fi
-          if [[ -n "$PORTAL_DOMAIN" ]]; then
-            PARAMETERS+=(PortalDomainName="$PORTAL_DOMAIN")
-          fi
+          PARAMETERS=(
+            Environment="$ENVIRONMENT"
+            AppArtifactKey="$ARTIFACT_KEY"
+            FlaskSecretParameterName="/MediSlot/${ENVIRONMENT}/ec2-app/flask-secret"
+            TlsCertificateParameterName="/MediSlot/${ENVIRONMENT}/ec2-app/tls-certificate"
+            TlsPrivateKeyParameterName="/MediSlot/${ENVIRONMENT}/ec2-app/tls-private-key"
+          )
 
           aws cloudformation deploy \
             --template-file "$EC2_TEMPLATE" \

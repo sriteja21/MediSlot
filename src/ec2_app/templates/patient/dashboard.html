@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Patient Dashboard | MediSlot{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+  <main class="auth-card auth-card-wide">
+    <div class="auth-header">
+      <div class="auth-logo">M</div>
+      <h1 class="auth-title">Patient Dashboard</h1>
+      <p class="auth-tagline">You are signed in to MediSlot.</p>
+    </div>
+    <div class="auth-notice">
+      Patient appointment and booking APIs are not connected to this portal yet.
+    </div>
+    <form action="{{ url_for('logout') }}" method="POST">
+      <button type="submit" class="btn btn-secondary btn-block">Sign Out</button>
+    </form>
+  </main>
+</div>
+{% endblock %}

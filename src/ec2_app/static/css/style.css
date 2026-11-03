@@ -1030,6 +1030,75 @@ select.form-control option {
   opacity: 0.65;
 }
 
+.slot-expander > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.slot-expander > summary::-webkit-details-marker {
+  display: none;
+}
+
+.slot-summary-line,
+.slot-booking-count {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.slot-booking-count {
+  margin-top: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.slot-booking-count strong {
+  color: #fff;
+}
+
+.slot-expanded {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.slot-expanded h3 {
+  margin: 0 0 0.5rem;
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.slot-expanded-id {
+  margin-bottom: 0.75rem;
+  color: var(--text-dim);
+  font-family: monospace;
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+}
+
+.slot-appointment {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.78rem;
+}
+
+.slot-appointment strong {
+  color: #fff;
+}
+
+.slot-appointment span,
+.slot-vacancy {
+  color: var(--text-muted);
+}
+
+.slot-vacancy {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
 .slot-time {
   font-size: 1.1rem;
   font-weight: 700;

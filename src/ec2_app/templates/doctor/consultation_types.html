@@ -42,7 +42,6 @@
           <thead>
             <tr>
               <th>Kind</th>
-              <th>Name</th>
               <th>Duration</th>
               <th>Fee Amount</th>
               <th>Capacity</th>
@@ -87,17 +86,6 @@
             <option value="DETAILED">DETAILED (Comprehensive / Specialist)</option>
             <option value="HEALTH_CAMP">HEALTH_CAMP (Group / Mass Screening)</option>
           </select>
-        </div>
-
-        <div class="form-group">
-          <label for="addName">Display Name <span style="color: var(--danger)">*</span></label>
-          <input
-            type="text"
-            id="addName"
-            class="form-control"
-            placeholder="E.g., Comprehensive Cardiac Review"
-            required
-          >
         </div>
 
         <div class="form-grid-2">
@@ -161,16 +149,6 @@
     <form id="editTypeForm" onsubmit="handleEditTypeSubmit(event)">
       <input type="hidden" id="editTypeId">
       <div class="modal-body">
-        <div class="form-group">
-          <label for="editName">Display Name <span style="color: var(--danger)">*</span></label>
-          <input
-            type="text"
-            id="editName"
-            class="form-control"
-            required
-          >
-        </div>
-
         <div class="form-grid-2">
           <div class="form-group">
             <label for="editDuration">Duration (Minutes) <span style="color: var(--danger)">*</span></label>
@@ -265,7 +243,6 @@
     if (!item) return;
 
     document.getElementById('editTypeId').value = item.id;
-    document.getElementById('editName').value = item.name || '';
     document.getElementById('editDuration').value = item.duration_minutes || 30;
     document.getElementById('editFee').value = parseFloat(item.fee_amount || 0).toFixed(2);
     document.getElementById('editCapacity').value = item.capacity || 1;
@@ -309,7 +286,6 @@
 
         tr.innerHTML = `
           <td><span class="badge ${kindBadge}">${escapeHtml(ct.kind || 'STANDARD')}</span></td>
-          <td style="font-weight: 600;">${escapeHtml(ct.name)}</td>
           <td>${ct.duration_minutes} mins</td>
           <td>₹${parseFloat(ct.fee_amount || 0).toFixed(2)}</td>
           <td><span class="badge badge-secondary">${ct.capacity} seat${ct.capacity > 1 ? 's' : ''}</span></td>
@@ -348,7 +324,6 @@
 
     const payload = {
       kind: document.getElementById('addKind').value,
-      name: document.getElementById('addName').value.trim(),
       duration_minutes: parseInt(document.getElementById('addDuration').value),
       fee_amount: parseFloat(document.getElementById('addFee').value),
       capacity: parseInt(document.getElementById('addCapacity').value),
@@ -365,7 +340,7 @@
 
       if (resp.ok) {
         closeModal('addModal');
-        showAlert(`Consultation type "${payload.name}" created successfully!`, 'success');
+        showAlert(`${payload.kind} consultation type created successfully!`, 'success');
         await loadConsultationTypes();
       } else {
         showAlert(resData.message || 'Failed to create consultation type.', 'danger');
@@ -386,7 +361,6 @@
 
     const typeId = document.getElementById('editTypeId').value;
     const payload = {
-      name: document.getElementById('editName').value.trim(),
       duration_minutes: parseInt(document.getElementById('editDuration').value),
       fee_amount: parseFloat(document.getElementById('editFee').value),
       capacity: parseInt(document.getElementById('editCapacity').value),
