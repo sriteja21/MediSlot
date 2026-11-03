@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 # Ensure shared modules can be imported
@@ -126,7 +127,15 @@ def trigger_slot_materialisation() -> None:
         return
 
     if _lambda_client is None:
-        _lambda_client = boto3.client("lambda", region_name=AWS_REGION)
+        _lambda_client = boto3.client(
+            "lambda",
+            region_name=AWS_REGION,
+            config=Config(
+                connect_timeout=3,
+                read_timeout=5,
+                retries={"mode": "standard", "total_max_attempts": 1},
+            ),
+        )
 
     try:
         _lambda_client.invoke(
