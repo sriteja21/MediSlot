@@ -34,7 +34,7 @@ Obtain a certificate with an IP SAN matching `$portalIp`, then create the three 
 
 The portal accepts public HTTPS on TCP 443 only. It does not expose SSH or the Gunicorn port. Manage the instance with AWS Systems Manager Session Manager (`aws ssm start-session --target INSTANCE_ID --region AWS_REGION`); the instance role includes `AmazonSSMManagedInstanceCore`. The stack does not create Route 53 records. Do not disable TLS for a public login portal; use a certificate whose SAN matches the stable portal address.
 
-The EC2 stack downloads a versioned ZIP from the private reports bucket during instance bootstrap. Its health endpoint is `/healthz`; the stack output and deployment log include the HTTPS portal URL.
+The EC2 stack downloads a versioned ZIP from the private reports bucket during instance bootstrap. CloudFormation waits up to 30 minutes for Nginx, Gunicorn, and `/healthz` to pass before marking the instance created; bootstrap output is written to `/var/log/medislot-bootstrap.log` and the EC2 console. Its health endpoint is `/healthz`; the stack output and deployment log include the HTTPS portal URL.
 
 ## Python dependencies
 

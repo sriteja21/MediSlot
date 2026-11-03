@@ -115,6 +115,16 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:ViaService: !Sub "ssm.${AWS::Region}.${AWS::URLSuffix}"
+        - PolicyName: !Sub "MediSlot-SignalPortalBootstrap-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SignalCurrentPortalStack
+                Effect: Allow
+                Action:
+                  - cloudformation:SignalResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-Portal-InstanceRole-${Environment}"
@@ -151,8 +161,27 @@ Resources:
           Fn::Sub:
             - |
               #!/bin/bash
-              set -euo pipefail
+              set -Eeuo pipefail
+              exec > >(tee -a /var/log/medislot-bootstrap.log /dev/console) 2>&1
+              STACK_NAME='${AWS::StackName}'
+              AWS_REGION='${AWS::Region}'
+              INSTANCE_ID=bootstrap-unknown
+              signal_failure() {
+                  STATUS=$?
+                  aws cloudformation signal-resource \
+                      --stack-name "$STACK_NAME" \
+                      --logical-resource-id MediSlotApplicationInstance \
+                      --unique-id "$INSTANCE_ID" \
+                      --status FAILURE \
+                      --region "$AWS_REGION" || true
+                  exit "$STATUS"
+              }
+              trap signal_failure ERR
               dnf install -y awscli python3.11 python3.11-pip nginx unzip
+              TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token \
+                -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')
+              INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+                http://169.254.169.254/latest/meta-data/instance-id)
               mkdir -p /opt/medislot/app /etc/medislot
               aws s3 cp "s3://${ReportsBucket}/${AppArtifactKey}" /tmp/medislot-app.zip
               unzip -q /tmp/medislot-app.zip -d /opt/medislot/app
@@ -204,6 +233,17 @@ Resources:
               chown -R ec2-user:ec2-user /opt/medislot
               systemctl daemon-reload
               systemctl enable --now amazon-ssm-agent medislot nginx
+                nginx -t
+                systemctl is-active --quiet medislot
+                systemctl is-active --quiet nginx
+                curl -kfsS https://127.0.0.1/healthz > /dev/null
+                aws cloudformation signal-resource \
+                  --stack-name "$STACK_NAME" \
+                  --logical-resource-id MediSlotApplicationInstance \
+                  --unique-id "$INSTANCE_ID" \
+                  --status SUCCESS \
+                  --region "$AWS_REGION"
+                trap - ERR
             - ReportsBucket:
                 Fn::ImportValue: !Sub "MediSlot-ReportsBucketName-${Environment}"
               AppArtifactKey: !Ref AppArtifactKey
@@ -219,6 +259,10 @@ Resources:
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
 
   MediSlotApplicationElasticIpAssociation:
     Type: AWS::EC2::EIPAssociation
