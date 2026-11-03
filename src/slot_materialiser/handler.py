@@ -74,6 +74,11 @@ def parse_date(val: Any) -> date:
     raise ValueError(f"Unsupported date format: {type(val)}: {val}")
 
 
+def time_ranges_overlap(start_a: time, end_a: time, start_b: time, end_b: time) -> bool:
+    """Return True when two time windows overlap on the same day."""
+    return start_a < end_b and start_b < end_a
+
+
 # ============================================================
 # HANDLER
 # ============================================================
@@ -209,6 +214,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     total_generated = 0
     total_skipped = 0
+    generated_day_ranges: dict[tuple[str, date], list[tuple[datetime, datetime]]] = {}
 
     # 3. Generate slots
     for doc_id, doc_pattern_list in doctor_patterns.items():
@@ -250,59 +256,94 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 if target_date in doc_blackouts:
                     continue
 
-                # Generate slots across the pattern time window
-                slot_start_dt = datetime.combine(target_date, start_t, tzinfo=doctor_timezone)
-                pattern_end_dt = datetime.combine(target_date, end_t, tzinfo=doctor_timezone)
+                day_key = (doc_id, target_date)
+                day_ranges = generated_day_ranges.setdefault(day_key, [])
+                pattern_start = datetime.combine(target_date, start_t, tzinfo=doctor_timezone)
+                pattern_end = datetime.combine(target_date, end_t, tzinfo=doctor_timezone)
 
-                while slot_start_dt + step <= pattern_end_dt:
-                    slot_end_dt = slot_start_dt + step
-                    start_utc = slot_start_dt.astimezone(timezone.utc)
-                    end_utc = slot_end_dt.astimezone(timezone.utc)
-                    start_epoch = int(start_utc.timestamp())
-                    slot_id = str(
-                        uuid5(
-                            NAMESPACE_URL,
-                            f"medislot:{consultation_type_id}:{start_epoch}",
+                for existing_start, existing_end in day_ranges:
+                    if time_ranges_overlap(pattern_start.time(), pattern_end.time(), existing_start.time(), existing_end.time()):
+                        logger.warning(
+                            "Skipping overlapping availability for doctor=%s date=%s existing=[%s,%s] incoming=[%s,%s]",
+                            doc_id,
+                            target_date.isoformat(),
+                            existing_start.strftime("%H:%M:%S"),
+                            existing_end.strftime("%H:%M:%S"),
+                            pattern_start.strftime("%H:%M:%S"),
+                            pattern_end.strftime("%H:%M:%S"),
                         )
-                    )
-                    expires_at = start_epoch + (7 * 86400)  # TTL: start_epoch + 7 days
+                        total_skipped += 1
+                        break
+                else:
+                    slot_start_dt = pattern_start
+                    while slot_start_dt + step <= pattern_end:
+                        slot_end_dt = slot_start_dt + step
+                        candidate_overlaps = False
+                        for existing_start, existing_end in day_ranges:
+                            if slot_start_dt < existing_end and existing_start < slot_end_dt:
+                                logger.warning(
+                                    "Skipping overlapping generated slot for doctor=%s date=%s slot_start=%s slot_end=%s existing_start=%s existing_end=%s",
+                                    doc_id,
+                                    target_date.isoformat(),
+                                    slot_start_dt.isoformat(),
+                                    slot_end_dt.isoformat(),
+                                    existing_start.isoformat(),
+                                    existing_end.isoformat(),
+                                )
+                                candidate_overlaps = True
+                                break
+                        if candidate_overlaps:
+                            slot_start_dt = slot_end_dt
+                            continue
 
-                    start_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    end_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-                    item = {
-                        "slot_id": slot_id,
-                        "slotId": slot_id,
-                        "doctor_id": doc_id,
-                        "doctorId": doc_id,
-                        "consultation_type_id": consultation_type_id,
-                        "start_time": start_iso,
-                        "end_time": end_iso,
-                        "startUtcConsultationType": f"{start_iso}#{consultation_type_id}",
-                        "capacity": capacity,
-                        "booked_count": 0,
-                        "is_blocked": False,
-                        "expires_at": expires_at,
-                        "ttl": expires_at,
-                    }
-
-                    try:
-                        slots_table.put_item(
-                            Item=item,
-                            ConditionExpression=Attr("slotId").not_exists(),
+                        start_utc = slot_start_dt.astimezone(timezone.utc)
+                        end_utc = slot_end_dt.astimezone(timezone.utc)
+                        start_epoch = int(start_utc.timestamp())
+                        slot_id = str(
+                            uuid5(
+                                NAMESPACE_URL,
+                                f"medislot:{consultation_type_id}:{start_epoch}",
+                            )
                         )
-                        total_generated += 1
-                    except ClientError as exc:
-                        if (
-                            exc.response.get("Error", {}).get("Code")
-                            == "ConditionalCheckFailedException"
-                        ):
-                            total_skipped += 1
-                        else:
-                            logger.exception("Unexpected DynamoDB error writing slot %s: %s", slot_id, exc)
-                            raise
+                        expires_at = start_epoch + (7 * 86400)  # TTL: start_epoch + 7 days
 
-                    slot_start_dt = slot_end_dt
+                        start_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        end_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                        item = {
+                            "slot_id": slot_id,
+                            "slotId": slot_id,
+                            "doctor_id": doc_id,
+                            "doctorId": doc_id,
+                            "consultation_type_id": consultation_type_id,
+                            "start_time": start_iso,
+                            "end_time": end_iso,
+                            "startUtcConsultationType": f"{start_iso}#{consultation_type_id}",
+                            "capacity": capacity,
+                            "booked_count": 0,
+                            "is_blocked": False,
+                            "expires_at": expires_at,
+                            "ttl": expires_at,
+                        }
+
+                        try:
+                            slots_table.put_item(
+                                Item=item,
+                                ConditionExpression=Attr("slotId").not_exists(),
+                            )
+                            total_generated += 1
+                        except ClientError as exc:
+                            if (
+                                exc.response.get("Error", {}).get("Code")
+                                == "ConditionalCheckFailedException"
+                            ):
+                                total_skipped += 1
+                            else:
+                                logger.exception("Unexpected DynamoDB error writing slot %s: %s", slot_id, exc)
+                                raise
+
+                        day_ranges.append((slot_start_dt, slot_end_dt))
+                        slot_start_dt = slot_end_dt
 
     logger.info(
         "Slot materialisation completed successfully. total_generated=%d total_skipped=%d",

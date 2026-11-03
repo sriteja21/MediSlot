@@ -865,6 +865,51 @@ def _validate_time_str(time_str: Any, field_name: str) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def times_overlap(start_a: str, end_a: str, start_b: str, end_b: str) -> bool:
+    """Return true when two HH:MM[:SS] windows overlap on the same day."""
+    def to_minutes(value: str) -> int:
+        parts = value.split(":")
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = int(parts[2]) if len(parts) > 2 else 0
+        return hours * 60 * 60 + minutes * 60 + seconds
+
+    return to_minutes(start_a) < to_minutes(end_b) and to_minutes(start_b) < to_minutes(end_a)
+
+
+def find_overlapping_availability_pattern(
+    doctor_id: str,
+    day_of_week: int,
+    start_local_time: str,
+    end_local_time: str,
+    ignore_pattern_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return an existing pattern that overlaps with the supplied window."""
+    query = """
+        SELECT id, start_local_time, end_local_time
+        FROM availability_patterns
+        WHERE doctor_id = %s AND day_of_week = %s AND is_active = TRUE
+    """
+    params: list[Any] = [doctor_id, day_of_week]
+
+    if ignore_pattern_id:
+        query += " AND id != %s"
+        params.append(ignore_pattern_id)
+
+    query += " ORDER BY start_local_time ASC"
+    rows = execute_query(query, tuple(params))
+
+    for row in rows:
+        if times_overlap(
+            start_local_time,
+            end_local_time,
+            row["start_local_time"],
+            row["end_local_time"],
+        ):
+            return row
+    return None
+
+
 def create_availability(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """
     POST /doctors/me/availability
@@ -884,6 +929,19 @@ def create_availability(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
 
     if end_local_time <= start_local_time:
         raise ValueError("end_local_time must be strictly after start_local_time.")
+
+    existing_overlap = find_overlapping_availability_pattern(
+        doctor_id,
+        day_of_week,
+        start_local_time,
+        end_local_time,
+    )
+    if existing_overlap:
+        raise ValueError(
+            "Availability overlaps with an existing pattern for this doctor: "
+            f"{start_local_time}-{end_local_time} conflicts with "
+            f"{existing_overlap['start_local_time']}-{existing_overlap['end_local_time']}."
+        )
 
     ct_id = body.get("consultation_type_id")
     if not isinstance(ct_id, str) or not ct_id.strip():
@@ -977,6 +1035,20 @@ def update_availability(
     end_local_time = _validate_time_str(body.get("end_local_time"), "end_local_time")
     if end_local_time <= start_local_time:
         raise ValueError("end_local_time must be after start_local_time.")
+
+    existing_overlap = find_overlapping_availability_pattern(
+        doctor_id,
+        day_of_week,
+        start_local_time,
+        end_local_time,
+        pattern_id,
+    )
+    if existing_overlap:
+        raise ValueError(
+            "Availability overlaps with an existing pattern for this doctor: "
+            f"{start_local_time}-{end_local_time} conflicts with "
+            f"{existing_overlap['start_local_time']}-{existing_overlap['end_local_time']}."
+        )
 
     consultation_type_id = body.get("consultation_type_id")
     if not isinstance(consultation_type_id, str) or not consultation_type_id.strip():
