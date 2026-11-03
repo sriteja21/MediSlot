@@ -6,7 +6,7 @@ Responsibilities:
 - Consultation types (list, create, update, soft-delete)
 - Availability patterns (list active, create, delete)
 - Blackout dates (list with date range, add with duplicate check, delete)
-- Schedule day-view (DynamoDB gsi_doctor_time query enriched with RDS appointment counts)
+- Schedule day-view (DynamoDB GSI1-DoctorStart query enriched with RDS appointment counts)
 - Doctor dashboard (aggregated profile, upcoming appointments, today's slots, patients served)
 
 Security & Auth:
@@ -26,6 +26,7 @@ import uuid
 from datetime import date, datetime, time as time_type, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -111,6 +112,44 @@ def get_slots_table():
         _dynamodb_resource = boto3.resource("dynamodb", region_name=AWS_REGION)
         _slots_table = _dynamodb_resource.Table(SLOTS_TABLE_NAME)
     return _slots_table
+
+
+def get_local_day_utc_bounds(day: date, timezone_name: str) -> tuple[datetime, datetime]:
+    local_timezone = ZoneInfo(timezone_name or "UTC")
+    local_start = datetime.combine(day, time_type.min, tzinfo=local_timezone)
+    local_end = datetime.combine(day + timedelta(days=1), time_type.min, tzinfo=local_timezone)
+    return (
+        local_start.astimezone(timezone.utc),
+        local_end.astimezone(timezone.utc),
+    )
+
+
+def query_doctor_slots(
+    doctor_id: str,
+    utc_start: datetime,
+    utc_end: datetime,
+) -> list[dict[str, Any]]:
+    start_key = utc_start.strftime("%Y-%m-%dT%H:%M:%SZ") + "#"
+    end_key = utc_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    table = get_slots_table()
+    slots: list[dict[str, Any]] = []
+    query_args = {
+        "IndexName": "GSI1-DoctorStart",
+        "KeyConditionExpression": (
+            Key("doctorId").eq(doctor_id)
+            & Key("startUtcConsultationType").between(start_key, end_key)
+        ),
+    }
+
+    while True:
+        result = table.query(**query_args)
+        slots.extend(result.get("Items", []))
+        last_key = result.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        query_args["ExclusiveStartKey"] = last_key
+
+    return slots
 
 
 # ============================================================
@@ -964,9 +1003,8 @@ def delete_blackout(doctor_id: str, blackout_id: str) -> dict[str, Any]:
 def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]:
     """
     GET /doctors/me/schedule?date=YYYY-MM-DD
-    Day-view: query DynamoDB gsi_doctor_time for that day's slots filtering
-    start_time between date 00:00:00Z and date 23:59:59Z; enrich with appointment
-    counts from RDS appointments table.
+    Day-view: query GSI1-DoctorStart over the doctor's local day and enrich
+    the slots with appointment counts from RDS.
     """
     date_str = query_params.get("date")
     if not date_str or not date_str.strip():
@@ -978,45 +1016,22 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
     except ValueError:
         raise ValueError("Query parameter 'date' must be in YYYY-MM-DD format.")
 
-    # Primary range per specification: "date 00:00:00Z" to "date 23:59:59Z"
-    start_time_min = f"{clean_date_str} 00:00:00Z"
-    start_time_max = f"{clean_date_str} 23:59:59Z"
+    doctor_rows = execute_query(
+        "SELECT timezone FROM doctors WHERE id = %s",
+        (doctor_id,),
+    )
+    if not doctor_rows:
+        return format_response(404, {"error": "Doctor not found."})
 
-    table = get_slots_table()
-    slots: list[dict[str, Any]] = []
-
+    timezone_name = str(doctor_rows[0].get("timezone") or "UTC")
     try:
-        response = table.query(
-            IndexName="gsi_doctor_time",
-            KeyConditionExpression=(
-                Key("doctor_id").eq(doctor_id)
-                & Key("start_time").between(start_time_min, start_time_max)
-            ),
-        )
-        slots = response.get("Items", [])
+        utc_start, utc_end = get_local_day_utc_bounds(parsed_date, timezone_name)
+    except Exception as exc:
+        raise ValueError("Doctor timezone is invalid.") from exc
 
-        # If zero items found, also attempt ISO format with 'T' separator
-        if not slots:
-            alt_response = table.query(
-                IndexName="gsi_doctor_time",
-                KeyConditionExpression=(
-                    Key("doctor_id").eq(doctor_id)
-                    & Key("start_time").between(
-                        f"{clean_date_str}T00:00:00Z",
-                        f"{clean_date_str}T23:59:59Z",
-                    )
-                ),
-            )
-            slots = alt_response.get("Items", [])
-
-    except ClientError as exc:
-        logger.warning(
-            "DynamoDB query failed for schedule (doctor_id=%s, date=%s): %s",
-            doctor_id,
-            clean_date_str,
-            exc,
-        )
-        slots = []
+    slots = query_doctor_slots(doctor_id, utc_start, utc_end)
+    utc_start_db = utc_start.replace(tzinfo=None)
+    utc_end_db = utc_end.replace(tzinfo=None)
 
     # Enrich with appointment counts from RDS appointments table
     rds_counts_query = """
@@ -1027,10 +1042,15 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
             SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
             SUM(CASE WHEN status IN ('CONFIRMED', 'COMPLETED') THEN 1 ELSE 0 END) AS active_count
         FROM appointments
-        WHERE doctor_id = %s AND DATE(slot_start_utc) = %s
+        WHERE doctor_id = %s
+          AND slot_start_utc >= %s
+          AND slot_start_utc < %s
         GROUP BY slot_id
     """
-    count_rows = execute_query(rds_counts_query, (doctor_id, clean_date_str))
+    count_rows = execute_query(
+        rds_counts_query,
+        (doctor_id, utc_start_db, utc_end_db),
+    )
 
     counts_by_slot: dict[str, dict[str, int]] = {}
     for cr in count_rows:
@@ -1043,7 +1063,7 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
         }
 
     for slot in slots:
-        s_id = slot.get("slot_id")
+        s_id = slot.get("slotId") or slot.get("slot_id")
         slot_counts = counts_by_slot.get(
             s_id,
             {"total": 0, "confirmed": 0, "completed": 0, "active": 0},
@@ -1068,10 +1088,15 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
             fee_amount,
             booked_at
         FROM appointments
-        WHERE doctor_id = %s AND DATE(slot_start_utc) = %s
+        WHERE doctor_id = %s
+          AND slot_start_utc >= %s
+          AND slot_start_utc < %s
         ORDER BY slot_start_utc ASC
     """
-    appointments = execute_query(appointments_query, (doctor_id, clean_date_str))
+    appointments = execute_query(
+        appointments_query,
+        (doctor_id, utc_start_db, utc_end_db),
+    )
     for appt in appointments:
         appt["fee_amount"] = float(appt["fee_amount"])
 
@@ -1149,41 +1174,27 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     upcoming_rows = execute_query(upcoming_query, (doctor_id,))
     upcoming_appointments_count = int(upcoming_rows[0]["cnt"]) if upcoming_rows else 0
 
-    # 3. Today's slots count from DynamoDB gsi_doctor_time
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # 3. Today's slots count from DynamoDB GSI1-DoctorStart
     today_slots_count = 0
+    timezone_name = str(profile.get("timezone") or "UTC")
+    local_today = datetime.now(ZoneInfo(timezone_name)).date()
+    utc_start, utc_end = get_local_day_utc_bounds(local_today, timezone_name)
 
     try:
-        table = get_slots_table()
-        res = table.query(
-            IndexName="gsi_doctor_time",
-            KeyConditionExpression=(
-                Key("doctor_id").eq(doctor_id)
-                & Key("start_time").between(f"{today_str} 00:00:00Z", f"{today_str} 23:59:59Z")
-            ),
-        )
-        today_items = res.get("Items", [])
-        if not today_items:
-            alt_res = table.query(
-                IndexName="gsi_doctor_time",
-                KeyConditionExpression=(
-                    Key("doctor_id").eq(doctor_id)
-                    & Key("start_time").between(f"{today_str}T00:00:00Z", f"{today_str}T23:59:59Z")
-                ),
-            )
-            today_items = alt_res.get("Items", [])
-        today_slots_count = len(today_items)
+        today_slots_count = len(query_doctor_slots(doctor_id, utc_start, utc_end))
     except Exception as exc:
         logger.warning("Could not query DynamoDB for dashboard today's slots: %s", exc)
-        # Fallback to distinct slot count in appointments table for today
-        try:
-            rds_slots = execute_query(
-                "SELECT COUNT(DISTINCT slot_id) AS cnt FROM appointments WHERE doctor_id = %s AND DATE(slot_start_utc) = CURRENT_DATE()",
-                (doctor_id,),
-            )
-            today_slots_count = int(rds_slots[0]["cnt"]) if rds_slots else 0
-        except Exception:
-            today_slots_count = 0
+        rds_slots = execute_query(
+            """
+            SELECT COUNT(DISTINCT slot_id) AS cnt
+            FROM appointments
+            WHERE doctor_id = %s
+              AND slot_start_utc >= %s
+              AND slot_start_utc < %s
+            """,
+            (doctor_id, utc_start.replace(tzinfo=None), utc_end.replace(tzinfo=None)),
+        )
+        today_slots_count = int(rds_slots[0]["cnt"]) if rds_slots else 0
 
     # 4. Total patients served (distinct patients with COMPLETED appointments)
     patients_query = """

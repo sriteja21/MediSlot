@@ -34,6 +34,7 @@ env:
   IAM_TEMPLATE: infrastructure/cloudformation/iam-stack.yml
   INIT_TEMPLATE: infrastructure/cloudformation/init-stack.yml
   APPLICATION_TEMPLATE: infrastructure/cloudformation/application-stack.yml
+  EC2_TEMPLATE: infrastructure/cloudformation/ec2-app-stack.yml
 
 # ============================================================
 # VALIDATE ALL TEMPLATES
@@ -92,7 +93,8 @@ jobs:
             "$DATA_TEMPLATE" \
             "$IAM_TEMPLATE" \
             "$INIT_TEMPLATE" \
-            "$APPLICATION_TEMPLATE"
+            "$APPLICATION_TEMPLATE" \
+            "$EC2_TEMPLATE"
           do
             if [ ! -f "$template" ]; then
               echo "::error::Template not found: $template"
@@ -112,7 +114,8 @@ jobs:
             "$DATA_TEMPLATE" \
             "$IAM_TEMPLATE" \
             "$INIT_TEMPLATE" \
-            "$APPLICATION_TEMPLATE"
+            "$APPLICATION_TEMPLATE" \
+            "$EC2_TEMPLATE"
           do
             echo "========================================"
             echo "Validating $template"
@@ -219,7 +222,8 @@ jobs:
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
-              Environment="$ENVIRONMENT"
+              Environment="$ENVIRONMENT" \
+              DBMasterPassword="${{ secrets.MEDISLOT_DB_MASTER_PASSWORD }}"
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -526,6 +530,80 @@ jobs:
             --output text
 
 # ============================================================
+# DEPLOY EC2 FLASK PORTAL
+# ============================================================
+
+  deploy-ec2-app:
+    name: Deploy EC2 Flask Portal
+    runs-on: ubuntu-latest
+    needs: deploy-application
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload Flask artifact and deploy EC2 stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          STACK_NAME="MediSlot-EC2Portal-${ENVIRONMENT}"
+          ARTIFACT_KEY="ec2-app/${GITHUB_SHA}.zip"
+          ARTIFACT_PATH="${GITHUB_WORKSPACE}/medislot-ec2-app.zip"
+          REPORTS_BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue | [0]" \
+            --output text)"
+
+          (cd src/ec2_app && zip -qr "$ARTIFACT_PATH" .)
+          aws s3 cp "$ARTIFACT_PATH" "s3://${REPORTS_BUCKET}/${ARTIFACT_KEY}" \
+            --region "$AWS_REGION"
+
+          PARAMETERS=(Environment="$ENVIRONMENT" AppArtifactKey="$ARTIFACT_KEY")
+          CERTIFICATE_ARN="${{ vars.MEDISLOT_ACM_CERTIFICATE_ARN }}"
+          PORTAL_DOMAIN="${{ vars.MEDISLOT_PORTAL_DOMAIN }}"
+          if [[ -n "$CERTIFICATE_ARN" ]]; then
+            PARAMETERS+=(SSLCertificateArn="$CERTIFICATE_ARN")
+          fi
+          if [[ -n "$PORTAL_DOMAIN" ]]; then
+            PARAMETERS+=(PortalDomainName="$PORTAL_DOMAIN")
+          fi
+
+          aws cloudformation deploy \
+            --template-file "$EC2_TEMPLATE" \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${PARAMETERS[@]}"
+
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
+
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApplicationUrl'].OutputValue | [0]" \
+            --output text
+
+# ============================================================
 # DEPLOYMENT SUMMARY
 # ============================================================
 
@@ -539,6 +617,7 @@ jobs:
       - deploy-iam
       - deploy-database-initializer
       - deploy-application
+      - deploy-ec2-app
 
     if: >
       always() &&
@@ -564,13 +643,15 @@ jobs:
           echo "IAM: ${{ needs.deploy-iam.result }}"
           echo "Database Initializer: ${{ needs.deploy-database-initializer.result }}"
           echo "Authentication/Authorization: ${{ needs.deploy-application.result }}"
+          echo "EC2 Flask Portal: ${{ needs.deploy-ec2-app.result }}"
           echo "========================================"
 
           if [[ "${{ needs.deploy-network.result }}" != "success" ||
                 "${{ needs.deploy-data.result }}" != "success" ||
                 "${{ needs.deploy-iam.result }}" != "success" ||
                 "${{ needs.deploy-database-initializer.result }}" != "success" ||
-                "${{ needs.deploy-application.result }}" != "success" ]]; then
+                "${{ needs.deploy-application.result }}" != "success" ||
+                "${{ needs.deploy-ec2-app.result }}" != "success" ]]; then
             echo "::error::One or more MediSlot deployment jobs failed or were skipped."
             exit 1
           fi

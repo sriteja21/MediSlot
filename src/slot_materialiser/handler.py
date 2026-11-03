@@ -3,7 +3,7 @@ MediSlot Slot Materialiser Lambda
 
 Generates appointment slots for the rolling 30-day window [tomorrow, today + 30 days]
 based on active availability patterns and consultation types, excluding blackout dates.
-Slots are written idempotently into DynamoDB with ConditionExpression=Attr('slot_id').not_exists().
+Slots are written idempotently into DynamoDB with ConditionExpression=Attr('slotId').not_exists().
 """
 
 import logging
@@ -11,6 +11,8 @@ import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 # Ensure src root is in sys.path so shared imports work
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -80,30 +82,21 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
     Main Lambda entrypoint.
 
-    Materialises slots for the next 30 days:
-    1. Determine rolling window [tomorrow, today + 30 days] in UTC.
+    Materialises slots for the next 30 local calendar days:
+    1. Determine each doctor's rolling window [local tomorrow, local today + 30 days].
     2. Query active doctors, their active availability patterns and consultation types.
     3. Query blackout dates for active doctors within the window.
     4. For each weekday matching pattern:
        - Generate slots from start_local_time to end_local_time in steps of duration_minutes.
-       - Treat times directly as UTC.
-       - Put item to DynamoDB with condition attribute_not_exists(slot_id).
+         - Interpret availability times in the doctor's configured timezone.
+         - Put item to DynamoDB with condition attribute_not_exists(slotId).
     5. Log summary and return stats.
     """
     logger.info("Starting slot materialisation run. table=%s environment=%s", SLOTS_TABLE_NAME, ENVIRONMENT)
 
-    today = datetime.now(timezone.utc).date()
-    start_date = today + timedelta(days=1)
-    end_date = today + timedelta(days=30)
-
-    logger.info("Materialisation window: %s to %s (inclusive)", start_date.isoformat(), end_date.isoformat())
-
-    # Build the list of dates in the window
-    dates_in_window: list[date] = []
-    curr = start_date
-    while curr <= end_date:
-        dates_in_window.append(curr)
-        curr += timedelta(days=1)
+    now_utc = datetime.now(timezone.utc)
+    fallback_start_date = now_utc.date() + timedelta(days=1)
+    fallback_end_date = now_utc.date() + timedelta(days=30)
 
     # 1. Query active doctors with active patterns and consultation types
     query_patterns = """
@@ -135,8 +128,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "statusCode": 200,
             "body": {
                 "message": "No active availability patterns to process.",
-                "window_start": start_date.isoformat(),
-                "window_end": end_date.isoformat(),
+                "window_start": fallback_start_date.isoformat(),
+                "window_end": fallback_end_date.isoformat(),
                 "total_generated": 0,
                 "total_skipped": 0,
             },
@@ -148,8 +141,51 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         doc_id = str(p["doctor_id"])
         doctor_patterns.setdefault(doc_id, []).append(p)
 
+    doctor_windows: dict[str, tuple[Any, list[date]]] = {}
+    window_start_dates: list[date] = []
+    window_end_dates: list[date] = []
+    for doc_id, doc_pattern_list in doctor_patterns.items():
+        try:
+            doctor_timezone = ZoneInfo(
+                str(doc_pattern_list[0].get("doctor_timezone") or "UTC")
+            )
+        except Exception:
+            logger.exception("Invalid timezone for doctor %s; skipping doctor", doc_id)
+            continue
+
+        local_today = now_utc.astimezone(doctor_timezone).date()
+        local_start_date = local_today + timedelta(days=1)
+        local_end_date = local_today + timedelta(days=30)
+        dates_in_window = [
+            local_start_date + timedelta(days=offset)
+            for offset in range(30)
+        ]
+        doctor_windows[doc_id] = (doctor_timezone, dates_in_window)
+        window_start_dates.append(local_start_date)
+        window_end_dates.append(local_end_date)
+
+    if not doctor_windows:
+        return {
+            "statusCode": 200,
+            "body": {
+                "message": "No valid doctor timezones to process.",
+                "window_start": fallback_start_date.isoformat(),
+                "window_end": fallback_end_date.isoformat(),
+                "total_generated": 0,
+                "total_skipped": 0,
+            },
+        }
+
+    window_start = min(window_start_dates)
+    window_end = max(window_end_dates)
+    logger.info(
+        "Materialisation local-date range across doctors: %s to %s (inclusive)",
+        window_start.isoformat(),
+        window_end.isoformat(),
+    )
+
     # 2. Query blackout dates for these doctors within the window
-    doctor_ids = list(doctor_patterns.keys())
+    doctor_ids = list(doctor_windows.keys())
     blackouts_by_doctor: dict[str, set[date]] = {doc_id: set() for doc_id in doctor_ids}
 
     # Query blackouts in batches or using IN clause
@@ -160,7 +196,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         WHERE doctor_id IN ({format_strings})
           AND blackout_date BETWEEN %s AND %s
     """
-    params = tuple(doctor_ids) + (start_date, end_date)
+    params = tuple(doctor_ids) + (window_start, window_end)
     blackout_rows = execute_query(query_blackouts, params)
 
     for row in blackout_rows:
@@ -176,6 +212,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # 3. Generate slots
     for doc_id, doc_pattern_list in doctor_patterns.items():
+        if doc_id not in doctor_windows:
+            continue
+        doctor_timezone, dates_in_window = doctor_windows[doc_id]
         doc_blackouts = blackouts_by_doctor.get(doc_id, set())
 
         for p in doc_pattern_list:
@@ -212,17 +251,24 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     continue
 
                 # Generate slots across the pattern time window
-                slot_start_dt = datetime.combine(target_date, start_t, tzinfo=timezone.utc)
-                pattern_end_dt = datetime.combine(target_date, end_t, tzinfo=timezone.utc)
+                slot_start_dt = datetime.combine(target_date, start_t, tzinfo=doctor_timezone)
+                pattern_end_dt = datetime.combine(target_date, end_t, tzinfo=doctor_timezone)
 
                 while slot_start_dt + step <= pattern_end_dt:
                     slot_end_dt = slot_start_dt + step
-                    start_epoch = int(slot_start_dt.timestamp())
-                    slot_id = f"{consultation_type_id}#{start_epoch}"
+                    start_utc = slot_start_dt.astimezone(timezone.utc)
+                    end_utc = slot_end_dt.astimezone(timezone.utc)
+                    start_epoch = int(start_utc.timestamp())
+                    slot_id = str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"medislot:{consultation_type_id}:{start_epoch}",
+                        )
+                    )
                     expires_at = start_epoch + (7 * 86400)  # TTL: start_epoch + 7 days
 
-                    start_iso = slot_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    end_iso = slot_end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    start_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    end_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
                     item = {
                         "slot_id": slot_id,
@@ -243,7 +289,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     try:
                         slots_table.put_item(
                             Item=item,
-                            ConditionExpression=Attr("slot_id").not_exists(),
+                            ConditionExpression=Attr("slotId").not_exists(),
                         )
                         total_generated += 1
                     except ClientError as exc:
@@ -268,8 +314,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "statusCode": 200,
         "body": {
             "message": "Slot materialisation completed successfully.",
-            "window_start": start_date.isoformat(),
-            "window_end": end_date.isoformat(),
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
             "total_generated": total_generated,
             "total_skipped": total_skipped,
         },

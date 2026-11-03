@@ -309,6 +309,8 @@ Resources:
                   - logs:PutLogEvents
                 Resource:
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-ApiFunction-${Environment}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-DoctorFunction-${Environment}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-SlotMaterialiser-${Environment}:*"
 
         - PolicyName: !Sub "MediSlot-ApiReadSecrets-${Environment}"
           PolicyDocument:

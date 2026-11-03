@@ -34,6 +34,11 @@ Parameters:
     Default: 10.0.1.0/24
     Description: CIDR range for the public subnet.
 
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 10.0.4.0/24
+    Description: CIDR range for the second public subnet used by the application load balancer.
+
   PrivateSubnet1Cidr:
     Type: String
     Default: 10.0.2.0/24
@@ -128,6 +133,25 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  MediSlotPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs:
+              Ref: Region
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-PublicSubnet2-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
   # ----------------------------------------------------------
   # PRIVATE SUBNET 1
   # ----------------------------------------------------------
@@ -202,6 +226,12 @@ Resources:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref MediSlotPublicSubnet
+      RouteTableId: !Ref MediSlotPublicRouteTable
+
+  MediSlotPublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MediSlotPublicSubnet2
       RouteTableId: !Ref MediSlotPublicRouteTable
 
   # ----------------------------------------------------------
@@ -392,6 +422,12 @@ Outputs:
     Value: !Ref MediSlotPublicSubnet
     Export:
       Name: !Sub "MediSlot-PublicSubnetId-${Environment}"
+
+  PublicSubnet2Id:
+    Description: MediSlot public subnet 2 ID for load balancers.
+    Value: !Ref MediSlotPublicSubnet2
+    Export:
+      Name: !Sub "MediSlot-PublicSubnet2Id-${Environment}"
 
   PrivateSubnet1Id:
     Description: MediSlot private subnet 1 ID

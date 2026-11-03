@@ -1,0 +1,344 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  MediSlot Flask doctor portal on EC2 behind an internet-facing Application
+  Load Balancer. Nginx proxies to Gunicorn; HTTPS is enabled when an ACM
+  certificate ARN is supplied.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment.
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+    Description: EC2 instance size for the Flask application.
+
+  AppArtifactKey:
+    Type: String
+    Description: Versioned key of the Flask application ZIP in the reports bucket.
+
+  SSLCertificateArn:
+    Type: String
+    Default: ""
+    Description: Optional ACM certificate ARN. Required for production deployments.
+
+  PortalDomainName:
+    Type: String
+    Default: ""
+    Description: DNS name covered by the ACM certificate, with its DNS record pointing to the load balancer.
+
+Rules:
+  ProductionRequiresTls:
+    RuleCondition:
+      Fn::Equals:
+        - !Ref Environment
+        - prod
+    Assertions:
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - !Ref SSLCertificateArn
+                - ""
+        AssertDescription: Production requires a valid ACM certificate ARN.
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - !Ref PortalDomainName
+                - ""
+        AssertDescription: Production requires a portal DNS name for the ACM certificate.
+
+  CertificateRequiresDomain:
+    RuleCondition:
+      Fn::Not:
+        - Fn::Equals:
+            - !Ref SSLCertificateArn
+            - ""
+    Assertions:
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - !Ref PortalDomainName
+                - ""
+        AssertDescription: Set PortalDomainName when an ACM certificate is configured.
+
+Conditions:
+  HasTlsCertificate:
+    Fn::Not:
+      - Fn::Equals:
+          - !Ref SSLCertificateArn
+          - ""
+
+Resources:
+  MediSlotLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP and HTTPS access to the MediSlot portal load balancer.
+      VpcId:
+        Fn::ImportValue: !Sub "MediSlot-VpcId-${Environment}"
+      SecurityGroupIngress:
+        - Description: HTTP access
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - Description: HTTPS access
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - Description: Forward requests to the EC2 application instance.
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-Portal-ALB-SG-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permit Nginx traffic only from the MediSlot load balancer.
+      VpcId:
+        Fn::ImportValue: !Sub "MediSlot-VpcId-${Environment}"
+      SecurityGroupIngress:
+        - Description: Nginx from the application load balancer.
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref MediSlotLoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - Description: Allow package downloads and AWS API access during bootstrap.
+          IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-Portal-Instance-SG-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MediSlot-Portal-InstanceRole-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "MediSlot-ReadPortalArtifact-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  Fn::Sub:
+                    - "${ReportsBucketArn}/ec2-app/*"
+                    - ReportsBucketArn:
+                        Fn::ImportValue: !Sub "MediSlot-ReportsBucketArn-${Environment}"
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-Portal-InstanceRole-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "MediSlot-Portal-InstanceProfile-${Environment}"
+      Roles:
+        - !Ref MediSlotInstanceRole
+
+  MediSlotApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "MediSlot-Portal-${Environment}"
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      SecurityGroups:
+        - !Ref MediSlotLoadBalancerSecurityGroup
+      Subnets:
+        - Fn::ImportValue: !Sub "MediSlot-PublicSubnetId-${Environment}"
+        - Fn::ImportValue: !Sub "MediSlot-PublicSubnet2Id-${Environment}"
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotApplicationTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "MediSlot-Portal-${Environment}"
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId:
+        Fn::ImportValue: !Sub "MediSlot-VpcId-${Environment}"
+      HealthCheckEnabled: true
+      HealthCheckPath: /healthz
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: "200"
+      Targets:
+        - Id: !Ref MediSlotApplicationInstance
+          Port: 80
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotHttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref MediSlotApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - !If
+          - HasTlsCertificate
+          - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: "443"
+              StatusCode: HTTP_301
+          - Type: forward
+            TargetGroupArn: !Ref MediSlotApplicationTargetGroup
+
+  MediSlotHttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasTlsCertificate
+    Properties:
+      LoadBalancerArn: !Ref MediSlotApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref SSLCertificateArn
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MediSlotApplicationTargetGroup
+
+  MediSlotApplicationInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref MediSlotInstanceProfile
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          SubnetId:
+            Fn::ImportValue: !Sub "MediSlot-PublicSubnetId-${Environment}"
+          AssociatePublicIpAddress: true
+          GroupSet:
+            - !Ref MediSlotInstanceSecurityGroup
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -euo pipefail
+              dnf install -y awscli python3.11 python3.11-pip nginx unzip
+              mkdir -p /opt/medislot/app /etc/medislot
+              aws s3 cp "s3://${ReportsBucket}/${AppArtifactKey}" /tmp/medislot-app.zip
+              unzip -q /tmp/medislot-app.zip -d /opt/medislot/app
+              python3.11 -m venv /opt/medislot/venv
+              /opt/medislot/venv/bin/pip install --upgrade pip
+              /opt/medislot/venv/bin/pip install -r /opt/medislot/app/requirements.txt
+              printf 'API_BASE_URL=%s\nSECRET_KEY=%s\nCOOKIE_SECURE=%s\n' '${ApiBaseUrl}' "$(openssl rand -hex 32)" '${CookieSecure}' > /etc/medislot/app.env
+              chmod 600 /etc/medislot/app.env
+              cat > /etc/systemd/system/medislot.service <<'SERVICE'
+              [Unit]
+              Description=MediSlot Flask portal
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              Type=simple
+              User=ec2-user
+              Group=ec2-user
+              WorkingDirectory=/opt/medislot/app
+              EnvironmentFile=/etc/medislot/app.env
+              ExecStart=/opt/medislot/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8000 app:app
+              Restart=on-failure
+              RestartSec=5
+
+              [Install]
+              WantedBy=multi-user.target
+              SERVICE
+              cat > /etc/nginx/conf.d/medislot.conf <<'NGINX'
+              server {
+                  listen 80 default_server;
+                  server_name _;
+
+                  location / {
+                      proxy_pass http://127.0.0.1:8000;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+                  }
+              }
+              NGINX
+              rm -f /etc/nginx/conf.d/default.conf
+              chown -R ec2-user:ec2-user /opt/medislot
+              systemctl daemon-reload
+              systemctl enable --now medislot nginx
+            - ReportsBucket:
+                Fn::ImportValue: !Sub "MediSlot-ReportsBucketName-${Environment}"
+              AppArtifactKey: !Ref AppArtifactKey
+              ApiBaseUrl:
+                Fn::ImportValue: !Sub "MediSlot-ApiUrl-${Environment}"
+              CookieSecure: !If [HasTlsCertificate, "true", "false"]
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-Portal-Instance-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  ApplicationUrl:
+    Description: MediSlot doctor portal URL.
+    Value: !If
+      - HasTlsCertificate
+      - !Sub "https://${PortalDomainName}"
+      - !Sub "http://${MediSlotApplicationLoadBalancer.DNSName}"
+    Export:
+      Name: !Sub "MediSlot-PortalUrl-${Environment}"
+
+  ApplicationInstanceId:
+    Description: EC2 instance running the Flask portal.
+    Value: !Ref MediSlotApplicationInstance

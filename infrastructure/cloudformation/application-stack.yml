@@ -1,11 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  MediSlot Authentication and Authorization Stack.
-  Creates the shared Python Lambda Layer, API Gateway, Authentication Lambda,
-  and JWT Authorization Lambda.
+  MediSlot application stack.
+  Creates the shared Python Lambda Layer, API Gateway, authentication and
+  authorization Lambdas, doctor API, and scheduled slot materializer.
   Uses existing Network, Data, and IAM stack exports.
-  Does not create business or appointment APIs.
 
 # ============================================================
 # PARAMETERS
@@ -363,6 +362,168 @@ Resources:
           REFRESH_TOKENS_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-RefreshTokensTableName-${Environment}"
+
+  # ==========================================================
+  # DOCTOR BUSINESS API
+  # ==========================================================
+
+  MediSlotDoctorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-DoctorFunction-${Environment}"
+      Description: !Sub "MediSlot doctor profile and schedule API (${Environment})."
+      CodeUri: ../../src/doctor/
+      Handler: handler.lambda_handler
+      Timeout: 30
+      MemorySize: 512
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          PROFILE_PHOTO_BUCKET:
+            Fn::ImportValue:
+              !Sub "MediSlot-ProfilePhotosBucketName-${Environment}"
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsTableName-${Environment}"
+      Events:
+        DoctorProfileGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me
+            Method: GET
+        DoctorProfilePatch:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me
+            Method: PATCH
+        DoctorPhotoUploadUrl:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/photo-upload-url
+            Method: GET
+        ConsultationTypesGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/consultation-types
+            Method: GET
+        ConsultationTypesPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/consultation-types
+            Method: POST
+        ConsultationTypePatch:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/consultation-types/{id}
+            Method: PATCH
+        ConsultationTypeDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/consultation-types/{id}
+            Method: DELETE
+        AvailabilityGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/availability
+            Method: GET
+        AvailabilityPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/availability
+            Method: POST
+        AvailabilityDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/availability/{id}
+            Method: DELETE
+        BlackoutsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/blackouts
+            Method: GET
+        BlackoutsPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/blackouts
+            Method: POST
+        BlackoutDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/blackouts/{id}
+            Method: DELETE
+        DoctorScheduleGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/schedule
+            Method: GET
+        DoctorDashboardGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/dashboard
+            Method: GET
+
+  # ==========================================================
+  # DAILY SLOT MATERIALISER
+  # ==========================================================
+
+  MediSlotSlotMaterialiserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-SlotMaterialiser-${Environment}"
+      Description: !Sub "Materializes the rolling MediSlot appointment window (${Environment})."
+      CodeUri: ../../src/slot_materialiser/
+      Handler: handler.lambda_handler
+      Timeout: 900
+      MemorySize: 512
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsTableName-${Environment}"
+      Events:
+        DailyMaterialisation:
+          Type: Schedule
+          Properties:
+            Schedule: "cron(0 0 * * ? *)"
+            Enabled: true
 
 # ============================================================
 # OUTPUTS

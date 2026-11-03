@@ -22,6 +22,7 @@ from flask import (
     request,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # ============================================================
 # APP CONFIGURATION
@@ -31,9 +32,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("medislot_ec2_app")
 
 app = Flask(__name__)
-app.secret_key = os.environ.get(
-    "SECRET_KEY",
-    "medislot-ec2-secret-key-2026-secure-default",
+app.secret_key = os.environ.get("SECRET_KEY")
+if not app.secret_key:
+    raise RuntimeError("SECRET_KEY must be configured for the Flask application.")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in {"true", "1"}
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=COOKIE_SECURE,
 )
 
 API_BASE_URL = os.environ.get(
@@ -136,7 +143,7 @@ def update_cookies_after_refresh(response):
             new_token,
             httponly=True,
             samesite="Lax",
-            secure=request.is_secure,
+            secure=COOKIE_SECURE,
             max_age=15 * 60,
         )
     return response
@@ -165,6 +172,11 @@ def index():
     if request.cookies.get("access_token") or request.cookies.get("refresh_token"):
         return redirect(url_for("doctor_dashboard"))
     return redirect(url_for("login"))
+
+
+@app.route("/healthz", methods=["GET"])
+def health_check():
+    return {"status": "ok"}, 200
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -200,7 +212,7 @@ def login():
             access_token,
             httponly=True,
             samesite="Lax",
-            secure=request.is_secure,
+            secure=COOKIE_SECURE,
             max_age=expires_in,
         )
         if refresh_token:
@@ -209,7 +221,7 @@ def login():
                 refresh_token,
                 httponly=True,
                 samesite="Lax",
-                secure=request.is_secure,
+                secure=COOKIE_SECURE,
                 max_age=refresh_expires_in,
             )
         flash("Welcome back! You have successfully signed in.", "success")
