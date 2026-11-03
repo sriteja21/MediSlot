@@ -3,7 +3,7 @@ MediSlot Slot Materialiser Lambda
 
 Generates appointment slots for the rolling 30-day window [tomorrow, today + 30 days]
 based on active availability patterns and consultation types, excluding blackout dates.
-Slots are written idempotently into DynamoDB with ConditionExpression=Attr('slotId').not_exists().
+Slots are written idempotently into DynamoDB with ConditionExpression=Attr('slot_id').not_exists().
 """
 
 import logging
@@ -11,7 +11,6 @@ import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
 # Ensure src root is in sys.path so shared imports work
@@ -89,12 +88,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     Materialises slots for the next 30 local calendar days:
     1. Determine each doctor's rolling window [local tomorrow, local today + 30 days].
-    2. Query active doctors, their active availability patterns and consultation types.
-    3. Query blackout dates for active doctors within the window.
+    2. Query active users, their active availability patterns and consultation types.
+    3. Query blackout ranges for active doctors within the window.
     4. For each weekday matching pattern:
        - Generate slots from start_local_time to end_local_time in steps of duration_minutes.
          - Interpret availability times in the doctor's configured timezone.
-         - Put item to DynamoDB with condition attribute_not_exists(slotId).
+         - Put item to DynamoDB with condition attribute_not_exists(slot_id).
     5. Log summary and return stats.
     """
     logger.info("Starting slot materialisation run. table=%s environment=%s", SLOTS_TABLE_NAME, ENVIRONMENT)
@@ -106,23 +105,23 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # 1. Query active doctors with active patterns and consultation types
     query_patterns = """
         SELECT
-            d.id AS doctor_id,
-            d.full_name AS doctor_name,
+            d.doctor_id AS doctor_id,
             d.timezone AS doctor_timezone,
-            ap.id AS pattern_id,
+            ap.pattern_id AS pattern_id,
             ap.day_of_week,
-            ap.start_local_time,
-            ap.end_local_time,
-            ct.id AS consultation_type_id,
+            ap.start_time AS start_local_time,
+            ap.end_time AS end_local_time,
+            ct.consultation_type_id AS consultation_type_id,
             ct.duration_minutes,
             ct.capacity
         FROM doctors d
-        JOIN availability_patterns ap
-            ON ap.doctor_id = d.id AND ap.is_active = TRUE
+        JOIN users u ON u.user_id = d.user_id AND u.is_active = TRUE
         JOIN consultation_types ct
-            ON ct.id = ap.consultation_type_id AND ct.is_active = TRUE
-        WHERE d.is_active = TRUE
-        ORDER BY d.id, ap.day_of_week, ap.start_local_time
+            ON ct.doctor_id = d.doctor_id AND ct.is_active = TRUE
+        JOIN availability_patterns ap
+            ON ap.consultation_type_id = ct.consultation_type_id
+            AND ap.is_active = TRUE
+        ORDER BY d.doctor_id, ap.day_of_week, ap.start_time
     """
     patterns = execute_query(query_patterns)
     logger.info("Retrieved %d active availability patterns from database", len(patterns))
@@ -189,26 +188,44 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         window_end.isoformat(),
     )
 
-    # 2. Query blackout dates for these doctors within the window
+    # 2. Query blackout ranges for these doctors within the window
     doctor_ids = list(doctor_windows.keys())
-    blackouts_by_doctor: dict[str, set[date]] = {doc_id: set() for doc_id in doctor_ids}
+    blackouts_by_doctor: dict[str, list[tuple[datetime, datetime]]] = {
+        doc_id: [] for doc_id in doctor_ids
+    }
+
+    window_start_utc = min(
+        datetime.combine(dates[0], time.min, tzinfo=doctor_timezone).astimezone(timezone.utc)
+        for doctor_timezone, dates in doctor_windows.values()
+    ).replace(tzinfo=None)
+    window_end_utc = max(
+        datetime.combine(dates[-1] + timedelta(days=1), time.min, tzinfo=doctor_timezone)
+        .astimezone(timezone.utc)
+        for doctor_timezone, dates in doctor_windows.values()
+    ).replace(tzinfo=None)
 
     # Query blackouts in batches or using IN clause
     format_strings = ",".join(["%s"] * len(doctor_ids))
     query_blackouts = f"""
-        SELECT doctor_id, blackout_date
+        SELECT doctor_id, start_datetime, end_datetime
         FROM blackout_dates
         WHERE doctor_id IN ({format_strings})
-          AND blackout_date BETWEEN %s AND %s
+          AND start_datetime < %s
+          AND end_datetime > %s
     """
-    params = tuple(doctor_ids) + (window_start, window_end)
+    params = tuple(doctor_ids) + (window_end_utc, window_start_utc)
     blackout_rows = execute_query(query_blackouts, params)
 
     for row in blackout_rows:
         d_id = str(row["doctor_id"])
-        b_date = parse_date(row["blackout_date"])
+        blackout_start = row["start_datetime"]
+        blackout_end = row["end_datetime"]
+        if blackout_start.tzinfo is None:
+            blackout_start = blackout_start.replace(tzinfo=timezone.utc)
+        if blackout_end.tzinfo is None:
+            blackout_end = blackout_end.replace(tzinfo=timezone.utc)
         if d_id in blackouts_by_doctor:
-            blackouts_by_doctor[d_id].add(b_date)
+            blackouts_by_doctor[d_id].append((blackout_start, blackout_end))
 
     logger.info("Retrieved %d blackout date entries for active doctors in window", len(blackout_rows))
 
@@ -221,10 +238,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if doc_id not in doctor_windows:
             continue
         doctor_timezone, dates_in_window = doctor_windows[doc_id]
-        doc_blackouts = blackouts_by_doctor.get(doc_id, set())
+        doc_blackouts = blackouts_by_doctor.get(doc_id, [])
 
         for p in doc_pattern_list:
-            pattern_dow = int(p["day_of_week"])  # 1=Mon, ..., 7=Sun
+            pattern_dow = int(p["day_of_week"])  # 0=Sun, ..., 6=Sat
             duration_minutes = int(p["duration_minutes"])
             capacity = int(p["capacity"])
             consultation_type_id = str(p["consultation_type_id"])
@@ -248,12 +265,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             step = timedelta(minutes=duration_minutes)
 
             for target_date in dates_in_window:
-                # Match weekday: Python isoweekday() 1=Mon, 7=Sun
-                if target_date.isoweekday() != pattern_dow:
-                    continue
-
-                # Skip if date is blacked out for this doctor
-                if target_date in doc_blackouts:
+                # Translate Python weekday (Mon=0) to schema weekday (Sun=0).
+                if (target_date.weekday() + 1) % 7 != pattern_dow:
                     continue
 
                 day_key = (doc_id, target_date)
@@ -278,6 +291,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     slot_start_dt = pattern_start
                     while slot_start_dt + step <= pattern_end:
                         slot_end_dt = slot_start_dt + step
+                        slot_start_utc = slot_start_dt.astimezone(timezone.utc)
+                        slot_end_utc = slot_end_dt.astimezone(timezone.utc)
+                        if any(
+                            slot_start_utc < blackout_end
+                            and blackout_start < slot_end_utc
+                            for blackout_start, blackout_end in doc_blackouts
+                        ):
+                            slot_start_dt = slot_end_dt
+                            continue
                         candidate_overlaps = False
                         for existing_start, existing_end in day_ranges:
                             if slot_start_dt < existing_end and existing_start < slot_end_dt:
@@ -296,15 +318,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                             slot_start_dt = slot_end_dt
                             continue
 
-                        start_utc = slot_start_dt.astimezone(timezone.utc)
-                        end_utc = slot_end_dt.astimezone(timezone.utc)
+                        start_utc = slot_start_utc
+                        end_utc = slot_end_utc
                         start_epoch = int(start_utc.timestamp())
-                        slot_id = str(
-                            uuid5(
-                                NAMESPACE_URL,
-                                f"medislot:{consultation_type_id}:{start_epoch}",
-                            )
-                        )
+                        slot_id = f"{consultation_type_id}#{start_epoch}"
                         expires_at = start_epoch + (7 * 86400)  # TTL: start_epoch + 7 days
 
                         start_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -312,24 +329,20 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
                         item = {
                             "slot_id": slot_id,
-                            "slotId": slot_id,
                             "doctor_id": doc_id,
-                            "doctorId": doc_id,
                             "consultation_type_id": consultation_type_id,
                             "start_time": start_iso,
                             "end_time": end_iso,
-                            "startUtcConsultationType": f"{start_iso}#{consultation_type_id}",
                             "capacity": capacity,
                             "booked_count": 0,
                             "is_blocked": False,
                             "expires_at": expires_at,
-                            "ttl": expires_at,
                         }
 
                         try:
                             slots_table.put_item(
                                 Item=item,
-                                ConditionExpression=Attr("slotId").not_exists(),
+                                ConditionExpression=Attr("slot_id").not_exists(),
                             )
                             total_generated += 1
                         except ClientError as exc:

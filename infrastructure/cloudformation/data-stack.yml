@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  MediSlot data infrastructure. Creates private RDS MySQL, eight
+  MediSlot data infrastructure. Creates private RDS MySQL, six
   DynamoDB tables, and two private S3 buckets. Uses the naming
   convention MediSlot-Resource-Environment wherever supported.
 
@@ -193,7 +193,7 @@ Resources:
   # ==========================================================
 
   # Holds materialized appointment slots.
-  # slotId is deterministic so repeated materialization is idempotent.
+  # slot_id is <consultation_type_id>#<start epoch> for idempotent generation.
 
   MediSlotSlotsTable:
     Type: AWS::DynamoDB::Table
@@ -202,23 +202,23 @@ Resources:
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: slotId
+        - AttributeName: slot_id
           AttributeType: S
-        - AttributeName: doctorId
+        - AttributeName: doctor_id
           AttributeType: S
-        - AttributeName: startUtcConsultationType
+        - AttributeName: start_time
           AttributeType: S
 
       KeySchema:
-        - AttributeName: slotId
+        - AttributeName: slot_id
           KeyType: HASH
 
       GlobalSecondaryIndexes:
-        - IndexName: GSI1-DoctorStart
+        - IndexName: gsi_doctor_time
           KeySchema:
-            - AttributeName: doctorId
+            - AttributeName: doctor_id
               KeyType: HASH
-            - AttributeName: startUtcConsultationType
+            - AttributeName: start_time
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
@@ -231,7 +231,7 @@ Resources:
         SSEType: KMS
 
       TimeToLiveSpecification:
-        AttributeName: ttl
+        AttributeName: expires_at
         Enabled: true
 
       Tags:
@@ -243,51 +243,7 @@ Resources:
           Value: !Ref Environment
 
   # ==========================================================
-  # DYNAMODB TABLE 2: SEAT CLAIMS
-  # ==========================================================
-
-  # Records which patient holds a seat in a slot.
-  # The composite key prevents duplicate patient claims per slot.
-
-  MediSlotSeatClaimsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: !Sub "MediSlot-SeatClaims-${Environment}"
-      BillingMode: !Ref DynamoDBBillingMode
-
-      AttributeDefinitions:
-        - AttributeName: slotId
-          AttributeType: S
-        - AttributeName: patientId
-          AttributeType: S
-
-      KeySchema:
-        - AttributeName: slotId
-          KeyType: HASH
-        - AttributeName: patientId
-          KeyType: RANGE
-
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-
-      SSESpecification:
-        SSEEnabled: true
-        SSEType: KMS
-
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-
-      Tags:
-        - Key: Name
-          Value: !Sub "MediSlot-SeatClaims-${Environment}"
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  # ==========================================================
-  # DYNAMODB TABLE 3: IDEMPOTENCY
+  # DYNAMODB TABLE 2: IDEMPOTENCY KEYS
   # ==========================================================
 
   # Prevents duplicate appointment creation when a request is retried.
@@ -299,12 +255,16 @@ Resources:
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: idemKey
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: idempotency_key
           AttributeType: S
 
       KeySchema:
-        - AttributeName: idemKey
+        - AttributeName: user_id
           KeyType: HASH
+        - AttributeName: idempotency_key
+          KeyType: RANGE
 
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -314,7 +274,7 @@ Resources:
         SSEType: KMS
 
       TimeToLiveSpecification:
-        AttributeName: ttl
+        AttributeName: expires_at
         Enabled: true
 
       Tags:
@@ -326,13 +286,10 @@ Resources:
           Value: !Ref Environment
 
   # ==========================================================
-  # DYNAMODB TABLE 4: WAITLIST
+  # DYNAMODB TABLE 3: WAITLIST
   # ==========================================================
 
-  # Single-table design:
-  # Queue entry: PK = WL#<slotId>
-  # Membership:  PK = P#<patientId>, SK = WL#<slotId>
-  # Counter:     PK = P#<patientId>, SK = META
+  # Slot queue with patient lookup and join-order indexes.
 
   MediSlotWaitlistTable:
     Type: AWS::DynamoDB::Table
@@ -341,16 +298,38 @@ Resources:
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: PK
+        - AttributeName: slot_id
           AttributeType: S
-        - AttributeName: SK
+        - AttributeName: patient_id
+          AttributeType: S
+        - AttributeName: joined_at
           AttributeType: S
 
       KeySchema:
-        - AttributeName: PK
+        - AttributeName: slot_id
           KeyType: HASH
-        - AttributeName: SK
+        - AttributeName: patient_id
           KeyType: RANGE
+
+      LocalSecondaryIndexes:
+        - IndexName: lsi_queue
+          KeySchema:
+            - AttributeName: slot_id
+              KeyType: HASH
+            - AttributeName: joined_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+      GlobalSecondaryIndexes:
+        - IndexName: gsi_patient
+          KeySchema:
+            - AttributeName: patient_id
+              KeyType: HASH
+            - AttributeName: slot_id
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -358,6 +337,10 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
+
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
       Tags:
         - Key: Name
@@ -368,53 +351,28 @@ Resources:
           Value: !Ref Environment
 
   # ==========================================================
-  # DYNAMODB TABLE 5: HOLD OFFERS
+  # DYNAMODB TABLE 4: WAITLIST OFFER
   # ==========================================================
 
-  # Stores temporary offers sent to patients on a waitlist.
-  # GSI1 contains only live offers.
-  # GSI2 retrieves offers for a patient.
+  # Temporary seat offers to waiting patients.
 
-  MediSlotHoldOffersTable:
+  MediSlotWaitlistOfferTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "MediSlot-HoldOffers-${Environment}"
+      TableName: !Sub "MediSlot-WaitlistOffer-${Environment}"
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: offerId
+        - AttributeName: slot_id
           AttributeType: S
-        - AttributeName: liveBucket
-          AttributeType: S
-        - AttributeName: expiresAt
-          AttributeType: N
-        - AttributeName: patientId
-          AttributeType: S
-        - AttributeName: createdAt
+        - AttributeName: patient_id
           AttributeType: S
 
       KeySchema:
-        - AttributeName: offerId
+        - AttributeName: slot_id
           KeyType: HASH
-
-      GlobalSecondaryIndexes:
-        - IndexName: GSI1-LiveExpiry
-          KeySchema:
-            - AttributeName: liveBucket
-              KeyType: HASH
-            - AttributeName: expiresAt
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-
-        - IndexName: GSI2-PatientCreated
-          KeySchema:
-            - AttributeName: patientId
-              KeyType: HASH
-            - AttributeName: createdAt
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
+        - AttributeName: patient_id
+          KeyType: RANGE
 
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -424,22 +382,22 @@ Resources:
         SSEType: KMS
 
       TimeToLiveSpecification:
-        AttributeName: ttl
+        AttributeName: expires_at
         Enabled: true
 
       Tags:
         - Key: Name
-          Value: !Sub "MediSlot-HoldOffers-${Environment}"
+          Value: !Sub "MediSlot-WaitlistOffer-${Environment}"
         - Key: Project
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
 
   # ==========================================================
-  # DYNAMODB TABLE 6: REFRESH TOKENS
+  # DYNAMODB TABLE 5: REFRESH TOKENS
   # ==========================================================
 
-  # Stores SHA-256 hashes of opaque refresh tokens.
+  # Stores session IDs and SHA-256 hashes of refresh-token secrets.
   # The raw refresh token must never be stored.
 
   MediSlotRefreshTokensTable:
@@ -449,24 +407,20 @@ Resources:
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: tokenHash
+        - AttributeName: session_id
           AttributeType: S
-        - AttributeName: userId
-          AttributeType: S
-        - AttributeName: issuedAt
+        - AttributeName: user_id
           AttributeType: S
 
       KeySchema:
-        - AttributeName: tokenHash
+        - AttributeName: session_id
           KeyType: HASH
 
       GlobalSecondaryIndexes:
-        - IndexName: GSI1-UserSessions
+        - IndexName: gsi_user
           KeySchema:
-            - AttributeName: userId
+            - AttributeName: user_id
               KeyType: HASH
-            - AttributeName: issuedAt
-              KeyType: RANGE
           Projection:
             ProjectionType: ALL
 
@@ -478,7 +432,7 @@ Resources:
         SSEType: KMS
 
       TimeToLiveSpecification:
-        AttributeName: ttl
+        AttributeName: expires_at
         Enabled: true
 
       Tags:
@@ -492,25 +446,42 @@ Resources:
           Value: Sensitive
 
   # ==========================================================
-  # DYNAMODB TABLE 7: TOKEN DENYLIST
+  # DYNAMODB TABLE 6: NOTIFICATIONS
   # ==========================================================
 
-  # Stores revoked access-token jti values.
-  # TTL corresponds to the JWT expiration time.
+  # Notification history with a sparse retry index for unsent items.
 
-  MediSlotTokenDenylistTable:
+  MediSlotNotificationsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "MediSlot-TokenDenylist-${Environment}"
+      TableName: !Sub "MediSlot-Notifications-${Environment}"
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: jti
+        - AttributeName: recipient_user_id
           AttributeType: S
+        - AttributeName: notification_id
+          AttributeType: S
+        - AttributeName: retry_key
+          AttributeType: S
+        - AttributeName: last_attempt_at
+          AttributeType: N
 
       KeySchema:
-        - AttributeName: jti
+        - AttributeName: recipient_user_id
           KeyType: HASH
+        - AttributeName: notification_id
+          KeyType: RANGE
+
+      GlobalSecondaryIndexes:
+        - IndexName: gsi_retry
+          KeySchema:
+            - AttributeName: retry_key
+              KeyType: HASH
+            - AttributeName: last_attempt_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -520,53 +491,12 @@ Resources:
         SSEType: KMS
 
       TimeToLiveSpecification:
-        AttributeName: ttl
+        AttributeName: expires_at
         Enabled: true
 
       Tags:
         - Key: Name
-          Value: !Sub "MediSlot-TokenDenylist-${Environment}"
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: DataClassification
-          Value: Sensitive
-
-  # ==========================================================
-  # DYNAMODB TABLE 8: NOTIFICATION DISPATCH LOG
-  # ==========================================================
-
-  # Prevents duplicate notification dispatch for the same event.
-
-  MediSlotDispatchLogTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: !Sub "MediSlot-DispatchLog-${Environment}"
-      BillingMode: !Ref DynamoDBBillingMode
-
-      AttributeDefinitions:
-        - AttributeName: dispatchKey
-          AttributeType: S
-
-      KeySchema:
-        - AttributeName: dispatchKey
-          KeyType: HASH
-
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-
-      SSESpecification:
-        SSEEnabled: true
-        SSEType: KMS
-
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-
-      Tags:
-        - Key: Name
-          Value: !Sub "MediSlot-DispatchLog-${Environment}"
+          Value: !Sub "MediSlot-Notifications-${Environment}"
         - Key: Project
           Value: MediSlot
         - Key: Environment
@@ -710,12 +640,6 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-SlotsTableName-${Environment}"
 
-  SeatClaimsTableName:
-    Description: DynamoDB seat claims table.
-    Value: !Ref MediSlotSeatClaimsTable
-    Export:
-      Name: !Sub "MediSlot-SeatClaimsTableName-${Environment}"
-
   IdempotencyTableName:
     Description: DynamoDB idempotency table.
     Value: !Ref MediSlotIdempotencyTable
@@ -728,11 +652,11 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-WaitlistTableName-${Environment}"
 
-  HoldOffersTableName:
-    Description: DynamoDB hold offers table.
-    Value: !Ref MediSlotHoldOffersTable
+  WaitlistOfferTableName:
+    Description: DynamoDB waitlist offer table.
+    Value: !Ref MediSlotWaitlistOfferTable
     Export:
-      Name: !Sub "MediSlot-HoldOffersTableName-${Environment}"
+      Name: !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
 
   RefreshTokensTableName:
     Description: DynamoDB refresh tokens table.
@@ -740,17 +664,11 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-RefreshTokensTableName-${Environment}"
 
-  TokenDenylistTableName:
-    Description: DynamoDB token denylist table.
-    Value: !Ref MediSlotTokenDenylistTable
+  NotificationsTableName:
+    Description: DynamoDB notifications table.
+    Value: !Ref MediSlotNotificationsTable
     Export:
-      Name: !Sub "MediSlot-TokenDenylistTableName-${Environment}"
-
-  DispatchLogTableName:
-    Description: DynamoDB notification dispatch log table.
-    Value: !Ref MediSlotDispatchLogTable
-    Export:
-      Name: !Sub "MediSlot-DispatchLogTableName-${Environment}"
+      Name: !Sub "MediSlot-NotificationsTableName-${Environment}"
 
   ProfilePhotosBucketName:
     Description: Private S3 bucket for doctor profile photos.
@@ -770,23 +688,11 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
 
-  TokenDenylistTableArn:
-    Description: DynamoDB token denylist table ARN for IAM policies.
-    Value: !GetAtt MediSlotTokenDenylistTable.Arn
-    Export:
-      Name: !Sub "MediSlot-TokenDenylistTableArn-${Environment}"
-
   SlotsTableArn:
     Description: DynamoDB slots table ARN for IAM policies.
     Value: !GetAtt MediSlotSlotsTable.Arn
     Export:
       Name: !Sub "MediSlot-SlotsTableArn-${Environment}"
-
-  SeatClaimsTableArn:
-    Description: DynamoDB seat claims table ARN for IAM policies.
-    Value: !GetAtt MediSlotSeatClaimsTable.Arn
-    Export:
-      Name: !Sub "MediSlot-SeatClaimsTableArn-${Environment}"
 
   IdempotencyTableArn:
     Description: DynamoDB idempotency table ARN for IAM policies.
@@ -800,17 +706,17 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-WaitlistTableArn-${Environment}"
 
-  HoldOffersTableArn:
-    Description: DynamoDB hold offers table ARN for IAM policies.
-    Value: !GetAtt MediSlotHoldOffersTable.Arn
+  WaitlistOfferTableArn:
+    Description: DynamoDB waitlist offer table ARN for IAM policies.
+    Value: !GetAtt MediSlotWaitlistOfferTable.Arn
     Export:
-      Name: !Sub "MediSlot-HoldOffersTableArn-${Environment}"
+      Name: !Sub "MediSlot-WaitlistOfferTableArn-${Environment}"
 
-  DispatchLogTableArn:
-    Description: DynamoDB dispatch log table ARN for IAM policies.
-    Value: !GetAtt MediSlotDispatchLogTable.Arn
+  NotificationsTableArn:
+    Description: DynamoDB notifications table ARN for IAM policies.
+    Value: !GetAtt MediSlotNotificationsTable.Arn
     Export:
-      Name: !Sub "MediSlot-DispatchLogTableArn-${Environment}"
+      Name: !Sub "MediSlot-NotificationsTableArn-${Environment}"
 
   ProfilePhotosBucketArn:
     Description: Profile photos bucket ARN for IAM policies.

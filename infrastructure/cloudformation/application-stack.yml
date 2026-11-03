@@ -85,10 +85,6 @@ Globals:
           Fn::ImportValue:
             !Sub "MediSlot-RefreshTokensTableName-${Environment}"
 
-        TOKEN_DENYLIST_TABLE_NAME:
-          Fn::ImportValue:
-            !Sub "MediSlot-TokenDenylistTableName-${Environment}"
-
         # ----------------------------------------------------
         # OTHER EXISTING TABLES
         # Passed as environment variables for compatibility with the
@@ -99,10 +95,6 @@ Globals:
           Fn::ImportValue:
             !Sub "MediSlot-SlotsTableName-${Environment}"
 
-        SEAT_CLAIMS_TABLE:
-          Fn::ImportValue:
-            !Sub "MediSlot-SeatClaimsTableName-${Environment}"
-
         IDEMPOTENCY_TABLE:
           Fn::ImportValue:
             !Sub "MediSlot-IdempotencyTableName-${Environment}"
@@ -111,13 +103,13 @@ Globals:
           Fn::ImportValue:
             !Sub "MediSlot-WaitlistTableName-${Environment}"
 
-        HOLD_OFFERS_TABLE:
+        WAITLIST_OFFER_TABLE:
           Fn::ImportValue:
-            !Sub "MediSlot-HoldOffersTableName-${Environment}"
+            !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
 
-        DISPATCH_LOG_TABLE:
+        NOTIFICATIONS_TABLE:
           Fn::ImportValue:
-            !Sub "MediSlot-DispatchLogTableName-${Environment}"
+            !Sub "MediSlot-NotificationsTableName-${Environment}"
 
 # ============================================================
 # RESOURCES
@@ -363,10 +355,6 @@ Resources:
           ENVIRONMENT: !Ref Environment
 
           JWT_SECRET_PARAMETER_NAME: !Ref JWTSecretParameterName
-
-          TOKEN_DENYLIST_TABLE_NAME:
-            Fn::ImportValue:
-              !Sub "MediSlot-TokenDenylistTableName-${Environment}"
 
           REFRESH_TOKENS_TABLE:
             Fn::ImportValue:

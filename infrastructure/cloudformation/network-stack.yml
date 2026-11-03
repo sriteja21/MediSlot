@@ -346,7 +346,7 @@ Resources:
   # ----------------------------------------------------------
   # DYNAMODB GATEWAY ENDPOINT                              # FIX
   # The private subnets have no NAT gateway, so the Auth Lambda
-  # needs this endpoint to reach the refresh-token and denylist
+  # needs this endpoint to reach the refresh-token session table
   # tables. Gateway endpoints are free.
   # ----------------------------------------------------------
 

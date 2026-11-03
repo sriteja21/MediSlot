@@ -162,15 +162,15 @@ def query_doctor_slots(
     utc_start: datetime,
     utc_end: datetime,
 ) -> list[dict[str, Any]]:
-    start_key = utc_start.strftime("%Y-%m-%dT%H:%M:%SZ") + "#"
-    end_key = utc_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    start_key = utc_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_key = (utc_end - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     table = get_slots_table()
     slots: list[dict[str, Any]] = []
     query_args = {
-        "IndexName": "GSI1-DoctorStart",
+        "IndexName": "gsi_doctor_time",
         "KeyConditionExpression": (
-            Key("doctorId").eq(doctor_id)
-            & Key("startUtcConsultationType").between(start_key, end_key)
+            Key("doctor_id").eq(doctor_id)
+            & Key("start_time").between(start_key, end_key)
         ),
     }
 
@@ -353,9 +353,9 @@ def get_doctor_table_columns() -> set[str]:
     except Exception as exc:
         logger.warning("Could not query information_schema for doctors columns: %s", exc)
         _doctor_columns_cache = {
-            "id", "email", "password_hash", "full_name", "licence_number",
-            "specialisation_id", "hospital_id", "years_experience",
-            "qualifications", "timezone", "photo_s3_key", "is_active",
+            "doctor_id", "user_id", "first_name", "last_name", "license_number",
+            "hospital_id", "experience_years", "qualification", "timezone",
+            "profile_image_key", "phone_number", "languages", "is_verified",
             "created_at", "updated_at",
         }
 
@@ -369,9 +369,9 @@ def get_doctor_specialisations(
 ) -> list[dict[str, Any]]:
     rows = execute_query(
         """
-        SELECT s.id, s.name
-        FROM doctor_specialisations ds
-        JOIN specialisations s ON s.id = ds.specialisation_id
+        SELECT s.specialization_id AS id, s.name
+        FROM doctor_specializations ds
+        JOIN specializations s ON s.specialization_id = ds.specialization_id
         WHERE ds.doctor_id = %s
         ORDER BY s.name ASC
         """,
@@ -394,56 +394,41 @@ def get_doctor_profile(doctor_id: str) -> dict[str, Any]:
     Retrieve the authenticated doctor's full profile including specialisation,
     hospital details, and spoken languages.
     """
-    has_phone = "phone" in get_doctor_table_columns()
-    phone_select = ", d.phone" if has_phone else ""
-
-    query = f"""
+    query = """
         SELECT
-            d.id,
-            d.email,
-            d.full_name,
-            d.licence_number,
-            d.specialisation_id,
-            s.name AS specialisation_name,
+            d.doctor_id AS id,
+            u.email,
+            CONCAT_WS(' ', d.first_name, d.last_name) AS full_name,
+            d.license_number AS licence_number,
+            d.experience_years AS years_experience,
+            d.qualification AS qualifications,
+            d.phone_number AS phone,
+            d.languages,
+            d.is_verified,
+            d.timezone,
+            d.profile_image_key AS photo_s3_key,
             d.hospital_id,
             h.name AS hospital_name,
-            h.address_line AS hospital_address,
-            h.city AS hospital_city,
-            h.state AS hospital_state,
-            h.postal_code AS hospital_postal_code,
-            d.years_experience,
-            d.qualifications,
-            d.timezone,
-            d.photo_s3_key,
-            d.is_active,
+            h.address AS hospital_address,
+            u.is_active,
             d.created_at,
             d.updated_at
-            {phone_select}
         FROM doctors d
-        LEFT JOIN specialisations s ON d.specialisation_id = s.id
-        LEFT JOIN hospitals h ON d.hospital_id = h.id
-        WHERE d.id = %s
+        JOIN users u ON u.user_id = d.user_id
+        LEFT JOIN hospitals h ON d.hospital_id = h.hospital_id
+        WHERE d.doctor_id = %s
     """
     rows = execute_query(query, (doctor_id,))
     if not rows:
         return format_response(404, {"error": "Doctor not found."})
 
     doctor = rows[0]
-    doctor["specialisations"] = get_doctor_specialisations(
-        doctor_id,
-        int(doctor["specialisation_id"]),
-        doctor.get("specialisation_name"),
-    )
-
-    # Retrieve languages
-    lang_rows = execute_query(
-        "SELECT language FROM doctor_languages WHERE doctor_id = %s ORDER BY language ASC",
-        (doctor_id,),
-    )
-    doctor["languages"] = [r["language"] for r in lang_rows]
-
-    if not has_phone:
-        doctor["phone"] = None
+    doctor["specialisations"] = get_doctor_specialisations(doctor_id, 0, None)
+    doctor["languages"] = [
+        value.strip()
+        for value in (doctor.get("languages") or "").split(",")
+        if value.strip()
+    ]
 
     doctor["is_active"] = bool(doctor["is_active"])
     doctor["years_experience"] = int(doctor["years_experience"] or 0)
@@ -470,7 +455,6 @@ def update_doctor_profile(doctor_id: str, body: dict[str, Any]) -> dict[str, Any
     if not body:
         raise ValueError("Request body cannot be empty.")
 
-    table_columns = get_doctor_table_columns()
     update_fields: list[str] = []
     update_values: list[Any] = []
 
@@ -478,32 +462,30 @@ def update_doctor_profile(doctor_id: str, body: dict[str, Any]) -> dict[str, Any
         full_name = body["full_name"]
         if not isinstance(full_name, str) or not full_name.strip():
             raise ValueError("full_name must be a non-empty string.")
-        update_fields.append("full_name = %s")
-        update_values.append(full_name.strip()[:150])
+        name_parts = full_name.strip().split(maxsplit=1)
+        update_fields.extend(["first_name = %s", "last_name = %s"])
+        update_values.extend([name_parts[0][:100], name_parts[1][:100] if len(name_parts) > 1 else ""])
 
     if "qualifications" in body:
         qualifications = body["qualifications"]
         if qualifications is not None and not isinstance(qualifications, str):
             raise ValueError("qualifications must be a string or null.")
-        update_fields.append("qualifications = %s")
+        update_fields.append("qualification = %s")
         update_values.append(qualifications.strip()[:500] if qualifications else None)
 
     if "years_experience" in body:
         years_exp = body["years_experience"]
         if isinstance(years_exp, bool) or not isinstance(years_exp, int) or not 0 <= years_exp <= 255:
             raise ValueError("years_experience must be an integer between 0 and 255.")
-        update_fields.append("years_experience = %s")
+        update_fields.append("experience_years = %s")
         update_values.append(years_exp)
 
     if "phone" in body:
         phone_val = body["phone"]
         if phone_val is not None and not isinstance(phone_val, str):
             raise ValueError("phone must be a string or null.")
-        if "phone" in table_columns:
-            update_fields.append("phone = %s")
-            update_values.append(phone_val.strip()[:20] if phone_val else None)
-        else:
-            logger.info("phone column not in doctors table schema; skipping column update.")
+        update_fields.append("phone_number = %s")
+        update_values.append(phone_val.strip()[:20] if phone_val else None)
 
     languages_to_set = None
     if "languages" in body:
@@ -526,16 +508,14 @@ def update_doctor_profile(doctor_id: str, body: dict[str, Any]) -> dict[str, Any
     with database_transaction() as conn:
         with conn.cursor() as cursor:
             if update_fields:
-                sql = f"UPDATE doctors SET {', '.join(update_fields)} WHERE id = %s"
+                sql = f"UPDATE doctors SET {', '.join(update_fields)} WHERE doctor_id = %s"
                 cursor.execute(sql, (*update_values, doctor_id))
 
             if languages_to_set is not None:
-                cursor.execute("DELETE FROM doctor_languages WHERE doctor_id = %s", (doctor_id,))
-                for lang in languages_to_set:
-                    cursor.execute(
-                        "INSERT INTO doctor_languages (doctor_id, language) VALUES (%s, %s)",
-                        (doctor_id, lang),
-                    )
+                cursor.execute(
+                    "UPDATE doctors SET languages = %s WHERE doctor_id = %s",
+                    (", ".join(languages_to_set) or None, doctor_id),
+                )
 
     # Return updated profile
     return get_doctor_profile(doctor_id)
@@ -576,7 +556,7 @@ def get_photo_upload_url(
     )
 
     execute_write(
-        "UPDATE doctors SET photo_s3_key = %s WHERE id = %s",
+        "UPDATE doctors SET profile_image_key = %s WHERE doctor_id = %s",
         (s3_key, doctor_id),
     )
 
@@ -599,7 +579,8 @@ def list_consultation_types(doctor_id: str, query_params: dict[str, str]) -> dic
 
     if include_all:
         query = """
-            SELECT id, doctor_id, kind, duration_minutes, fee_amount, capacity, is_active
+                 SELECT consultation_type_id AS id, doctor_id, name AS kind,
+                     duration_minutes, fee AS fee_amount, capacity, is_active
             FROM consultation_types
             WHERE doctor_id = %s
             ORDER BY kind ASC
@@ -607,7 +588,8 @@ def list_consultation_types(doctor_id: str, query_params: dict[str, str]) -> dic
         rows = execute_query(query, (doctor_id,))
     else:
         query = """
-            SELECT id, doctor_id, kind, duration_minutes, fee_amount, capacity, is_active
+                 SELECT consultation_type_id AS id, doctor_id, name AS kind,
+                     duration_minutes, fee AS fee_amount, capacity, is_active
             FROM consultation_types
             WHERE doctor_id = %s AND is_active = TRUE
             ORDER BY kind ASC
@@ -671,7 +653,7 @@ def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, 
 
     # Keep one consultation configuration per kind for each doctor.
     existing = execute_query(
-        "SELECT id FROM consultation_types WHERE doctor_id = %s AND kind = %s",
+        "SELECT consultation_type_id FROM consultation_types WHERE doctor_id = %s AND name = %s",
         (doctor_id, kind),
     )
     if existing:
@@ -684,8 +666,8 @@ def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, 
     execute_write(
         """
         INSERT INTO consultation_types (
-            id, doctor_id, kind, duration_minutes, fee_amount, capacity, is_active
-        ) VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+            consultation_type_id, doctor_id, name, mode, duration_minutes, fee, capacity, is_active
+        ) VALUES (%s, %s, %s, 'IN_PERSON', %s, %s, %s, TRUE)
         """,
         (new_id, doctor_id, kind, duration_minutes, fee_decimal, capacity),
     )
@@ -713,7 +695,12 @@ def update_consultation_type(
     Update consultation type fee, duration, capacity, or active status.
     """
     rows = execute_query(
-        "SELECT * FROM consultation_types WHERE id = %s AND doctor_id = %s",
+        """
+        SELECT consultation_type_id, doctor_id, name AS kind,
+               duration_minutes, fee AS fee_amount, capacity, is_active
+        FROM consultation_types
+        WHERE consultation_type_id = %s AND doctor_id = %s
+        """,
         (ct_id, doctor_id),
     )
     if not rows:
@@ -731,7 +718,7 @@ def update_consultation_type(
                 raise ValueError()
         except Exception:
             raise ValueError("fee_amount must be a non-negative number.")
-        update_clauses.append("fee_amount = %s")
+        update_clauses.append("fee = %s")
         params.append(fee_decimal)
 
     if "duration_minutes" in body:
@@ -762,14 +749,19 @@ def update_consultation_type(
     if not update_clauses:
         raise ValueError("No valid fields provided for update.")
 
-    sql = f"UPDATE consultation_types SET {', '.join(update_clauses)} WHERE id = %s AND doctor_id = %s"
+    sql = f"UPDATE consultation_types SET {', '.join(update_clauses)} WHERE consultation_type_id = %s AND doctor_id = %s"
     params.extend([ct_id, doctor_id])
     execute_write(sql, tuple(params))
     trigger_slot_materialisation()
 
     # Fetch updated record
     updated_rows = execute_query(
-        "SELECT * FROM consultation_types WHERE id = %s AND doctor_id = %s",
+        """
+        SELECT consultation_type_id AS id, doctor_id, name AS kind, mode,
+               duration_minutes, fee AS fee_amount, capacity, is_active
+        FROM consultation_types
+        WHERE consultation_type_id = %s AND doctor_id = %s
+        """,
         (ct_id, doctor_id),
     )
     record = updated_rows[0]
@@ -787,14 +779,14 @@ def delete_consultation_type(doctor_id: str, ct_id: str) -> dict[str, Any]:
     Soft-delete consultation type by setting is_active=false.
     """
     rows = execute_query(
-        "SELECT id, is_active FROM consultation_types WHERE id = %s AND doctor_id = %s",
+        "SELECT consultation_type_id AS id, is_active FROM consultation_types WHERE consultation_type_id = %s AND doctor_id = %s",
         (ct_id, doctor_id),
     )
     if not rows:
         return format_response(404, {"error": "Consultation type not found."})
 
     execute_write(
-        "UPDATE consultation_types SET is_active = FALSE WHERE id = %s AND doctor_id = %s",
+        "UPDATE consultation_types SET is_active = FALSE WHERE consultation_type_id = %s AND doctor_id = %s",
         (ct_id, doctor_id),
     )
     trigger_slot_materialisation()
@@ -815,21 +807,21 @@ def list_availability(doctor_id: str) -> dict[str, Any]:
     """
     query = """
         SELECT
-            ap.id,
-            ap.doctor_id,
+            ap.pattern_id AS id,
+            ct.doctor_id,
             ap.day_of_week,
-            ap.start_local_time,
-            ap.end_local_time,
+            ap.start_time AS start_local_time,
+            ap.end_time AS end_local_time,
             ap.consultation_type_id,
-            ct.kind AS consultation_type_name,
+            ct.name AS consultation_type_name,
             ct.duration_minutes,
-            ct.fee_amount,
+            ct.fee AS fee_amount,
             ap.is_active,
             ap.updated_at
         FROM availability_patterns ap
-        LEFT JOIN consultation_types ct ON ap.consultation_type_id = ct.id
-        WHERE ap.doctor_id = %s AND ap.is_active = TRUE
-        ORDER BY ap.day_of_week ASC, ap.start_local_time ASC
+        JOIN consultation_types ct ON ap.consultation_type_id = ct.consultation_type_id
+        WHERE ct.doctor_id = %s AND ap.is_active = TRUE
+        ORDER BY ap.day_of_week ASC, ap.start_time ASC
     """
     rows = execute_query(query, (doctor_id,))
     for r in rows:
@@ -886,17 +878,20 @@ def find_overlapping_availability_pattern(
 ) -> dict[str, Any] | None:
     """Return an existing pattern that overlaps with the supplied window."""
     query = """
-        SELECT id, start_local_time, end_local_time
-        FROM availability_patterns
-        WHERE doctor_id = %s AND day_of_week = %s AND is_active = TRUE
+                SELECT ap.pattern_id AS id, ap.start_time AS start_local_time,
+                             ap.end_time AS end_local_time
+                FROM availability_patterns ap
+                JOIN consultation_types ct
+                    ON ct.consultation_type_id = ap.consultation_type_id
+                WHERE ct.doctor_id = %s AND ap.day_of_week = %s AND ap.is_active = TRUE
     """
     params: list[Any] = [doctor_id, day_of_week]
 
     if ignore_pattern_id:
-        query += " AND id != %s"
+        query += " AND ap.pattern_id != %s"
         params.append(ignore_pattern_id)
 
-    query += " ORDER BY start_local_time ASC"
+    query += " ORDER BY ap.start_time ASC"
     rows = execute_query(query, tuple(params))
 
     for row in rows:
@@ -913,16 +908,16 @@ def find_overlapping_availability_pattern(
 def create_availability(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """
     POST /doctors/me/availability
-    Create a recurring availability pattern: day_of_week (1-7), start_local_time,
+    Create a recurring availability pattern: day_of_week (0-6, Sunday=0), start_local_time,
     end_local_time, consultation_type_id.
     """
     day_of_week = body.get("day_of_week")
     if (
         isinstance(day_of_week, bool)
         or not isinstance(day_of_week, int)
-        or not 1 <= day_of_week <= 7
+        or not 0 <= day_of_week <= 6
     ):
-        raise ValueError("day_of_week must be an integer between 1 and 7 (1=Monday, 7=Sunday).")
+        raise ValueError("day_of_week must be an integer between 0 and 6 (0=Sunday).")
 
     start_local_time = _validate_time_str(body.get("start_local_time"), "start_local_time")
     end_local_time = _validate_time_str(body.get("end_local_time"), "end_local_time")
@@ -950,7 +945,7 @@ def create_availability(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
 
     # Validate consultation type belongs to doctor and is active
     ct_rows = execute_query(
-        "SELECT id FROM consultation_types WHERE id = %s AND doctor_id = %s AND is_active = TRUE",
+        "SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id = %s AND doctor_id = %s AND is_active = TRUE",
         (ct_id, doctor_id),
     )
     if not ct_rows:
@@ -963,10 +958,10 @@ def create_availability(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
     execute_write(
         """
         INSERT INTO availability_patterns (
-            id, doctor_id, day_of_week, start_local_time, end_local_time, consultation_type_id, is_active
-        ) VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+            pattern_id, consultation_type_id, day_of_week, start_time, end_time, is_active
+        ) VALUES (%s, %s, %s, %s, %s, TRUE)
         """,
-        (pattern_id, doctor_id, day_of_week, start_local_time, end_local_time, ct_id),
+        (pattern_id, ct_id, day_of_week, start_local_time, end_local_time),
     )
     trigger_slot_materialisation()
 
@@ -988,14 +983,19 @@ def delete_availability(doctor_id: str, pattern_id: str) -> dict[str, Any]:
     Delete an availability pattern.
     """
     rows = execute_query(
-        "SELECT id FROM availability_patterns WHERE id = %s AND doctor_id = %s",
+        """
+        SELECT ap.pattern_id
+        FROM availability_patterns ap
+        JOIN consultation_types ct ON ct.consultation_type_id = ap.consultation_type_id
+        WHERE ap.pattern_id = %s AND ct.doctor_id = %s
+        """,
         (pattern_id, doctor_id),
     )
     if not rows:
         return format_response(404, {"error": "Availability pattern not found."})
 
     execute_write(
-        "DELETE FROM availability_patterns WHERE id = %s AND doctor_id = %s",
+        "DELETE FROM availability_patterns WHERE pattern_id = %s",
         (pattern_id, doctor_id),
     )
     trigger_slot_materialisation()
@@ -1017,7 +1017,12 @@ def update_availability(
         raise ValueError("Request body cannot be empty.")
 
     existing_rows = execute_query(
-        "SELECT id FROM availability_patterns WHERE id = %s AND doctor_id = %s",
+        """
+        SELECT ap.pattern_id
+        FROM availability_patterns ap
+        JOIN consultation_types ct ON ct.consultation_type_id = ap.consultation_type_id
+        WHERE ap.pattern_id = %s AND ct.doctor_id = %s
+        """,
         (pattern_id, doctor_id),
     )
     if not existing_rows:
@@ -1027,9 +1032,9 @@ def update_availability(
     if (
         isinstance(day_of_week, bool)
         or not isinstance(day_of_week, int)
-        or not 1 <= day_of_week <= 7
+        or not 0 <= day_of_week <= 6
     ):
-        raise ValueError("day_of_week must be an integer from 1 to 7.")
+        raise ValueError("day_of_week must be an integer from 0 to 6 (0=Sunday).")
 
     start_local_time = _validate_time_str(body.get("start_local_time"), "start_local_time")
     end_local_time = _validate_time_str(body.get("end_local_time"), "end_local_time")
@@ -1057,8 +1062,8 @@ def update_availability(
 
     consultation_rows = execute_query(
         """
-        SELECT id FROM consultation_types
-        WHERE id = %s AND doctor_id = %s AND is_active = TRUE
+        SELECT consultation_type_id FROM consultation_types
+        WHERE consultation_type_id = %s AND doctor_id = %s AND is_active = TRUE
         """,
         (consultation_type_id, doctor_id),
     )
@@ -1069,10 +1074,10 @@ def update_availability(
         """
         UPDATE availability_patterns
         SET day_of_week = %s,
-            start_local_time = %s,
-            end_local_time = %s,
+            start_time = %s,
+            end_time = %s,
             consultation_type_id = %s
-        WHERE id = %s AND doctor_id = %s
+        WHERE pattern_id = %s
         """,
         (
             day_of_week,
@@ -1105,33 +1110,50 @@ def list_blackouts(doctor_id: str, query_params: dict[str, str]) -> dict[str, An
     from_date = query_params.get("from")
     to_date = query_params.get("to")
 
-    query = "SELECT id, doctor_id, blackout_date, reason FROM blackout_dates WHERE doctor_id = %s"
-    params: list[Any] = [doctor_id]
-
-    if from_date:
-        try:
+    parsed_from = None
+    parsed_to = None
+    try:
+        if from_date:
             parsed_from = datetime.strptime(from_date.strip(), "%Y-%m-%d").date()
-            query += " AND blackout_date >= %s"
-            params.append(parsed_from.isoformat())
-        except ValueError:
-            raise ValueError("Query parameter 'from' must be in YYYY-MM-DD format.")
-
-    if to_date:
-        try:
+        if to_date:
             parsed_to = datetime.strptime(to_date.strip(), "%Y-%m-%d").date()
-            query += " AND blackout_date <= %s"
-            params.append(parsed_to.isoformat())
-        except ValueError:
-            raise ValueError("Query parameter 'to' must be in YYYY-MM-DD format.")
+    except ValueError as exc:
+        raise ValueError("Blackout date filters must use YYYY-MM-DD format.") from exc
 
-    query += " ORDER BY blackout_date ASC"
-    rows = execute_query(query, tuple(params))
+    doctor_rows = execute_query(
+        "SELECT timezone FROM doctors WHERE doctor_id = %s", (doctor_id,)
+    )
+    timezone_name = str(doctor_rows[0].get("timezone") or "UTC") if doctor_rows else "UTC"
+    doctor_timezone = ZoneInfo(timezone_name)
+    rows = execute_query(
+        """
+        SELECT blackout_id AS id, doctor_id, start_datetime, end_datetime, reason
+        FROM blackout_dates
+        WHERE doctor_id = %s
+        ORDER BY start_datetime ASC
+        """,
+        (doctor_id,),
+    )
 
-    for r in rows:
-        if isinstance(r["blackout_date"], (date, datetime)):
-            r["blackout_date"] = r["blackout_date"].isoformat()
+    filtered_rows = []
+    for row in rows:
+        start_value = row["start_datetime"]
+        end_value = row["end_datetime"]
+        start_utc = start_value.replace(tzinfo=timezone.utc) if start_value.tzinfo is None else start_value
+        end_utc = end_value.replace(tzinfo=timezone.utc) if end_value.tzinfo is None else end_value
+        local_start = start_utc.astimezone(doctor_timezone)
+        local_end = end_utc.astimezone(doctor_timezone)
+        blackout_date = local_start.date()
+        if parsed_from and blackout_date < parsed_from:
+            continue
+        if parsed_to and blackout_date > parsed_to:
+            continue
+        row["blackout_date"] = blackout_date.isoformat()
+        row["start_datetime"] = start_utc.isoformat()
+        row["end_datetime"] = end_utc.isoformat()
+        filtered_rows.append(row)
 
-    return format_response(200, rows)
+    return format_response(200, filtered_rows)
 
 
 def create_blackout(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1154,21 +1176,42 @@ def create_blackout(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("reason must be a string or null.")
     clean_reason = reason.strip()[:200] if reason else None
 
-    # Check for duplicate blackout date using SELECT before INSERT
+    doctor_rows = execute_query(
+        "SELECT timezone FROM doctors WHERE doctor_id = %s", (doctor_id,)
+    )
+    if not doctor_rows:
+        return format_response(404, {"error": "Doctor not found."})
+    doctor_timezone = ZoneInfo(str(doctor_rows[0].get("timezone") or "UTC"))
+    local_start = datetime.combine(b_date, time_type.min, tzinfo=doctor_timezone)
+    local_end = datetime.combine(
+        b_date + timedelta(days=1), time_type.min, tzinfo=doctor_timezone
+    )
+    start_utc = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+    end_utc = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+
+    # MySQL has no exclusion constraint, so reject intersecting ranges here.
     existing = execute_query(
-        "SELECT id FROM blackout_dates WHERE doctor_id = %s AND blackout_date = %s",
-        (doctor_id, b_date.isoformat()),
+        """
+        SELECT blackout_id AS id, start_datetime, end_datetime
+        FROM blackout_dates
+        WHERE doctor_id = %s AND start_datetime < %s AND end_datetime > %s
+        LIMIT 1
+        """,
+        (doctor_id, end_utc, start_utc),
     )
     if existing:
         return format_response(
             409,
-            {"error": f"Blackout date '{b_date.isoformat()}' already exists for this doctor."},
+            {"error": f"Blackout date '{b_date.isoformat()}' overlaps an existing blackout."},
         )
 
     blackout_id = str(uuid.uuid4())
     execute_write(
-        "INSERT INTO blackout_dates (id, doctor_id, blackout_date, reason) VALUES (%s, %s, %s, %s)",
-        (blackout_id, doctor_id, b_date.isoformat(), clean_reason),
+        """
+        INSERT INTO blackout_dates (blackout_id, doctor_id, start_datetime, end_datetime, reason)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (blackout_id, doctor_id, start_utc, end_utc, clean_reason),
     )
     trigger_slot_materialisation()
 
@@ -1187,14 +1230,14 @@ def delete_blackout(doctor_id: str, blackout_id: str) -> dict[str, Any]:
     Delete a blackout date.
     """
     rows = execute_query(
-        "SELECT id FROM blackout_dates WHERE id = %s AND doctor_id = %s",
+        "SELECT blackout_id AS id FROM blackout_dates WHERE blackout_id = %s AND doctor_id = %s",
         (blackout_id, doctor_id),
     )
     if not rows:
         return format_response(404, {"error": "Blackout date not found."})
 
     execute_write(
-        "DELETE FROM blackout_dates WHERE id = %s AND doctor_id = %s",
+        "DELETE FROM blackout_dates WHERE blackout_id = %s AND doctor_id = %s",
         (blackout_id, doctor_id),
     )
     trigger_slot_materialisation()
@@ -1224,7 +1267,7 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
         raise ValueError("Query parameter 'date' must be in YYYY-MM-DD format.")
 
     doctor_rows = execute_query(
-        "SELECT timezone FROM doctors WHERE id = %s",
+        "SELECT timezone FROM doctors WHERE doctor_id = %s",
         (doctor_id,),
     )
     if not doctor_rows:
@@ -1243,16 +1286,18 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
     # Enrich with appointment counts from RDS appointments table
     rds_counts_query = """
         SELECT
-            slot_id,
+            a.consultation_type_id,
+            a.appointment_datetime,
             COUNT(*) AS total_count,
-            SUM(CASE WHEN status = 'CONFIRMED' THEN 1 ELSE 0 END) AS confirmed_count,
-            SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
-            SUM(CASE WHEN status IN ('CONFIRMED', 'COMPLETED') THEN 1 ELSE 0 END) AS active_count
-        FROM appointments
-        WHERE doctor_id = %s
-          AND slot_start_utc >= %s
-          AND slot_start_utc < %s
-        GROUP BY slot_id
+            SUM(CASE WHEN a.appointment_status = 'CONFIRMED' THEN 1 ELSE 0 END) AS confirmed_count,
+            SUM(CASE WHEN a.appointment_status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
+            SUM(CASE WHEN a.appointment_status IN ('CONFIRMED', 'COMPLETED') THEN 1 ELSE 0 END) AS active_count
+        FROM appointments a
+        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        WHERE ct.doctor_id = %s
+          AND a.appointment_datetime >= %s
+          AND a.appointment_datetime < %s
+        GROUP BY a.consultation_type_id, a.appointment_datetime
     """
     count_rows = execute_query(
         rds_counts_query,
@@ -1261,7 +1306,12 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
 
     counts_by_slot: dict[str, dict[str, int]] = {}
     for cr in count_rows:
-        slot_key = cr["slot_id"]
+        appointment_datetime = cr["appointment_datetime"]
+        if appointment_datetime.tzinfo is None:
+            appointment_datetime = appointment_datetime.replace(tzinfo=timezone.utc)
+        slot_key = (
+            f"{cr['consultation_type_id']}#{int(appointment_datetime.timestamp())}"
+        )
         counts_by_slot[slot_key] = {
             "total": int(cr["total_count"] or 0),
             "confirmed": int(cr["confirmed_count"] or 0),
@@ -1270,7 +1320,7 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
         }
 
     for slot in slots:
-        s_id = slot.get("slotId") or slot.get("slot_id")
+        s_id = slot.get("slot_id")
         slot_counts = counts_by_slot.get(
             s_id,
             {"total": 0, "confirmed": 0, "completed": 0, "active": 0},
@@ -1284,23 +1334,29 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
     # Retrieve appointments on this date from RDS
     appointments_query = """
         SELECT
-                        a.id,
+                        a.appointment_id AS id,
                         a.patient_id,
-                        p.full_name AS patient_name,
-                        a.doctor_id,
+                        CONCAT_WS(' ', p.first_name, p.last_name) AS patient_name,
+                        ct.doctor_id,
                         a.consultation_type_id,
-                        a.slot_id,
-                        a.slot_start_utc,
-                        a.slot_end_utc,
-                        a.status,
-                        a.fee_amount,
-                        a.booked_at
+                        a.appointment_datetime AS slot_start_utc,
+                        a.appointment_status AS status,
+                        COALESCE(
+                                (SELECT pay.amount FROM payments pay
+                                 WHERE pay.appointment_id = a.appointment_id
+                                     AND pay.payment_status = 'SUCCESS'
+                                 ORDER BY pay.created_at DESC LIMIT 1),
+                                ct.fee
+                        ) AS fee_amount,
+                        ct.duration_minutes,
+                        a.created_at AS booked_at
                 FROM appointments a
-                LEFT JOIN patients p ON p.id = a.patient_id
-                WHERE a.doctor_id = %s
-                    AND a.slot_start_utc >= %s
-                    AND a.slot_start_utc < %s
-                ORDER BY a.slot_start_utc ASC
+                JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                LEFT JOIN patients p ON p.patient_id = a.patient_id
+                WHERE ct.doctor_id = %s
+                    AND a.appointment_datetime >= %s
+                    AND a.appointment_datetime < %s
+                ORDER BY a.appointment_datetime ASC
     """
     appointments = execute_query(
         appointments_query,
@@ -1308,6 +1364,16 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
     )
     for appt in appointments:
         appt["fee_amount"] = float(appt["fee_amount"])
+        appointment_datetime = appt["slot_start_utc"]
+        if appointment_datetime.tzinfo is None:
+            appointment_datetime = appointment_datetime.replace(tzinfo=timezone.utc)
+        appt["slot_start_utc"] = appointment_datetime.isoformat()
+        appt["slot_id"] = (
+            f"{appt['consultation_type_id']}#{int(appointment_datetime.timestamp())}"
+        )
+        appt["slot_end_utc"] = (
+            appointment_datetime + timedelta(minutes=int(appt.pop("duration_minutes")))
+        ).isoformat()
 
     # Sort slots chronologically
     slots.sort(key=lambda s: str(s.get("start_time", "")))
@@ -1331,64 +1397,55 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     today's slots count, and total patients served.
     """
     # 1. Profile summary
-    has_phone = "phone" in get_doctor_table_columns()
-    phone_select = ", d.phone" if has_phone else ""
-
-    profile_query = f"""
+    profile_query = """
         SELECT
-            d.id,
-            d.email,
-            d.full_name,
-            d.licence_number,
-            d.specialisation_id,
-            s.name AS specialisation_name,
+            d.doctor_id AS id,
+            u.email,
+            CONCAT_WS(' ', d.first_name, d.last_name) AS full_name,
+            d.license_number AS licence_number,
+            d.experience_years AS years_experience,
+            d.qualification AS qualifications,
+            d.phone_number AS phone,
+            d.languages,
+            d.is_verified,
+            d.profile_image_key AS photo_s3_key,
             d.hospital_id,
             h.name AS hospital_name,
-            h.city AS hospital_city,
-            d.years_experience,
-            d.qualifications,
+            h.address AS hospital_address,
             d.timezone,
-            d.photo_s3_key,
-            d.is_active
-            {phone_select}
+            u.is_active
         FROM doctors d
-        LEFT JOIN specialisations s ON d.specialisation_id = s.id
-        LEFT JOIN hospitals h ON d.hospital_id = h.id
-        WHERE d.id = %s
+        JOIN users u ON u.user_id = d.user_id
+        LEFT JOIN hospitals h ON d.hospital_id = h.hospital_id
+        WHERE d.doctor_id = %s
     """
     profile_rows = execute_query(profile_query, (doctor_id,))
     if not profile_rows:
         return format_response(404, {"error": "Doctor not found."})
 
     profile = profile_rows[0]
-    profile["specialisations"] = get_doctor_specialisations(
-        doctor_id,
-        int(profile["specialisation_id"]),
-        profile.get("specialisation_name"),
-    )
+    profile["specialisations"] = get_doctor_specialisations(doctor_id, 0, None)
     profile["is_active"] = bool(profile["is_active"])
     profile["years_experience"] = int(profile["years_experience"] or 0)
-    if not has_phone:
-        profile["phone"] = None
-
-    lang_rows = execute_query(
-        "SELECT language FROM doctor_languages WHERE doctor_id = %s ORDER BY language ASC",
-        (doctor_id,),
-    )
-    profile["languages"] = [r["language"] for r in lang_rows]
+    profile["languages"] = [
+        value.strip()
+        for value in (profile.get("languages") or "").split(",")
+        if value.strip()
+    ]
 
     # 2. Upcoming appointments count (CONFIRMED in future)
     upcoming_query = """
         SELECT COUNT(*) AS cnt
-        FROM appointments
-        WHERE doctor_id = %s
-          AND status = 'CONFIRMED'
-          AND slot_start_utc >= UTC_TIMESTAMP()
+                FROM appointments a
+                JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                WHERE ct.doctor_id = %s
+                    AND a.appointment_status = 'CONFIRMED'
+                    AND a.appointment_datetime >= UTC_TIMESTAMP()
     """
     upcoming_rows = execute_query(upcoming_query, (doctor_id,))
     upcoming_appointments_count = int(upcoming_rows[0]["cnt"]) if upcoming_rows else 0
 
-    # 3. Today's slots count from DynamoDB GSI1-DoctorStart
+    # 3. Today's slots count from DynamoDB gsi_doctor_time
     today_slots_count = 0
     timezone_name = str(profile.get("timezone") or "UTC")
     local_today = datetime.now(ZoneInfo(timezone_name)).date()
@@ -1397,11 +1454,12 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     today_appointments_rows = execute_query(
         """
         SELECT COUNT(*) AS cnt
-        FROM appointments
-        WHERE doctor_id = %s
-          AND status = 'CONFIRMED'
-          AND slot_start_utc >= %s
-          AND slot_start_utc < %s
+                FROM appointments a
+                JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                WHERE ct.doctor_id = %s
+                    AND a.appointment_status = 'CONFIRMED'
+                    AND a.appointment_datetime >= %s
+                    AND a.appointment_datetime < %s
         """,
         (doctor_id, utc_start.replace(tzinfo=None), utc_end.replace(tzinfo=None)),
     )
@@ -1417,11 +1475,13 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
         logger.warning("Could not query DynamoDB for dashboard today's slots: %s", exc)
         rds_slots = execute_query(
             """
-            SELECT COUNT(DISTINCT slot_id) AS cnt
-            FROM appointments
-            WHERE doctor_id = %s
-              AND slot_start_utc >= %s
-              AND slot_start_utc < %s
+                        SELECT COUNT(DISTINCT CONCAT(a.consultation_type_id, '#',
+                                             UNIX_TIMESTAMP(a.appointment_datetime))) AS cnt
+                        FROM appointments a
+                        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                        WHERE ct.doctor_id = %s
+                            AND a.appointment_datetime >= %s
+                            AND a.appointment_datetime < %s
             """,
             (doctor_id, utc_start.replace(tzinfo=None), utc_end.replace(tzinfo=None)),
         )
@@ -1429,10 +1489,11 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
 
     # 4. Total patients served (distinct patients with COMPLETED appointments)
     patients_query = """
-        SELECT COUNT(DISTINCT patient_id) AS cnt
-        FROM appointments
-        WHERE doctor_id = %s
-          AND status = 'COMPLETED'
+                SELECT COUNT(DISTINCT a.patient_id) AS cnt
+                FROM appointments a
+                JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                WHERE ct.doctor_id = %s
+                    AND a.appointment_status = 'COMPLETED'
     """
     patients_rows = execute_query(patients_query, (doctor_id,))
     total_patients_served = int(patients_rows[0]["cnt"]) if patients_rows else 0
@@ -1450,18 +1511,24 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     recent_appointments = execute_query(
         """
         SELECT
-            a.id,
+            a.appointment_id AS id,
             a.patient_id,
-            p.full_name AS patient_name,
-            a.slot_start_utc,
-            a.status,
-            a.fee_amount,
-            ct.kind AS consultation_type_name
+            CONCAT_WS(' ', p.first_name, p.last_name) AS patient_name,
+            a.appointment_datetime AS slot_start_utc,
+            a.appointment_status AS status,
+            COALESCE(
+                (SELECT pay.amount FROM payments pay
+                 WHERE pay.appointment_id = a.appointment_id
+                   AND pay.payment_status = 'SUCCESS'
+                 ORDER BY pay.created_at DESC LIMIT 1),
+                ct.fee
+            ) AS fee_amount,
+            ct.name AS consultation_type_name
         FROM appointments a
-        LEFT JOIN patients p ON p.id = a.patient_id
-        LEFT JOIN consultation_types ct ON ct.id = a.consultation_type_id
-        WHERE a.doctor_id = %s
-        ORDER BY a.booked_at DESC
+        LEFT JOIN patients p ON p.patient_id = a.patient_id
+        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        WHERE ct.doctor_id = %s
+        ORDER BY a.created_at DESC
         LIMIT 8
         """,
         (doctor_id,),

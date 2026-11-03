@@ -57,9 +57,12 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
 
     patient_rows = execute_query(
         """
-        SELECT id, full_name, email
-        FROM patients
-        WHERE id = %s AND deleted_at IS NULL
+         SELECT p.patient_id AS id,
+             CONCAT_WS(' ', p.first_name, p.last_name) AS full_name,
+             u.email
+         FROM patients p
+         JOIN users u ON u.user_id = p.user_id
+         WHERE p.patient_id = %s AND u.is_active = TRUE
         """,
         (patient_id,),
     )
@@ -69,36 +72,41 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
     upcoming_rows = execute_query(
         """
         SELECT COUNT(*) AS count
-        FROM appointments
-        WHERE patient_id = %s
-          AND status = 'CONFIRMED'
-          AND slot_start_utc >= UTC_TIMESTAMP()
+                FROM appointments
+                WHERE patient_id = %s
+                    AND appointment_status = 'CONFIRMED'
+                    AND appointment_datetime >= UTC_TIMESTAMP()
         """,
         (patient_id,),
     )
     appointments = execute_query(
         """
         SELECT
-            a.id,
-            a.slot_start_utc,
-            a.slot_end_utc,
-            a.status,
-            a.fee_amount,
-            ct.kind AS consultation_type,
-            d.full_name AS doctor_name,
+            a.appointment_id AS id,
+            a.appointment_datetime AS slot_start_utc,
+            a.appointment_status AS status,
+            COALESCE(
+                (SELECT pay.amount FROM payments pay
+                 WHERE pay.appointment_id = a.appointment_id
+                   AND pay.payment_status = 'SUCCESS'
+                 ORDER BY pay.created_at DESC LIMIT 1),
+                ct.fee
+            ) AS fee_amount,
+            ct.name AS consultation_type,
+            CONCAT_WS(' ', d.first_name, d.last_name) AS doctor_name,
             h.name AS hospital_name,
-            h.city AS hospital_city
+            h.address AS hospital_city
         FROM appointments a
-        JOIN doctors d ON d.id = a.doctor_id
-        JOIN consultation_types ct ON ct.id = a.consultation_type_id
-        JOIN hospitals h ON h.id = d.hospital_id
+        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        JOIN doctors d ON d.doctor_id = ct.doctor_id
+        JOIN hospitals h ON h.hospital_id = d.hospital_id
         WHERE a.patient_id = %s
         ORDER BY
             CASE
-                WHEN a.status = 'CONFIRMED' AND a.slot_start_utc >= UTC_TIMESTAMP() THEN 0
+                WHEN a.appointment_status = 'CONFIRMED' AND a.appointment_datetime >= UTC_TIMESTAMP() THEN 0
                 ELSE 1
             END,
-            a.slot_start_utc ASC
+            a.appointment_datetime ASC
         LIMIT 50
         """,
         (patient_id,),

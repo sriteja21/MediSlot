@@ -100,13 +100,13 @@
         <div class="form-group">
           <label for="patternDay">Day of Week <span style="color: var(--danger)">*</span></label>
           <select id="patternDay" class="form-control" required>
+            <option value="0">Sunday</option>
             <option value="1">Monday</option>
             <option value="2">Tuesday</option>
             <option value="3">Wednesday</option>
             <option value="4">Thursday</option>
             <option value="5">Friday</option>
             <option value="6">Saturday</option>
-            <option value="7">Sunday</option>
           </select>
         </div>
 
@@ -154,23 +154,23 @@
 {% block scripts %}
 <script>
   const DOW_NAMES = {
+    0: 'Sun',
     1: 'Mon',
     2: 'Tue',
     3: 'Wed',
     4: 'Thu',
     5: 'Fri',
-    6: 'Sat',
-    7: 'Sun'
+    6: 'Sat'
   };
 
   const DOW_FULL = {
+    0: 'Sunday',
     1: 'Monday',
     2: 'Tuesday',
     3: 'Wednesday',
     4: 'Thursday',
     5: 'Friday',
-    6: 'Saturday',
-    7: 'Sunday'
+    6: 'Saturday'
   };
 
   let consultationTypes = [];

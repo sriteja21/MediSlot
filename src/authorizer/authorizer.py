@@ -5,13 +5,13 @@ MediSlot Lambda Authorizer.
 Responsibilities:
 - Extract the Bearer JWT from the Authorization header.
 - Verify JWT signature, expiry, claims, and role.
-- Reject access tokens that have been revoked.
+- Enforce access-token expiry; logout revokes the refresh session.
 - Enforce doctor-only and patient-only routes.
 - Return an IAM policy and trusted identity context.
 
 Expected JWT claims:
     sub  - User UUID
-    role - doctor or patient
+    role - doctor, patient, or admin
     iat  - Issued-at timestamp
     exp  - Expiration timestamp
     jti  - Unique access-token identifier
@@ -19,12 +19,9 @@ Expected JWT claims:
 
 import json
 import logging
-import os
 import time
 
-import boto3
 import jwt
-from botocore.exceptions import BotoCoreError, ClientError
 
 from shared.config import get_jwt_secret
 
@@ -33,22 +30,12 @@ from shared.config import get_jwt_secret
 # CONFIGURATION
 # ---------------------------------------------------------
 
-ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
-
-TOKEN_DENYLIST_TABLE_NAME = os.environ.get(
-    "TOKEN_DENYLIST_TABLE_NAME",
-    f"MediSlot-TokenDenylist-{ENVIRONMENT}",
-)
-
 ACCESS_TOKEN_MAX_LIFETIME_SECONDS = 15 * 60
 
-ALLOWED_ROLES = {"doctor", "patient"}
+ALLOWED_ROLES = {"doctor", "patient", "admin"}
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-dynamodb = boto3.resource("dynamodb")
-denylist_table = dynamodb.Table(TOKEN_DENYLIST_TABLE_NAME)
 
 
 # ---------------------------------------------------------
@@ -226,23 +213,6 @@ def validate_access_token(token):
 
 
 # ---------------------------------------------------------
-# TOKEN REVOCATION CHECK
-# ---------------------------------------------------------
-
-def is_token_revoked(token_id):
-    """
-    Check whether the token's jti is present in the DynamoDB
-    denylist. A consistent read avoids relying on stale data.
-    """
-    result = denylist_table.get_item(
-        Key={"jti": token_id},
-        ConsistentRead=True,
-    )
-
-    return "Item" in result
-
-
-# ---------------------------------------------------------
 # ROUTE ROLE ENFORCEMENT
 # ---------------------------------------------------------
 
@@ -347,32 +317,6 @@ def lambda_handler(event, context):
 
     user_id = claims["sub"]
     role = claims["role"]
-    token_id = claims["jti"]
-
-    # A DynamoDB/SSM outage is an infrastructure failure, not proof
-    # that the caller supplied an invalid token. Fail closed and log it.
-    try:
-        revoked = is_token_revoked(token_id)
-    except (ClientError, BotoCoreError):
-        log_event(
-            "error",
-            "authorizer_denylist_check_failed",
-            request_id=request_id,
-            user_id=user_id,
-            role=role,
-        )
-        raise
-
-    if revoked:
-        log_event(
-            "warning",
-            "authorizer_revoked_token",
-            request_id=request_id,
-            user_id=user_id,
-            role=role,
-        )
-        raise Exception("Unauthorized")
-
     try:
         required_role = required_role_from_method_arn(method_arn)
     except ValueError as exc:

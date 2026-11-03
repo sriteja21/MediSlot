@@ -94,7 +94,7 @@
           <select id="hospital_id" name="hospital_id" class="form-control" required>
             <option value="">Select your hospital</option>
             {% for hospital in hospitals %}
-            <option value="{{ hospital.id }}">{{ hospital.name }} - {{ hospital.city }}{% if hospital.state %}, {{ hospital.state }}{% endif %}</option>
+            <option value="{{ hospital.id }}">{{ hospital.name }} - {{ hospital.address }}</option>
             {% endfor %}
           </select>
           <div class="form-hint">Choose your affiliated hospital.</div>
