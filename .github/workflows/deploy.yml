@@ -604,9 +604,6 @@ jobs:
           PARAMETERS=(
             Environment="$ENVIRONMENT"
             AppArtifactKey="$ARTIFACT_KEY"
-            FlaskSecretParameterName="/MediSlot/${ENVIRONMENT}/ec2-app/flask-secret"
-            TlsCertificateParameterName="/MediSlot/${ENVIRONMENT}/ec2-app/tls-certificate"
-            TlsPrivateKeyParameterName="/MediSlot/${ENVIRONMENT}/ec2-app/tls-private-key"
           )
 
           aws cloudformation deploy \

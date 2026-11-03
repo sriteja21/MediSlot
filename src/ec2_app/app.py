@@ -11,7 +11,6 @@ import os
 from functools import wraps
 from typing import Any
 
-import boto3
 import requests
 from flask import (
     Flask,
@@ -34,19 +33,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("medislot_ec2_app")
 
 app = Flask(__name__)
-SECRET_PARAMETER_NAME = os.environ.get("FLASK_SECRET_PARAMETER_NAME")
-if SECRET_PARAMETER_NAME:
-    app.secret_key = boto3.client(
-        "ssm",
-        region_name=os.environ.get("AWS_REGION"),
-    ).get_parameter(
-        Name=SECRET_PARAMETER_NAME,
-        WithDecryption=True,
-    )["Parameter"]["Value"]
-else:
-    app.secret_key = os.environ.get("SECRET_KEY")
+app.secret_key = os.environ.get("SECRET_KEY")
 if not app.secret_key:
-    raise RuntimeError("Configure a Flask secret in SSM or SECRET_KEY for local development.")
+    raise RuntimeError("SECRET_KEY must be configured for the Flask application.")
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in {"true", "1"}
 app.config.update(

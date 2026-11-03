@@ -21,7 +21,7 @@ Configure these GitHub environment secrets:
 - `MEDISLOT_DB_MASTER_PASSWORD`: password for the RDS master account.
 - `AWS_REGION`: optional; defaults to `ap-south-1`.
 
-Before deploying the application, provision SecureString parameters `/MediSlot/{environment}/auth/jwt-secret`, `/MediSlot/{environment}/database/application-credentials`, `/MediSlot/{environment}/ec2-app/flask-secret`, `/MediSlot/{environment}/ec2-app/tls-certificate`, and `/MediSlot/{environment}/ec2-app/tls-private-key` in Systems Manager Parameter Store. The database credentials value must be JSON with `username` and `password`; CI writes the RDS master password to `/MediSlot/{environment}/database/master-password-secure` as a SecureString and removes the legacy plaintext parameter. The TLS values must be PEM certificate and private key contents, and the certificate must include the portal IP as an IP SAN. The Flask app reads its signing key at startup with boto3 `ssm:GetParameter(WithDecryption=True)`; the EC2 instance role is scoped to its parameters.
+Before deploying the application, provision SecureString parameters `/MediSlot/{environment}/auth/jwt-secret` and `/MediSlot/{environment}/database/application-credentials` in Systems Manager Parameter Store. The database credentials value must be JSON with `username` and `password`; CI writes the RDS master password to `/MediSlot/{environment}/database/master-password-secure` as a SecureString and removes the legacy plaintext parameter. The EC2 website does not require app-specific SSM parameters: bootstrap generates its Flask session key and a self-signed TLS certificate locally.
 
 For a first deployment, deploy the Network stack first and read its `PortalElasticIp` output:
 
@@ -30,9 +30,9 @@ aws cloudformation deploy --template-file infrastructure/cloudformation/network-
 $portalIp = aws cloudformation describe-stacks --stack-name MediSlot-Network-dev --query "Stacks[0].Outputs[?OutputKey=='PortalElasticIp'].OutputValue | [0]" --output text
 ```
 
-Obtain a certificate with an IP SAN matching `$portalIp`, then create the three `/MediSlot/dev/ec2-app/` parameters in the SSM Parameter Store console as `SecureString`: a random Flask secret, the certificate PEM, and its matching private key PEM. Repeat with the environment-specific stack/parameter names for `test` and `prod`. The portal stack does not create DNS records.
+No additional SSM setup is needed for the portal. Bootstrap creates a self-signed certificate containing `$portalIp` as an IP SAN and a random Flask secret stored locally with mode `0600`. Browsers will show a certificate trust warning; use the browser's advanced option to continue for development. For a trusted, warning-free public site, later replace this with a certificate from a trusted issuer.
 
-The portal accepts public HTTPS on TCP 443 only. It does not expose SSH or the Gunicorn port. Manage the instance with AWS Systems Manager Session Manager (`aws ssm start-session --target INSTANCE_ID --region AWS_REGION`); the instance role includes `AmazonSSMManagedInstanceCore`. The stack does not create Route 53 records. Do not disable TLS for a public login portal; use a certificate whose SAN matches the stable portal address.
+The portal accepts public HTTPS on TCP 443 only. It does not expose SSH or the Gunicorn port. Manage the instance with AWS Systems Manager Session Manager (`aws ssm start-session --target INSTANCE_ID --region AWS_REGION`); the instance role includes `AmazonSSMManagedInstanceCore`. The stack does not create Route 53 records.
 
 The EC2 stack downloads a versioned ZIP from the private reports bucket during instance bootstrap. CloudFormation waits up to 30 minutes for Nginx, Gunicorn, and `/healthz` to pass before marking the instance created; bootstrap output is written to `/var/log/medislot-bootstrap.log` and the EC2 console. Its health endpoint is `/healthz`; the stack output and deployment log include the HTTPS portal URL.
 

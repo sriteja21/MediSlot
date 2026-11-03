@@ -27,21 +27,6 @@ Parameters:
     Type: String
     Description: Versioned key of the Flask application ZIP in the reports bucket.
 
-  FlaskSecretParameterName:
-    Type: String
-    Default: /MediSlot/dev/ec2-app/flask-secret
-    Description: SSM SecureString parameter name for Flask session signing.
-
-  TlsCertificateParameterName:
-    Type: String
-    Default: /MediSlot/dev/ec2-app/tls-certificate
-    Description: SSM SecureString parameter name containing the TLS certificate PEM.
-
-  TlsPrivateKeyParameterName:
-    Type: String
-    Default: /MediSlot/dev/ec2-app/tls-private-key
-    Description: SSM SecureString parameter name containing the TLS private key PEM.
-
 Resources:
   MediSlotInstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -95,26 +80,6 @@ Resources:
                     - "${ReportsBucketArn}/ec2-app/*"
                     - ReportsBucketArn:
                         Fn::ImportValue: !Sub "MediSlot-ReportsBucketArn-${Environment}"
-        - PolicyName: !Sub "MediSlot-ReadRuntimeParameters-${Environment}"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: ReadFlaskAndTlsParameters
-                Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${FlaskSecretParameterName}"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TlsCertificateParameterName}"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TlsPrivateKeyParameterName}"
-              - Sid: DecryptSecureParametersThroughSsm
-                Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: "*"
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub "ssm.${AWS::Region}.${AWS::URLSuffix}"
         - PolicyName: !Sub "MediSlot-SignalPortalBootstrap-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -177,22 +142,28 @@ Resources:
                   exit "$STATUS"
               }
               trap signal_failure ERR
-              dnf install -y awscli python3.11 python3.11-pip nginx unzip
+              dnf install -y awscli openssl python3.11 python3.11-pip nginx unzip
               TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token \
                 -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')
               INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
                 http://169.254.169.254/latest/meta-data/instance-id)
               mkdir -p /opt/medislot/app /etc/medislot
+              mkdir -p /etc/pki/tls/private /etc/pki/tls/certs
+              PORTAL_IP='${PortalIp}'
+              openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout /etc/pki/tls/private/medislot-portal.key \
+                -out /etc/pki/tls/certs/medislot-portal.crt \
+                -subj "/CN=MediSlot Portal" \
+                -addext "subjectAltName=IP:$PORTAL_IP"
+              chmod 600 /etc/pki/tls/private/medislot-portal.key
               aws s3 cp "s3://${ReportsBucket}/${AppArtifactKey}" /tmp/medislot-app.zip
               unzip -q /tmp/medislot-app.zip -d /opt/medislot/app
               python3.11 -m venv /opt/medislot/venv
               /opt/medislot/venv/bin/pip install --upgrade pip
               /opt/medislot/venv/bin/pip install -r /opt/medislot/app/requirements.txt
-              mkdir -p /etc/pki/tls/private /etc/pki/tls/certs
-              aws ssm get-parameter --name '${TlsCertificateParameterName}' --with-decryption --query Parameter.Value --output text > /etc/pki/tls/certs/medislot-portal.crt
-              aws ssm get-parameter --name '${TlsPrivateKeyParameterName}' --with-decryption --query Parameter.Value --output text > /etc/pki/tls/private/medislot-portal.key
-              chmod 600 /etc/pki/tls/private/medislot-portal.key /etc/pki/tls/certs/medislot-portal.crt
-              printf 'API_BASE_URL=%s\nAWS_REGION=%s\nFLASK_SECRET_PARAMETER_NAME=%s\nCOOKIE_SECURE=true\n' '${ApiBaseUrl}' '${AWS::Region}' '${FlaskSecretParameterName}' > /etc/medislot/app.env
+              FLASK_SECRET=$(openssl rand -hex 32)
+              printf 'API_BASE_URL=%s\nAWS_REGION=%s\nSECRET_KEY=%s\nCOOKIE_SECURE=true\n' '${ApiBaseUrl}' '${AWS::Region}' "$FLASK_SECRET" > /etc/medislot/app.env
+              unset FLASK_SECRET
               chmod 600 /etc/medislot/app.env
               cat > /etc/systemd/system/medislot.service <<'SERVICE'
               [Unit]
@@ -247,9 +218,8 @@ Resources:
             - ReportsBucket:
                 Fn::ImportValue: !Sub "MediSlot-ReportsBucketName-${Environment}"
               AppArtifactKey: !Ref AppArtifactKey
-              FlaskSecretParameterName: !Ref FlaskSecretParameterName
-              TlsCertificateParameterName: !Ref TlsCertificateParameterName
-              TlsPrivateKeyParameterName: !Ref TlsPrivateKeyParameterName
+              PortalIp:
+                Fn::ImportValue: !Sub "MediSlot-PortalElasticIp-${Environment}"
               ApiBaseUrl:
                 Fn::ImportValue: !Sub "MediSlot-ApiUrl-${Environment}"
       Tags:
