@@ -263,6 +263,15 @@ Resources:
             Auth:
               Authorizer: NONE
 
+        RegistrationOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /auth/registration-options
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
         DoctorLogin:
           Type: Api
           Properties:

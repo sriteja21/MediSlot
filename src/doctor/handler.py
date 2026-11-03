@@ -329,6 +329,28 @@ def get_doctor_table_columns() -> set[str]:
     return _doctor_columns_cache
 
 
+def get_doctor_specialisations(
+    doctor_id: str,
+    primary_id: int,
+    primary_name: str | None,
+) -> list[dict[str, Any]]:
+    rows = execute_query(
+        """
+        SELECT s.id, s.name
+        FROM doctor_specialisations ds
+        JOIN specialisations s ON s.id = ds.specialisation_id
+        WHERE ds.doctor_id = %s
+        ORDER BY s.name ASC
+        """,
+        (doctor_id,),
+    )
+    if rows:
+        return rows
+    if primary_name:
+        return [{"id": primary_id, "name": primary_name}]
+    return []
+
+
 # ============================================================
 # ROUTE HANDLERS
 # ============================================================
@@ -374,6 +396,11 @@ def get_doctor_profile(doctor_id: str) -> dict[str, Any]:
         return format_response(404, {"error": "Doctor not found."})
 
     doctor = rows[0]
+    doctor["specialisations"] = get_doctor_specialisations(
+        doctor_id,
+        int(doctor["specialisation_id"]),
+        doctor.get("specialisation_name"),
+    )
 
     # Retrieve languages
     lang_rows = execute_query(
@@ -1152,6 +1179,11 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
         return format_response(404, {"error": "Doctor not found."})
 
     profile = profile_rows[0]
+    profile["specialisations"] = get_doctor_specialisations(
+        doctor_id,
+        int(profile["specialisation_id"]),
+        profile.get("specialisation_name"),
+    )
     profile["is_active"] = bool(profile["is_active"])
     profile["years_experience"] = int(profile["years_experience"] or 0)
     if not has_phone:

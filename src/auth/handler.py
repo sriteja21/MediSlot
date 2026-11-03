@@ -38,7 +38,7 @@ import jwt
 import pymysql
 from botocore.exceptions import ClientError
  
-from shared.database import get_database_connection
+from shared.database import execute_query, get_database_connection
  
  
 # ============================================================
@@ -416,16 +416,26 @@ def validate_doctor_profile(body: dict[str, Any]) -> dict[str, Any]:
  
     licence_number = required_text(body, "licence_number", 50)
  
-    specialisation_id = body.get("specialisation_id")
- 
-    if (
+    specialisation_ids = body.get("specialisation_ids")
+    if specialisation_ids is None:
+        legacy_specialisation_id = body.get("specialisation_id")
+        specialisation_ids = [legacy_specialisation_id]
+
+    if not isinstance(specialisation_ids, list) or not specialisation_ids:
+        raise ValueError("Select at least one specialisation.")
+
+    if any(
         isinstance(specialisation_id, bool)
         or not isinstance(specialisation_id, int)
         or specialisation_id < 1
+        for specialisation_id in specialisation_ids
     ):
-        raise ValueError(
-            "specialisation_id must be a positive integer."
-        )
+        raise ValueError("Specialisation IDs must be positive integers.")
+
+    if len(set(specialisation_ids)) != len(specialisation_ids):
+        raise ValueError("A specialisation cannot be selected more than once.")
+
+    primary_specialisation_id = specialisation_ids[0]
  
     hospital_id = required_text(body, "hospital_id", 36)
  
@@ -458,7 +468,8 @@ def validate_doctor_profile(body: dict[str, Any]) -> dict[str, Any]:
  
     return {
         "licence_number": licence_number,
-        "specialisation_id": specialisation_id,
+        "specialisation_id": primary_specialisation_id,
+        "specialisation_ids": specialisation_ids,
         "hospital_id": hospital_id,
         "years_experience": years_experience,
         "qualifications": optional_text(body, "qualifications", 500),
@@ -872,6 +883,19 @@ def register_user(
                         profile["timezone"],
                     ),
                 )
+
+                cursor.executemany(
+                    """
+                    INSERT INTO doctor_specialisations (
+                        doctor_id,
+                        specialisation_id
+                    ) VALUES (%s, %s)
+                    """,
+                    [
+                        (user_id, specialisation_id)
+                        for specialisation_id in profile["specialisation_ids"]
+                    ],
+                )
  
             else:
                 cursor.execute(
@@ -947,13 +971,13 @@ def register_user(
                 },
             }
  
-        # 1452: foreign key failure (specialisation or hospital).
+        # 1452: selected specialisation or hospital does not exist.
         if error_code == 1452:
             return {
                 "statusCode": 400,
                 "body": {
                     "message": (
-                        "specialisation_id or hospital_id "
+                        "A selected specialisation or hospital "
                         "does not exist."
                     ),
                 },
@@ -969,6 +993,26 @@ def register_user(
         connection.close()
  
  
+def get_registration_options() -> dict[str, Any]:
+    specialisations = execute_query(
+        "SELECT id, name FROM specialisations ORDER BY name ASC"
+    )
+    hospitals = execute_query(
+        """
+        SELECT id, name, city, state
+        FROM hospitals
+        ORDER BY city ASC, name ASC
+        """
+    )
+    return {
+        "statusCode": 200,
+        "body": {
+            "specialisations": specialisations,
+            "hospitals": hospitals,
+        },
+    }
+
+
 # ============================================================
 # LOGIN
 # ============================================================
@@ -1296,7 +1340,10 @@ def lambda_handler(
     try:
         body = get_request_body(event)
  
-        if method == "POST" and path == "/auth/doctors/register":
+        if method == "GET" and path == "/auth/registration-options":
+            result = get_registration_options()
+
+        elif method == "POST" and path == "/auth/doctors/register":
             result = register_user(body, "doctor")
  
         elif method == "POST" and path == "/auth/patients/register":

@@ -70,32 +70,34 @@
 
       <div class="form-grid-2">
         <div class="form-group">
-          <label for="specialisation_id">Specialisation ID <span style="color: var(--danger)">*</span></label>
-          <input
-            type="number"
-            id="specialisation_id"
-            name="specialisation_id"
-            class="form-control"
-            placeholder="1"
-            value="1"
-            min="1"
-            required
-          >
-          <div class="form-hint">E.g., 1 for General Medicine, 2 for Cardiology.</div>
+          <label id="specialisation-label">Specialisations <span style="color: var(--danger)">*</span></label>
+          <details class="multi-select" id="specialisation-picker">
+            <summary class="form-control multi-select-trigger" id="specialisation-summary">
+              Choose one or more specialisations
+            </summary>
+            <div class="multi-select-options">
+              {% for specialisation in specialisations %}
+              <label class="multi-select-option">
+                <input type="checkbox" name="specialisation_ids" value="{{ specialisation.id }}" data-label="{{ specialisation.name }}">
+                <span>{{ specialisation.name }}</span>
+              </label>
+              {% else %}
+              <p class="multi-select-empty">No specialisations are available.</p>
+              {% endfor %}
+            </div>
+          </details>
+          <div class="form-hint">Choose all specialties that apply.</div>
         </div>
 
         <div class="form-group">
-          <label for="hospital_id">Hospital ID (UUID) <span style="color: var(--danger)">*</span></label>
-          <input
-            type="text"
-            id="hospital_id"
-            name="hospital_id"
-            class="form-control"
-            placeholder="a0000000-0000-0000-0000-000000000001"
-            value="a0000000-0000-0000-0000-000000000001"
-            required
-          >
-          <div class="form-hint">Valid 36-character UUID of your affiliated hospital.</div>
+          <label for="hospital_id">Hospital <span style="color: var(--danger)">*</span></label>
+          <select id="hospital_id" name="hospital_id" class="form-control" required>
+            <option value="">Select your hospital</option>
+            {% for hospital in hospitals %}
+            <option value="{{ hospital.id }}">{{ hospital.name }} - {{ hospital.city }}{% if hospital.state %}, {{ hospital.state }}{% endif %}</option>
+            {% endfor %}
+          </select>
+          <div class="form-hint">Choose your affiliated hospital.</div>
         </div>
       </div>
 
@@ -141,7 +143,7 @@
         ></textarea>
       </div>
 
-      <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem; padding: 0.9rem;">
+      <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem; padding: 0.9rem;" {% if not specialisations or not hospitals %}disabled{% endif %}>
         Create Doctor Account
       </button>
     </form>
@@ -156,4 +158,24 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (() => {
+    const picker = document.getElementById("specialisation-picker");
+    const summary = document.getElementById("specialisation-summary");
+    if (!picker || !summary) return;
+
+    const updateSummary = () => {
+      const selected = [...picker.querySelectorAll('input[name="specialisation_ids"]:checked')];
+      summary.textContent = selected.length
+        ? `${selected.length} specialisation${selected.length === 1 ? "" : "s"} selected`
+        : "Choose one or more specialisations";
+    };
+
+    picker.addEventListener("change", updateSummary);
+    updateSummary();
+  })();
+</script>
 {% endblock %}

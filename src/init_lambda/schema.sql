@@ -15,6 +15,18 @@ CREATE TABLE IF NOT EXISTS specialisations (
     UNIQUE KEY uq_spec_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+INSERT IGNORE INTO specialisations (name) VALUES
+    ('General Medicine'),
+    ('Cardiology'),
+    ('Dermatology'),
+    ('Endocrinology'),
+    ('Neurology'),
+    ('Obstetrics and Gynaecology'),
+    ('Paediatrics'),
+    ('Psychiatry'),
+    ('Orthopaedics'),
+    ('Pulmonology');
+
 
 CREATE TABLE IF NOT EXISTS hospitals (
     id CHAR(36) PRIMARY KEY,
@@ -26,6 +38,13 @@ CREATE TABLE IF NOT EXISTS hospitals (
     UNIQUE KEY uq_hospital (name, city, address_line),
     KEY idx_hospital_city_name (city, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+INSERT IGNORE INTO hospitals (
+    id, name, address_line, city, state, postal_code
+) VALUES
+    ('a0000000-0000-0000-0000-000000000001', 'Central City Medical Center', '100 Health Avenue', 'Bengaluru', 'Karnataka', '560001'),
+    ('a0000000-0000-0000-0000-000000000002', 'Northside Specialty Hospital', '25 Lake View Road', 'Bengaluru', 'Karnataka', '560038'),
+    ('a0000000-0000-0000-0000-000000000003', 'Riverside Community Hospital', '8 River Road', 'Mysuru', 'Karnataka', '570001');
 
 
 CREATE TABLE IF NOT EXISTS doctors (
@@ -56,6 +75,22 @@ CREATE TABLE IF NOT EXISTS doctors (
 
     CONSTRAINT fk_doc_hosp
         FOREIGN KEY (hospital_id) REFERENCES hospitals(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+
+CREATE TABLE IF NOT EXISTS doctor_specialisations (
+    doctor_id CHAR(36) NOT NULL,
+    specialisation_id INT UNSIGNED NOT NULL,
+
+    PRIMARY KEY (doctor_id, specialisation_id),
+    KEY idx_doctor_specialisations_specialisation (specialisation_id, doctor_id),
+
+    CONSTRAINT fk_doc_spec_link_doctor
+        FOREIGN KEY (doctor_id) REFERENCES doctors(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_doc_spec_link_specialisation
+        FOREIGN KEY (specialisation_id) REFERENCES specialisations(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 

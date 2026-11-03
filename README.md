@@ -13,7 +13,7 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 
 ## Deployment
 
-The GitHub Actions workflow deploys Network, Data, IAM, database initialization, the SAM application, and the EC2 portal in dependency order. A push deploys to `dev`; `workflow_dispatch` can select `dev`, `test`, or `prod`.
+The GitHub Actions workflow deploys Network, Data, IAM, initializes the database schema and sample registration catalogs, then deploys the SAM application and EC2 portal. A push deploys to `dev`; `workflow_dispatch` can select `dev`, `test`, or `prod`. The sample hospitals are fictional; replace them with the real provider catalog before production use.
 
 Configure these GitHub environment secrets:
 

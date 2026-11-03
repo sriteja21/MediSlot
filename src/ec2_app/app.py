@@ -236,23 +236,36 @@ def login():
 def register():
     """Render registration page or process doctor account creation."""
     if request.method == "GET":
-        return render_template("register.html")
+        status, options = api_call("GET", "/auth/registration-options")
+        if status != 200:
+            logger.warning("Could not load doctor registration options. status=%s", status)
+            flash("Registration options are temporarily unavailable. Please try again.", "warning")
+
+        return render_template(
+            "register.html",
+            specialisations=options.get("specialisations", []),
+            hospitals=options.get("hospitals", []),
+        )
 
     full_name = request.form.get("full_name", "").strip()
     email = request.form.get("email", "").strip()
     password = request.form.get("password", "")
     licence_number = request.form.get("licence_number", "").strip()
-    specialisation_id_raw = request.form.get("specialisation_id", "").strip()
+    specialisation_ids_raw = request.form.getlist("specialisation_ids")
     hospital_id = request.form.get("hospital_id", "").strip()
     years_experience_raw = request.form.get("years_experience", "0").strip()
     qualifications = request.form.get("qualifications", "").strip()
     timezone_name = request.form.get("timezone", "Asia/Kolkata").strip() or "Asia/Kolkata"
 
     try:
-        specialisation_id = int(specialisation_id_raw)
+        specialisation_ids = [int(value) for value in specialisation_ids_raw]
         years_experience = int(years_experience_raw)
     except ValueError:
-        flash("Specialisation ID and Years of Experience must be numbers.", "danger")
+        flash("Select valid specialisations and enter a valid experience value.", "danger")
+        return redirect(url_for("register"))
+
+    if not specialisation_ids:
+        flash("Select at least one specialisation.", "danger")
         return redirect(url_for("register"))
 
     payload = {
@@ -260,7 +273,8 @@ def register():
         "email": email,
         "password": password,
         "licence_number": licence_number,
-        "specialisation_id": specialisation_id,
+        "specialisation_id": specialisation_ids[0],
+        "specialisation_ids": specialisation_ids,
         "hospital_id": hospital_id,
         "years_experience": years_experience,
         "qualifications": qualifications or None,

@@ -378,6 +378,20 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
+          RESULT_FILE="$RUNNER_TEMP/medislot-db-initializer-result.json"
+          aws lambda invoke \
+            --function-name "medislot-db-initializer-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            "$RESULT_FILE" > /dev/null
+
+          if [[ "$(jq -r '.status' "$RESULT_FILE")" != "SUCCESS" ]]; then
+            jq . "$RESULT_FILE"
+            echo "::error::MediSlot database initialization failed."
+            exit 1
+          fi
+
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \

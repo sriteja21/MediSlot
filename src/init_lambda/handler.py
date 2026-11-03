@@ -68,6 +68,7 @@ EXPECTED_TABLES = {
     "specialisations",
     "hospitals",
     "doctors",
+    "doctor_specialisations",
     "doctor_languages",
     "patients",
     "consultation_types",
