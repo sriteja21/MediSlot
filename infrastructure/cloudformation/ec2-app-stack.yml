@@ -35,6 +35,11 @@ Resources:
       VpcId:
         Fn::ImportValue: !Sub "MediSlot-VpcId-${Environment}"
       SecurityGroupIngress:
+        - Description: HTTP access only to redirect clients to HTTPS.
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
         - Description: Public HTTPS access to the MediSlot portal.
           IpProtocol: tcp
           FromPort: 443
@@ -185,6 +190,12 @@ Resources:
               WantedBy=multi-user.target
               SERVICE
               cat > /etc/nginx/conf.d/medislot.conf <<'NGINX'
+                server {
+                  listen 80 default_server;
+                  server_name _;
+                  return 301 https://$host$request_uri;
+                }
+
               server {
                   listen 443 ssl default_server;
                   server_name _;
