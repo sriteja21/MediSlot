@@ -220,16 +220,16 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-    MediSlotApplicationElasticIpAssociation:
-      Type: AWS::EC2::EIPAssociation
-      Properties:
-        AllocationId:
-          Fn::ImportValue: !Sub "MediSlot-PortalElasticIpAllocationId-${Environment}"
-        InstanceId: !Ref MediSlotApplicationInstance
+  MediSlotApplicationElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId:
+        Fn::ImportValue: !Sub "MediSlot-PortalElasticIpAllocationId-${Environment}"
+      InstanceId: !Ref MediSlotApplicationInstance
 
 Outputs:
   ApplicationUrl:
-      Description: HTTPS address of the MediSlot EC2 portal. TLS certificate must include this IP address.
+    Description: HTTPS address of the MediSlot EC2 portal. TLS certificate must include this IP address.
     Value: !Sub
       - "https://${PortalIp}"
       - PortalIp:
