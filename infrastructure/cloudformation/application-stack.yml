@@ -504,6 +504,35 @@ Resources:
             Path: /doctors/me/dashboard
             Method: GET
 
+  MediSlotPatientFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-PatientFunction-${Environment}"
+      Description: !Sub "MediSlot patient dashboard API (${Environment})."
+      CodeUri: ../../src/patient/
+      Handler: handler.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Events:
+        PatientDashboardGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/dashboard
+            Method: GET
+
   # ==========================================================
   # DAILY SLOT MATERIALISER
   # ==========================================================

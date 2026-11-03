@@ -1313,6 +1313,23 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     local_today = datetime.now(ZoneInfo(timezone_name)).date()
     utc_start, utc_end = get_local_day_utc_bounds(local_today, timezone_name)
 
+    today_appointments_rows = execute_query(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM appointments
+        WHERE doctor_id = %s
+          AND status = 'CONFIRMED'
+          AND slot_start_utc >= %s
+          AND slot_start_utc < %s
+        """,
+        (doctor_id, utc_start.replace(tzinfo=None), utc_end.replace(tzinfo=None)),
+    )
+    today_appointments_count = (
+        int(today_appointments_rows[0]["cnt"])
+        if today_appointments_rows
+        else 0
+    )
+
     try:
         today_slots_count = len(query_doctor_slots(doctor_id, utc_start, utc_end))
     except Exception as exc:
@@ -1339,9 +1356,45 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     patients_rows = execute_query(patients_query, (doctor_id,))
     total_patients_served = int(patients_rows[0]["cnt"]) if patients_rows else 0
 
+    active_types_rows = execute_query(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM consultation_types
+        WHERE doctor_id = %s AND is_active = TRUE
+        """,
+        (doctor_id,),
+    )
+    active_consultation_types = int(active_types_rows[0]["cnt"]) if active_types_rows else 0
+
+    recent_appointments = execute_query(
+        """
+        SELECT
+            a.id,
+            a.patient_id,
+            p.full_name AS patient_name,
+            a.slot_start_utc,
+            a.status,
+            a.fee_amount,
+            ct.kind AS consultation_type_name
+        FROM appointments a
+        LEFT JOIN patients p ON p.id = a.patient_id
+        LEFT JOIN consultation_types ct ON ct.id = a.consultation_type_id
+        WHERE a.doctor_id = %s
+        ORDER BY a.booked_at DESC
+        LIMIT 8
+        """,
+        (doctor_id,),
+    )
+    for appointment in recent_appointments:
+        appointment["fee_amount"] = float(appointment["fee_amount"] or 0)
+
     dashboard_data = {
         "profile_summary": profile,
         "profile": profile,
+        "doctor_name": profile["full_name"],
+        "today_appointments": today_appointments_count,
+        "active_consultation_types": active_consultation_types,
+        "recent_appointments": recent_appointments,
         "upcoming_appointments_count": upcoming_appointments_count,
         "upcoming_appointments": upcoming_appointments_count,
         "today_slots_count": today_slots_count,

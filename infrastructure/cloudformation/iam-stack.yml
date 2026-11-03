@@ -105,6 +105,7 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthFunction-${Environment}:*"
 
+                    - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientFunction-${Environment}:*"
         - PolicyName: !Sub "MediSlot-AuthReadSecrets-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -310,6 +311,7 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-ApiFunction-${Environment}:*"
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-DoctorFunction-${Environment}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientFunction-${Environment}:*"
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-SlotMaterialiser-${Environment}:*"
 
         - PolicyName: !Sub "MediSlot-ApiReadSecrets-${Environment}"

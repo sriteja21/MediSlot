@@ -69,6 +69,9 @@
             <strong>Licence:</strong> <span id="displayLicence">Loading...</span>
           </div>
           <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+            <strong>Specialisations:</strong> <span id="displaySpecialisations">Loading...</span>
+          </div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.5rem;">
             <strong>Timezone:</strong> <span id="displayTimezone">Loading...</span>
           </div>
           <div style="font-size: 0.82rem; color: var(--text-muted);">
@@ -219,6 +222,9 @@
       // Populate read-only sidebar items
       document.getElementById('displayEmail').textContent = data.email || '—';
       document.getElementById('displayLicence').textContent = data.licence_number || '—';
+      document.getElementById('displaySpecialisations').textContent = Array.isArray(data.specialisations)
+        ? data.specialisations.map(item => item.name).join(', ') || '—'
+        : '—';
       document.getElementById('displayTimezone').textContent = data.timezone || 'UTC';
 
       // Update photo if S3 presigned URL provided
@@ -302,8 +308,8 @@
       console.error('Profile update error:', err);
       showAlert('A network error occurred while updating profile.', 'danger');
     } finally {
-      btn.disabled = false;
       btnText.textContent = 'Save Changes';
+      btn.disabled = profileFieldIds.every(id => document.getElementById(id).disabled);
     }
   }
 

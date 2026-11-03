@@ -106,11 +106,11 @@
 
 {% block scripts %}
 <script>
+  const DOCTOR_TIMEZONE = {{ doctor_timezone|tojson }};
   let currentDate = '';
 
   document.addEventListener('DOMContentLoaded', () => {
-    // Default to today's date
-    const today = new Date().toISOString().split('T')[0];
+    const today = getDoctorToday();
     currentDate = today;
     document.getElementById('scheduleDatePicker').value = today;
 
@@ -129,10 +129,21 @@
   }
 
   function setDateToToday() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getDoctorToday();
     currentDate = today;
     document.getElementById('scheduleDatePicker').value = today;
     loadSchedule(today);
+  }
+
+  function getDoctorToday() {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: DOCTOR_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
   }
 
   function changeDateOffset(offsetDays) {
@@ -175,8 +186,8 @@
     // Update title
     try {
       const parts = dateStr.split('-');
-      const d = new Date(parts[0], parts[1] - 1, parts[2]);
-      const formatted = d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const d = new Date(`${dateStr}T12:00:00Z`);
+      const formatted = d.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       document.getElementById('scheduleDateTitle').textContent = `Schedule for ${formatted}`;
     } catch (e) {
       document.getElementById('scheduleDateTitle').textContent = `Schedule for ${dateStr}`;
@@ -311,7 +322,7 @@
     if (!isoStr) return '--:--';
     try {
       const d = new Date(isoStr);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      return d.toLocaleTimeString([], { timeZone: DOCTOR_TIMEZONE, hour: '2-digit', minute: '2-digit', hour12: false });
     } catch (e) {
       return isoStr.substring(11, 16);
     }

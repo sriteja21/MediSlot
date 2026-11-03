@@ -376,7 +376,13 @@ def doctor_blackouts():
 @login_required
 def doctor_schedule():
     """Serve the daily schedule timeline page."""
-    return render_template("doctor/schedule.html", active_page="schedule")
+    status, profile = api_call("GET", "/doctors/me")
+    timezone_name = profile.get("timezone", "UTC") if status == 200 else "UTC"
+    return render_template(
+        "doctor/schedule.html",
+        active_page="schedule",
+        doctor_timezone=timezone_name,
+    )
 
 
 # ============================================================
@@ -517,6 +523,14 @@ def api_doctor_schedule():
 def api_doctor_dashboard():
     """Proxy to GET /doctors/me/dashboard."""
     status, res = api_call("GET", "/doctors/me/dashboard")
+    return jsonify(res), status
+
+
+@app.route("/api/patient/dashboard", methods=["GET"])
+def api_patient_dashboard():
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call("GET", "/patients/me/dashboard")
     return jsonify(res), status
 
 

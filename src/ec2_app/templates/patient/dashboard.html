@@ -7,15 +7,130 @@
   <main class="auth-card auth-card-wide">
     <div class="auth-header">
       <div class="auth-logo">M</div>
-      <h1 class="auth-title">Patient Dashboard</h1>
-      <p class="auth-tagline">You are signed in to MediSlot.</p>
+      <h1 class="auth-title" id="patientGreeting">Your Appointments</h1>
+      <p class="auth-tagline">Review your upcoming and past visits.</p>
     </div>
-    <div class="auth-notice">
-      Patient appointment and booking APIs are not connected to this portal yet.
+
+    <div id="patientError" class="alert alert-danger" hidden>
+      <span id="patientErrorText">Could not load your appointments.</span>
+      <button type="button" class="btn btn-sm btn-secondary" onclick="loadPatientDashboard()">Retry</button>
     </div>
-    <form action="{{ url_for('logout') }}" method="POST">
-      <button type="submit" class="btn btn-secondary btn-block">Sign Out</button>
-    </form>
+
+    <div class="stats-grid" style="grid-template-columns: 1fr; margin: 1.5rem 0;">
+      <div class="stat-card">
+        <div class="stat-label">Upcoming appointments</div>
+        <div class="stat-value" id="upcomingCount"><span class="spinner"></span></div>
+      </div>
+    </div>
+
+    <div id="patientLoading" class="loading-container">
+      <div class="spinner spinner-lg"></div>
+      <p>Loading your appointments...</p>
+    </div>
+
+    <div id="patientAppointmentsContainer" class="table-container" hidden>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Date and time</th>
+            <th>Doctor</th>
+            <th>Hospital</th>
+            <th>Consultation</th>
+            <th>Status</th>
+            <th>Fee</th>
+          </tr>
+        </thead>
+        <tbody id="patientAppointmentsBody"></tbody>
+      </table>
+    </div>
+
+    <div id="patientEmptyState" class="empty-state" hidden>
+      <div class="empty-title">No appointments yet</div>
+      <p class="empty-desc">Your booked visits will appear here.</p>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.25rem;">
+      <button type="button" class="btn btn-secondary" onclick="loadPatientDashboard()">Refresh</button>
+      <form action="{{ url_for('logout') }}" method="POST">
+        <button type="submit" class="btn btn-primary">Sign Out</button>
+      </form>
+    </div>
   </main>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.addEventListener('DOMContentLoaded', loadPatientDashboard);
+
+  async function loadPatientDashboard() {
+    const loading = document.getElementById('patientLoading');
+    const error = document.getElementById('patientError');
+    const table = document.getElementById('patientAppointmentsContainer');
+    const empty = document.getElementById('patientEmptyState');
+    const body = document.getElementById('patientAppointmentsBody');
+
+    loading.hidden = false;
+    error.hidden = true;
+    table.hidden = true;
+    empty.hidden = true;
+
+    try {
+      const response = await fetch('/api/patient/dashboard');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+
+      document.getElementById('patientGreeting').textContent = data.patient?.full_name
+        ? `Hello, ${data.patient.full_name}`
+        : 'Your Appointments';
+      document.getElementById('upcomingCount').textContent = data.upcoming_appointments_count ?? 0;
+      body.innerHTML = '';
+
+      const appointments = data.appointments || [];
+      if (!appointments.length) {
+        empty.hidden = false;
+        return;
+      }
+
+      appointments.forEach(appointment => {
+        const row = document.createElement('tr');
+        const status = String(appointment.status || 'UNKNOWN');
+        const statusClass = status === 'CONFIRMED' ? 'badge-open' :
+          status === 'COMPLETED' ? 'badge-primary' : 'badge-secondary';
+        row.innerHTML = `
+          <td>${escapeHtml(formatAppointmentTime(appointment.slot_start_utc))}</td>
+          <td>${escapeHtml(appointment.doctor_name || 'Doctor')}</td>
+          <td>${escapeHtml([appointment.hospital_name, appointment.hospital_city].filter(Boolean).join(', ') || '—')}</td>
+          <td>${escapeHtml(appointment.consultation_type || 'Consultation')}</td>
+          <td><span class="badge ${statusClass}">${escapeHtml(status.replaceAll('_', ' '))}</span></td>
+          <td>${Number(appointment.fee_amount || 0).toFixed(2)}</td>
+        `;
+        body.appendChild(row);
+      });
+      table.hidden = false;
+    } catch (errorValue) {
+      document.getElementById('patientErrorText').textContent = errorValue.message || 'Could not load your appointments.';
+      error.hidden = false;
+    } finally {
+      loading.hidden = true;
+    }
+  }
+
+  function formatAppointmentTime(value) {
+    if (!value) return 'Time unavailable';
+    const text = String(value).includes('T') ? String(value) : String(value).replace(' ', 'T');
+    const iso = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text) ? text : `${text}Z`;
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+</script>
 {% endblock %}

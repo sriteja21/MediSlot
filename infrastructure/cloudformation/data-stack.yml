@@ -606,6 +606,23 @@ Resources:
               SSEAlgorithm: AES256
             BucketKeyEnabled: false
 
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - HEAD
+              - PUT
+            AllowedOrigins:
+              - Fn::Sub:
+                  - "https://${PortalIp}"
+                  - PortalIp:
+                      Fn::ImportValue: !Sub "MediSlot-PortalElasticIp-${Environment}"
+            ExposedHeaders:
+              - ETag
+            MaxAge: 3000
+
       VersioningConfiguration:
         Status: Enabled
 

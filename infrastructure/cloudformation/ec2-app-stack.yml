@@ -95,6 +95,16 @@ Resources:
                   - cloudformation:SignalResource
                 Resource:
                   - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+        - PolicyName: !Sub "MediSlot-InvokeSlotMaterialiser-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeSlotMaterialiser
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:MediSlot-SlotMaterialiser-${Environment}"
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-Portal-InstanceRole-${Environment}"
@@ -213,8 +223,33 @@ Resources:
               NGINX
               rm -f /etc/nginx/conf.d/default.conf
               chown -R ec2-user:ec2-user /opt/medislot
+              cat > /etc/systemd/system/medislot-slot-materialiser.service <<'SERVICE'
+              [Unit]
+              Description=Refresh MediSlot rolling appointment slots
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              Type=oneshot
+              ExecStart=/usr/bin/aws lambda invoke --function-name '${MaterialiserFunctionName}' --region '${AWS::Region}' --invocation-type Event --cli-binary-format raw-in-base64-out --payload '{}' /dev/null
+              SERVICE
+              cat > /etc/systemd/system/medislot-slot-materialiser.timer <<'TIMER'
+              [Unit]
+              Description=Daily MediSlot slot materialisation
+
+              [Timer]
+              OnCalendar=*-*-* 00:15:00 UTC
+              Persistent=true
+              RandomizedDelaySec=300
+              Unit=medislot-slot-materialiser.service
+
+              [Install]
+              WantedBy=timers.target
+              TIMER
               systemctl daemon-reload
               systemctl enable --now amazon-ssm-agent medislot nginx
+              systemctl enable --now medislot-slot-materialiser.timer
+              systemctl start --no-block medislot-slot-materialiser.service
                 nginx -t
                 systemctl is-active --quiet medislot
                 systemctl is-active --quiet nginx
@@ -233,6 +268,7 @@ Resources:
                 Fn::ImportValue: !Sub "MediSlot-PortalElasticIp-${Environment}"
               ApiBaseUrl:
                 Fn::ImportValue: !Sub "MediSlot-ApiUrl-${Environment}"
+              MaterialiserFunctionName: !Sub "MediSlot-SlotMaterialiser-${Environment}"
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-Portal-Instance-${Environment}"
