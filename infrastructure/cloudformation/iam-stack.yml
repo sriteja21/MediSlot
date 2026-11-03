@@ -549,16 +549,16 @@ Resources:
                         Fn::ImportValue:
                           !Sub "MediSlot-ReportsBucketArn-${Environment}"
 
-          - PolicyName: !Sub "MediSlot-InvokeSlotMaterialiser-${Environment}"
-            PolicyDocument:
-              Version: "2012-10-17"
-              Statement:
-                - Sid: InvokeSlotMaterialiser
-                  Effect: Allow
-                  Action:
-                    - lambda:InvokeFunction
-                  Resource:
-                    - !Sub "arn:${AWS::Partition}:lambda:${Region}:${AWS::AccountId}:function:MediSlot-SlotMaterialiser-${Environment}"
+        - PolicyName: !Sub "MediSlot-InvokeSlotMaterialiser-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeSlotMaterialiser
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${Region}:${AWS::AccountId}:function:MediSlot-SlotMaterialiser-${Environment}"
 
       Tags:
         - Key: Name
