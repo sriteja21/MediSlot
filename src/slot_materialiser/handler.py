@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import boto3
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from shared.database import execute_query
@@ -78,6 +78,84 @@ def time_ranges_overlap(start_a: time, end_a: time, start_b: time, end_b: time) 
     return start_a < end_b and start_b < end_a
 
 
+def to_utc_datetime(value: Any) -> datetime:
+    """Normalize a DynamoDB ISO timestamp to an aware UTC datetime."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def query_doctor_slots(
+    doctor_id: str,
+    utc_start: datetime,
+    utc_end: datetime,
+) -> list[dict[str, Any]]:
+    """Return every slot for a doctor in a UTC time range."""
+    query_args: dict[str, Any] = {
+        "IndexName": "gsi_doctor_time",
+        "KeyConditionExpression": (
+            Key("doctor_id").eq(doctor_id)
+            & Key("start_time").between(
+                utc_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                (utc_end - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+        ),
+    }
+    slots: list[dict[str, Any]] = []
+    while True:
+        result = slots_table.query(**query_args)
+        slots.extend(result.get("Items", []))
+        last_key = result.get("LastEvaluatedKey")
+        if not last_key:
+            return slots
+        query_args["ExclusiveStartKey"] = last_key
+
+
+def update_unbooked_slot(
+    slot_id: str,
+    *,
+    is_active: bool,
+    is_blocked: bool,
+    inactive_reason: str,
+    capacity: int | None = None,
+    end_time: str | None = None,
+) -> bool:
+    """Update a slot only if it has no booked seats."""
+    expressions = [
+        "is_active = :is_active",
+        "is_blocked = :is_blocked",
+        "inactive_reason = :inactive_reason",
+    ]
+    values: dict[str, Any] = {
+        ":is_active": is_active,
+        ":is_blocked": is_blocked,
+        ":inactive_reason": inactive_reason,
+        ":zero": 0,
+    }
+    if capacity is not None:
+        expressions.append("capacity = :capacity")
+        values[":capacity"] = capacity
+    if end_time is not None:
+        expressions.append("end_time = :end_time")
+        values[":end_time"] = end_time
+
+    try:
+        slots_table.update_item(
+            Key={"slot_id": slot_id},
+            UpdateExpression="SET " + ", ".join(expressions),
+            ConditionExpression=(
+                "attribute_not_exists(booked_count) OR booked_count = :zero"
+            ),
+            ExpressionAttributeValues=values,
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 # ============================================================
 # HANDLER
 # ============================================================
@@ -88,13 +166,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     Materialises slots for the next 30 local calendar days:
     1. Determine each doctor's rolling window [local tomorrow, local today + 30 days].
-    2. Query active users, their active availability patterns and consultation types.
-    3. Query blackout ranges for active doctors within the window.
-    4. For each weekday matching pattern:
-       - Generate slots from start_local_time to end_local_time in steps of duration_minutes.
-         - Interpret availability times in the doctor's configured timezone.
-         - Put item to DynamoDB with condition attribute_not_exists(slot_id).
-    5. Log summary and return stats.
+     2. Generate desired slots from active weekly patterns, marking blackout
+         slots inactive instead of omitting them.
+     3. Reconcile existing slots in the same window, changing only unbooked items.
     """
     logger.info("Starting slot materialisation run. table=%s environment=%s", SLOTS_TABLE_NAME, ENVIRONMENT)
 
@@ -102,11 +176,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     fallback_start_date = now_utc.date() + timedelta(days=1)
     fallback_end_date = now_utc.date() + timedelta(days=30)
 
-    # 1. Query active doctors with active patterns and consultation types
+    # Query doctors separately so doctors with no remaining patterns are reconciled.
+    doctors = execute_query(
+        """
+        SELECT d.doctor_id, d.timezone
+        FROM doctors d
+        JOIN users u ON u.user_id = d.user_id
+        WHERE u.is_active = TRUE
+        """
+    )
     query_patterns = """
         SELECT
-            d.doctor_id AS doctor_id,
-            d.timezone AS doctor_timezone,
+            ct.doctor_id,
             ap.pattern_id AS pattern_id,
             ap.day_of_week,
             ap.start_time AS start_local_time,
@@ -114,30 +195,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             ct.consultation_type_id AS consultation_type_id,
             ct.duration_minutes,
             ct.capacity
-        FROM doctors d
-        JOIN users u ON u.user_id = d.user_id AND u.is_active = TRUE
+        FROM availability_patterns ap
         JOIN consultation_types ct
-            ON ct.doctor_id = d.doctor_id AND ct.is_active = TRUE
-        JOIN availability_patterns ap
-            ON ap.consultation_type_id = ct.consultation_type_id
-            AND ap.is_active = TRUE
-        ORDER BY d.doctor_id, ap.day_of_week, ap.start_time
+            ON ct.consultation_type_id = ap.consultation_type_id
+        WHERE ap.is_active = TRUE AND ct.is_active = TRUE
+        ORDER BY ct.doctor_id, ap.day_of_week, ap.start_time
     """
     patterns = execute_query(query_patterns)
     logger.info("Retrieved %d active availability patterns from database", len(patterns))
-
-    if not patterns:
-        logger.info("No active availability patterns found. Completed materialisation.")
-        return {
-            "statusCode": 200,
-            "body": {
-                "message": "No active availability patterns to process.",
-                "window_start": fallback_start_date.isoformat(),
-                "window_end": fallback_end_date.isoformat(),
-                "total_generated": 0,
-                "total_skipped": 0,
-            },
-        }
 
     # Group patterns by doctor_id
     doctor_patterns: dict[str, list[dict[str, Any]]] = {}
@@ -145,14 +210,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         doc_id = str(p["doctor_id"])
         doctor_patterns.setdefault(doc_id, []).append(p)
 
-    doctor_windows: dict[str, tuple[Any, list[date]]] = {}
+    doctor_windows: dict[
+        str, tuple[ZoneInfo, list[date], datetime, datetime]
+    ] = {}
     window_start_dates: list[date] = []
     window_end_dates: list[date] = []
-    for doc_id, doc_pattern_list in doctor_patterns.items():
+    for doctor in doctors:
+        doc_id = str(doctor["doctor_id"])
         try:
-            doctor_timezone = ZoneInfo(
-                str(doc_pattern_list[0].get("doctor_timezone") or "UTC")
-            )
+            doctor_timezone = ZoneInfo(str(doctor.get("timezone") or "UTC"))
         except Exception:
             logger.exception("Invalid timezone for doctor %s; skipping doctor", doc_id)
             continue
@@ -164,7 +230,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             local_start_date + timedelta(days=offset)
             for offset in range(30)
         ]
-        doctor_windows[doc_id] = (doctor_timezone, dates_in_window)
+        utc_start = datetime.combine(
+            local_start_date, time.min, tzinfo=doctor_timezone
+        ).astimezone(timezone.utc)
+        utc_end = datetime.combine(
+            local_end_date + timedelta(days=1), time.min, tzinfo=doctor_timezone
+        ).astimezone(timezone.utc)
+        doctor_windows[doc_id] = (
+            doctor_timezone,
+            dates_in_window,
+            utc_start,
+            utc_end,
+        )
         window_start_dates.append(local_start_date)
         window_end_dates.append(local_end_date)
 
@@ -180,8 +257,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             },
         }
 
-    window_start = min(window_start_dates)
-    window_end = max(window_end_dates)
+    window_start = min(window_start_dates, default=fallback_start_date)
+    window_end = max(window_end_dates, default=fallback_end_date)
     logger.info(
         "Materialisation local-date range across doctors: %s to %s (inclusive)",
         window_start.isoformat(),
@@ -190,19 +267,29 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # 2. Query blackout ranges for these doctors within the window
     doctor_ids = list(doctor_windows.keys())
+    if not doctor_ids:
+        return {
+            "statusCode": 200,
+            "body": {
+                "message": "No active doctors to materialise.",
+                "window_start": window_start.isoformat(),
+                "window_end": window_end.isoformat(),
+                "total_generated": 0,
+                "total_updated": 0,
+                "total_deactivated": 0,
+                "total_skipped": 0,
+            },
+        }
     blackouts_by_doctor: dict[str, list[tuple[datetime, datetime]]] = {
         doc_id: [] for doc_id in doctor_ids
     }
 
     window_start_utc = min(
-        datetime.combine(dates[0], time.min, tzinfo=doctor_timezone).astimezone(timezone.utc)
-        for doctor_timezone, dates in doctor_windows.values()
-    ).replace(tzinfo=None)
+        window[2] for window in doctor_windows.values()
+    )
     window_end_utc = max(
-        datetime.combine(dates[-1] + timedelta(days=1), time.min, tzinfo=doctor_timezone)
-        .astimezone(timezone.utc)
-        for doctor_timezone, dates in doctor_windows.values()
-    ).replace(tzinfo=None)
+        window[3] for window in doctor_windows.values()
+    )
 
     # Query blackouts in batches or using IN clause
     format_strings = ",".join(["%s"] * len(doctor_ids))
@@ -213,7 +300,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
           AND start_datetime < %s
           AND end_datetime > %s
     """
-    params = tuple(doctor_ids) + (window_end_utc, window_start_utc)
+    params = tuple(doctor_ids) + (
+        window_end_utc.replace(tzinfo=None),
+        window_start_utc.replace(tzinfo=None),
+    )
     blackout_rows = execute_query(query_blackouts, params)
 
     for row in blackout_rows:
@@ -229,16 +319,37 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     logger.info("Retrieved %d blackout date entries for active doctors in window", len(blackout_rows))
 
+    existing_by_doctor: dict[str, dict[str, dict[str, Any]]] = {}
+    booked_ranges_by_doctor: dict[str, list[tuple[str, datetime, datetime]]] = {}
+    for doc_id, (_, _, utc_start, utc_end) in doctor_windows.items():
+        existing_slots = query_doctor_slots(doc_id, utc_start, utc_end)
+        existing_by_doctor[doc_id] = {
+            str(item["slot_id"]): item for item in existing_slots
+        }
+        booked_ranges_by_doctor[doc_id] = []
+        for item in existing_slots:
+            if int(item.get("booked_count", 0) or 0) <= 0:
+                continue
+            booked_ranges_by_doctor[doc_id].append(
+                (
+                    str(item["slot_id"]),
+                    to_utc_datetime(item["start_time"]),
+                    to_utc_datetime(item["end_time"]),
+                )
+            )
+
     total_generated = 0
+    total_updated = 0
+    total_deactivated = 0
     total_skipped = 0
     generated_day_ranges: dict[tuple[str, date], list[tuple[datetime, datetime]]] = {}
+    desired_slots: dict[str, dict[str, Any]] = {}
 
-    # 3. Generate slots
-    for doc_id, doc_pattern_list in doctor_patterns.items():
-        if doc_id not in doctor_windows:
-            continue
-        doctor_timezone, dates_in_window = doctor_windows[doc_id]
+    # 3. Build the desired slot set, including slots falling under blackouts.
+    for doc_id, (doctor_timezone, dates_in_window, _, _) in doctor_windows.items():
+        doc_pattern_list = doctor_patterns.get(doc_id, [])
         doc_blackouts = blackouts_by_doctor.get(doc_id, [])
+        booked_ranges = booked_ranges_by_doctor.get(doc_id, [])
 
         for p in doc_pattern_list:
             pattern_dow = int(p["day_of_week"])  # 0=Sun, ..., 6=Sat
@@ -293,13 +404,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         slot_end_dt = slot_start_dt + step
                         slot_start_utc = slot_start_dt.astimezone(timezone.utc)
                         slot_end_utc = slot_end_dt.astimezone(timezone.utc)
-                        if any(
+                        is_blackout = any(
                             slot_start_utc < blackout_end
                             and blackout_start < slot_end_utc
                             for blackout_start, blackout_end in doc_blackouts
-                        ):
-                            slot_start_dt = slot_end_dt
-                            continue
+                        )
                         candidate_overlaps = False
                         for existing_start, existing_end in day_ranges:
                             if slot_start_dt < existing_end and existing_start < slot_end_dt:
@@ -322,6 +431,20 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         end_utc = slot_end_utc
                         start_epoch = int(start_utc.timestamp())
                         slot_id = f"{consultation_type_id}#{start_epoch}"
+                        booked_overlap = any(
+                            booked_slot_id != slot_id
+                            and slot_start_utc < booked_end
+                            and booked_start < slot_end_utc
+                            for booked_slot_id, booked_start, booked_end in booked_ranges
+                        )
+                        is_blocked = is_blackout or booked_overlap
+                        inactive_reason = (
+                            "BLACKOUT"
+                            if is_blackout
+                            else "BOOKED_OVERLAP"
+                            if booked_overlap
+                            else "NONE"
+                        )
                         expires_at = start_epoch + (7 * 86400)  # TTL: start_epoch + 7 days
 
                         start_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -335,32 +458,79 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                             "end_time": end_iso,
                             "capacity": capacity,
                             "booked_count": 0,
-                            "is_blocked": False,
+                            "is_active": not is_blocked,
+                            "is_blocked": is_blocked,
+                            "inactive_reason": inactive_reason,
                             "expires_at": expires_at,
                         }
-
-                        try:
-                            slots_table.put_item(
-                                Item=item,
-                                ConditionExpression=Attr("slot_id").not_exists(),
-                            )
-                            total_generated += 1
-                        except ClientError as exc:
-                            if (
-                                exc.response.get("Error", {}).get("Code")
-                                == "ConditionalCheckFailedException"
-                            ):
-                                total_skipped += 1
-                            else:
-                                logger.exception("Unexpected DynamoDB error writing slot %s: %s", slot_id, exc)
-                                raise
+                        desired_slots[slot_id] = item
 
                         day_ranges.append((slot_start_dt, slot_end_dt))
                         slot_start_dt = slot_end_dt
 
+    # 4. Reconcile generated slots against DynamoDB without modifying bookings.
+    for doc_id, (_, _, utc_start, utc_end) in doctor_windows.items():
+        existing_by_id = existing_by_doctor[doc_id]
+        desired_for_doctor = {
+            slot_id: item
+            for slot_id, item in desired_slots.items()
+            if item["doctor_id"] == doc_id
+        }
+
+        for slot_id, item in desired_for_doctor.items():
+            existing = existing_by_id.get(slot_id)
+            if existing is None:
+                try:
+                    slots_table.put_item(
+                        Item=item,
+                        ConditionExpression=Attr("slot_id").not_exists(),
+                    )
+                    total_generated += 1
+                except ClientError as exc:
+                    if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                        total_skipped += 1
+                    else:
+                        logger.exception("Unexpected DynamoDB error writing slot %s", slot_id)
+                        raise
+                continue
+
+            if int(existing.get("booked_count", 0) or 0) > 0:
+                total_skipped += 1
+                continue
+
+            if update_unbooked_slot(
+                slot_id,
+                is_active=bool(item["is_active"]),
+                is_blocked=bool(item["is_blocked"]),
+                inactive_reason=str(item["inactive_reason"]),
+                capacity=int(item["capacity"]),
+                end_time=str(item["end_time"]),
+            ):
+                total_updated += 1
+            else:
+                total_skipped += 1
+
+        for slot_id, existing in existing_by_id.items():
+            if slot_id in desired_for_doctor:
+                continue
+            if int(existing.get("booked_count", 0) or 0) > 0:
+                total_skipped += 1
+                continue
+            if update_unbooked_slot(
+                slot_id,
+                is_active=False,
+                is_blocked=False,
+                inactive_reason="AVAILABILITY_CHANGED",
+            ):
+                total_deactivated += 1
+            else:
+                total_skipped += 1
+
     logger.info(
-        "Slot materialisation completed successfully. total_generated=%d total_skipped=%d",
+        "Slot materialisation completed. generated=%d updated=%d deactivated=%d skipped=%d",
         total_generated,
+        total_updated,
+        total_deactivated,
         total_skipped,
     )
 
@@ -371,6 +541,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "window_start": window_start.isoformat(),
             "window_end": window_end.isoformat(),
             "total_generated": total_generated,
+            "total_updated": total_updated,
+            "total_deactivated": total_deactivated,
             "total_skipped": total_skipped,
         },
     }

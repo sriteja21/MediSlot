@@ -194,6 +194,7 @@ Resources:
 
   # Holds materialized appointment slots.
   # slot_id is <consultation_type_id>#<start epoch> for idempotent generation.
+  # is_active is an item attribute; blackout or obsolete unbooked slots are retained inactive.
 
   MediSlotSlotsTable:
     Type: AWS::DynamoDB::Table

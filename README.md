@@ -8,9 +8,9 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 - `src/authorizer` validates access tokens and enforces patient/doctor routes.
 - `src/doctor` provides the doctor profile, consultation type, availability, blackout, schedule, and dashboard API.
 - `src/patient` provides the patient appointment dashboard API.
-- `src/slot_materialiser` writes deterministic slots to the existing `MediSlot-Slots-*` table after schedule changes and from a daily EC2 systemd timer; it does not use EventBridge.
+- `src/slot_materialiser` reconciles the next 30 local calendar days in `MediSlot-Slots-*` after schedule changes and from a daily EC2 systemd timer; it does not use EventBridge. Blackout and obsolete availability slots remain visible with `is_active=false`, and reconciliation never modifies slots with booked seats.
 - `src/ec2_app` is the Flask portal served directly by EC2 Nginx over HTTPS, with Gunicorn bound to localhost. A stable Elastic IP is assigned by the EC2 portal stack.
-- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic UUIDv5 values compatible with `appointments.slot_id CHAR(36)`. Slot writes use `slotId`; doctor schedule reads use `GSI1-DoctorStart` (`doctorId`, `startUtcConsultationType`).
+- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table uses `slot_id` as its key and `gsi_doctor_time` (`doctor_id`, `start_time`) for doctor schedules.
 
 ## Deployment
 

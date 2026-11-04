@@ -64,7 +64,7 @@
           <div>Total Slots: <strong id="metricTotalSlots" style="color: #fff;">—</strong></div>
           <div>Available: <strong id="metricOpenSlots" style="color: var(--accent-secondary);">—</strong></div>
           <div>Booked: <strong id="metricBookedSlots" style="color: var(--warning);">—</strong></div>
-          <div>Blocked: <strong id="metricBlockedSlots" style="color: var(--text-dim);">—</strong></div>
+          <div>Inactive: <strong id="metricBlockedSlots" style="color: var(--text-dim);">—</strong></div>
         </div>
       </div>
     </div>
@@ -212,7 +212,7 @@
       let openCount = 0;
       let partialCount = 0;
       let fullCount = 0;
-      let blockedCount = 0;
+      let inactiveCount = 0;
 
       if (totalCount === 0) {
         document.getElementById('metricTotalSlots').textContent = '0';
@@ -228,16 +228,21 @@
         const capacity = parseInt(slot.capacity || 1);
         const booked = parseInt(slot.booked_count || 0);
         const isBlocked = Boolean(slot.is_blocked);
+        const isActive = slot.is_active !== false;
 
         let statusClass = 'open';
         let statusBadgeClass = 'badge-open';
         let statusLabel = 'Open';
 
-        if (isBlocked) {
+        if (!isActive || isBlocked) {
           statusClass = 'blocked';
           statusBadgeClass = 'badge-blocked';
-          statusLabel = 'Blocked';
-          blockedCount++;
+          statusLabel = {
+            BLACKOUT: 'Blackout',
+            BOOKED_OVERLAP: 'Booked conflict',
+            AVAILABILITY_CHANGED: 'Inactive',
+          }[slot.inactive_reason] || (isBlocked ? 'Blocked' : 'Inactive');
+          inactiveCount++;
         } else if (booked >= capacity) {
           statusClass = 'full';
           statusBadgeClass = 'badge-full';
@@ -301,7 +306,7 @@
       document.getElementById('metricTotalSlots').textContent = totalCount;
       document.getElementById('metricOpenSlots').textContent = openCount;
       document.getElementById('metricBookedSlots').textContent = (partialCount + fullCount);
-      document.getElementById('metricBlockedSlots').textContent = blockedCount;
+      document.getElementById('metricBlockedSlots').textContent = inactiveCount;
 
       grid.style.display = 'grid';
 
