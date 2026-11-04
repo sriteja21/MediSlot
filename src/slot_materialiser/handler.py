@@ -127,6 +127,7 @@ def update_unbooked_slot(
         "is_blocked = :is_blocked",
         "inactive_reason = :inactive_reason",
     ]
+    attribute_names: dict[str, str] = {}
     values: dict[str, Any] = {
         ":is_active": is_active,
         ":is_blocked": is_blocked,
@@ -134,21 +135,26 @@ def update_unbooked_slot(
         ":zero": 0,
     }
     if capacity is not None:
-        expressions.append("capacity = :capacity")
+        expressions.append("#capacity = :capacity")
+        attribute_names["#capacity"] = "capacity"
         values[":capacity"] = capacity
     if end_time is not None:
         expressions.append("end_time = :end_time")
         values[":end_time"] = end_time
 
+    update_args: dict[str, Any] = {
+        "Key": {"slot_id": slot_id},
+        "UpdateExpression": "SET " + ", ".join(expressions),
+        "ConditionExpression": (
+            "attribute_not_exists(booked_count) OR booked_count = :zero"
+        ),
+        "ExpressionAttributeValues": values,
+    }
+    if attribute_names:
+        update_args["ExpressionAttributeNames"] = attribute_names
+
     try:
-        slots_table.update_item(
-            Key={"slot_id": slot_id},
-            UpdateExpression="SET " + ", ".join(expressions),
-            ConditionExpression=(
-                "attribute_not_exists(booked_count) OR booked_count = :zero"
-            ),
-            ExpressionAttributeValues=values,
-        )
+        slots_table.update_item(**update_args)
         return True
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
