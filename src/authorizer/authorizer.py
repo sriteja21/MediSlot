@@ -317,6 +317,7 @@ def lambda_handler(event, context):
 
     user_id = claims["sub"]
     role = claims["role"]
+    token_id = claims["jti"]
     try:
         required_role = required_role_from_method_arn(method_arn)
     except ValueError as exc:
