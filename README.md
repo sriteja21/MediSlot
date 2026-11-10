@@ -18,7 +18,7 @@ The GitHub Actions workflow deploys Network, Data, IAM, initializes the database
 
 Configure these GitHub environment secrets:
 
-- `AWS_DEPLOYMENT_ROLE_ARN`: role assumed by the workflow. It needs CloudFormation deployment permissions, permission to write/delete the database SecureString parameter, and access to upload the EC2 artifact to the environment's reports bucket.
+- `AWS_DEPLOYMENT_ROLE_ARN`: role assumed by the workflow. It needs CloudFormation deployment permissions, permission to write/delete the database SecureString parameter, and permission to upload SAM Lambda and EC2 artifacts to the environment's reports bucket.
 - `MEDISLOT_DB_MASTER_PASSWORD`: password for the RDS master account.
 - `AWS_REGION`: optional; defaults to `ap-south-1`.
 

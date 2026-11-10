@@ -353,13 +353,24 @@ jobs:
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-DatabaseInitializer-${ENVIRONMENT}"
+          REPORTS_BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue | [0]" \
+            --output text)"
+
+          if [[ -z "$REPORTS_BUCKET" || "$REPORTS_BUCKET" == "None" ]]; then
+            echo "::error::Could not resolve the reports bucket for ${ENVIRONMENT}."
+            exit 1
+          fi
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --resolve-s3 \
+            --s3-bucket "$REPORTS_BUCKET" \
+            --s3-prefix "lambda/${STACK_NAME}" \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
@@ -510,13 +521,24 @@ jobs:
 
           JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
           DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
+          REPORTS_BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue | [0]" \
+            --output text)"
+
+          if [[ -z "$REPORTS_BUCKET" || "$REPORTS_BUCKET" == "None" ]]; then
+            echo "::error::Could not resolve the reports bucket for ${ENVIRONMENT}."
+            exit 1
+          fi
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --resolve-s3 \
+            --s3-bucket "$REPORTS_BUCKET" \
+            --s3-prefix "lambda/${STACK_NAME}" \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
