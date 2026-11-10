@@ -448,10 +448,19 @@ jobs:
           pip install aws-sam-cli
 
       - name: Build Authentication and Authorization Lambdas
+        shell: bash
         run: |
+          set -euo pipefail
+
+          test -f src/patient/requirements.txt
+          grep -Fxq 'PyMySQL==1.1.1' src/patient/requirements.txt
+
           sam build \
             --template-file "$APPLICATION_TEMPLATE" \
             --region "$AWS_REGION"
+
+          test -d .aws-sam/build/MediSlotPatientFunction/pymysql
+          echo "Patient Lambda build includes PyMySQL."
 
       - name: Upload built application artifact
         uses: actions/upload-artifact@v4
