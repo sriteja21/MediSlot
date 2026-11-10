@@ -7,13 +7,19 @@
   <div class="auth-card">
     <div class="auth-header">
       <div class="auth-logo">M</div>
-      <h1 class="auth-title">MediSlot</h1>
-      <p class="auth-tagline">Intelligent Medical Slot & Schedule Management</p>
+      <h1 class="auth-title">Welcome to MediSlot</h1>
+      <p class="auth-tagline">Sign in to continue to your care workspace.</p>
     </div>
 
-    <form action="{{ url_for('login') }}" method="POST">
+    <div class="auth-role-toggle" role="group" aria-label="Choose account type">
+      <button type="button" class="auth-role-option {% if selected_role == 'patient' %}active{% endif %}" data-role-choice="patient" aria-pressed="{{ 'true' if selected_role == 'patient' else 'false' }}">Patient</button>
+      <button type="button" class="auth-role-option {% if selected_role == 'doctor' %}active{% endif %}" data-role-choice="doctor" aria-pressed="{{ 'true' if selected_role == 'doctor' else 'false' }}">Doctor</button>
+    </div>
+
+    <form action="{{ url_for('login') }}" method="POST" id="loginForm">
+      <input type="hidden" id="loginRole" name="role" value="{{ selected_role }}">
       <div class="form-group">
-          <label for="email">Email Address</label>
+        <label for="email">Email Address</label>
         <input
           type="email"
           id="email"
@@ -39,17 +45,38 @@
         >
       </div>
 
-      <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem; padding: 0.85rem;">
-        Sign In
+      <button type="submit" class="btn btn-primary btn-block" id="loginSubmit" style="margin-top: 1.5rem; padding: 0.85rem;">
+        Sign in as {{ selected_role|title }}
       </button>
     </form>
 
     <div class="auth-footer">
-      <span>Don't have a doctor account?</span>
-      <a href="{{ url_for('register') }}" style="font-weight: 600; margin-left: 0.35rem;">Register Here</a>
+      <span>New to MediSlot?</span>
+      <a id="registerLink" href="{{ url_for('register', role=selected_role) }}" style="font-weight: 600; margin-left: 0.35rem;">Create an account</a>
     </div>
-
-    <div class="auth-notice">Patients and doctors use the same sign-in form.</div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (() => {
+    const roleInput = document.getElementById('loginRole');
+    const submitButton = document.getElementById('loginSubmit');
+    const registerLink = document.getElementById('registerLink');
+    const options = [...document.querySelectorAll('[data-role-choice]')];
+
+    options.forEach(option => option.addEventListener('click', () => {
+      const role = option.dataset.roleChoice;
+      roleInput.value = role;
+      submitButton.textContent = `Sign in as ${role === 'doctor' ? 'Doctor' : 'Patient'}`;
+      registerLink.href = `/register?role=${role}`;
+      options.forEach(item => {
+        const selected = item === option;
+        item.classList.toggle('active', selected);
+        item.setAttribute('aria-pressed', String(selected));
+      });
+    }));
+  })();
+</script>
 {% endblock %}

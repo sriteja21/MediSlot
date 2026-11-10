@@ -1,181 +1,194 @@
 {% extends "base.html" %}
 
-{% block title %}Doctor Registration | MediSlot{% endblock %}
+{% block title %}Create Account | MediSlot{% endblock %}
 
 {% block content %}
 <div class="auth-wrapper">
-  <div class="auth-card auth-card-wide">
+  <main class="auth-card auth-card-wide">
     <div class="auth-header">
-      <div class="auth-logo">M</div>
-      <h1 class="auth-title">Doctor Registration</h1>
-      <p class="auth-tagline">Create your provider profile to manage availability and appointment slots</p>
+      <a class="auth-logo" href="{{ url_for('login') }}" aria-label="MediSlot sign in">M</a>
+      <h1 class="auth-title" id="registrationTitle">Create your patient account</h1>
+      <p class="auth-tagline" id="registrationDescription">Set up your account to find doctors and manage your appointments.</p>
     </div>
 
-    <form action="{{ url_for('register') }}" method="POST">
-      <div class="form-grid-2">
-        <div class="form-group">
-          <label for="full_name">Full Name <span style="color: var(--danger)">*</span></label>
-          <input
-            type="text"
-            id="full_name"
-            name="full_name"
-            class="form-control"
-            placeholder="Dr. Sarah Jenkins"
-            required
-            autocomplete="name"
-          >
-        </div>
+    <div class="auth-role-toggle" role="group" aria-label="Choose account type">
+      <button type="button" class="auth-role-option {% if selected_role == 'patient' %}active{% endif %}" data-role-choice="patient" aria-pressed="{{ 'true' if selected_role == 'patient' else 'false' }}">Patient</button>
+      <button type="button" class="auth-role-option {% if selected_role == 'doctor' %}active{% endif %}" data-role-choice="doctor" aria-pressed="{{ 'true' if selected_role == 'doctor' else 'false' }}">Doctor</button>
+    </div>
 
-        <div class="form-group">
-          <label for="email">Email Address <span style="color: var(--danger)">*</span></label>
-          <input
-            type="email"
-            id="email"
-            name="email"
-            class="form-control"
-            placeholder="sjenkins@hospital.org"
-            required
-            autocomplete="email"
-          >
-        </div>
-      </div>
+    <form action="{{ url_for('register') }}" method="POST" id="registrationForm">
+      <input type="hidden" id="registrationRole" name="role" value="{{ selected_role }}">
 
       <div class="form-grid-2">
         <div class="form-group">
-          <label for="password">Password <span style="color: var(--danger)">*</span></label>
-          <input
-            type="password"
-            id="password"
-            name="password"
-            class="form-control"
-            placeholder="Minimum 10 chars, letters & numbers"
-            required
-            autocomplete="new-password"
-          >
-          <div class="form-hint">Must be at least 10 characters with numbers and letters.</div>
+          <label for="full_name">Full name</label>
+          <input type="text" id="full_name" name="full_name" class="form-control" placeholder="Your full name" maxlength="150" required autocomplete="name">
         </div>
-
         <div class="form-group">
-          <label for="licence_number">Medical Licence Number <span style="color: var(--danger)">*</span></label>
-          <input
-            type="text"
-            id="licence_number"
-            name="licence_number"
-            class="form-control"
-            placeholder="MCI-104928"
-            required
-          >
-        </div>
-      </div>
-
-      <div class="form-grid-2">
-        <div class="form-group">
-          <label id="specialisation-label">Specialisations <span style="color: var(--danger)">*</span></label>
-          <details class="multi-select" id="specialisation-picker">
-            <summary class="form-control multi-select-trigger" id="specialisation-summary">
-              Choose one or more specialisations
-            </summary>
-            <div class="multi-select-options">
-              {% for specialisation in specialisations %}
-              <label class="multi-select-option">
-                <input type="checkbox" name="specialisation_ids" value="{{ specialisation.id }}" data-label="{{ specialisation.name }}">
-                <span>{{ specialisation.name }}</span>
-              </label>
-              {% else %}
-              <p class="multi-select-empty">No specialisations are available.</p>
-              {% endfor %}
-            </div>
-          </details>
-          <div class="form-hint">Choose all specialties that apply.</div>
-        </div>
-
-        <div class="form-group">
-          <label for="hospital_id">Hospital <span style="color: var(--danger)">*</span></label>
-          <select id="hospital_id" name="hospital_id" class="form-control" required>
-            <option value="">Select your hospital</option>
-            {% for hospital in hospitals %}
-            <option value="{{ hospital.id }}">{{ hospital.name }} - {{ hospital.address }}</option>
-            {% endfor %}
-          </select>
-          <div class="form-hint">Choose your affiliated hospital.</div>
-        </div>
-      </div>
-
-      <div class="form-grid-2">
-        <div class="form-group">
-          <label for="years_experience">Years of Experience <span style="color: var(--danger)">*</span></label>
-          <input
-            type="number"
-            id="years_experience"
-            name="years_experience"
-            class="form-control"
-            placeholder="8"
-            value="5"
-            min="0"
-            max="60"
-            required
-          >
-        </div>
-
-        <div class="form-group">
-          <label for="timezone">Clinical Timezone <span style="color: var(--danger)">*</span></label>
-          <input
-            type="text"
-            id="timezone"
-            name="timezone"
-            class="form-control"
-            value="Asia/Kolkata"
-            placeholder="Asia/Kolkata"
-            required
-          >
-          <div class="form-hint">IANA format (e.g. Asia/Kolkata, America/New_York, UTC)</div>
+          <label for="email">Email address</label>
+          <input type="email" id="email" name="email" class="form-control" placeholder="you@example.com" maxlength="254" required autocomplete="email">
         </div>
       </div>
 
       <div class="form-group">
-        <label for="qualifications">Qualifications & Degrees</label>
-        <textarea
-          id="qualifications"
-          name="qualifications"
-          class="form-control"
-          placeholder="MBBS, MD - Internal Medicine, Fellowship in Critical Care"
-          rows="3"
-        ></textarea>
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" class="form-control" placeholder="At least 10 characters" minlength="10" required autocomplete="new-password">
+        <div class="form-hint">Use at least 10 characters, including letters and numbers.</div>
       </div>
 
-      <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem; padding: 0.9rem;" {% if not specialisations or not hospitals %}disabled{% endif %}>
-        Create Doctor Account
+      <fieldset id="patientFields" class="auth-role-fields" data-role-panel="patient" {% if selected_role != 'patient' %}hidden disabled{% endif %}>
+        <legend>Patient details</legend>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="date_of_birth">Date of birth</label>
+            <input type="date" id="date_of_birth" name="date_of_birth" class="form-control" required autocomplete="bday">
+          </div>
+          <div class="form-group">
+            <label for="gender">Gender <span class="optional-label">Optional</span></label>
+            <select id="gender" name="gender" class="form-control">
+              <option value="">Prefer not to say</option>
+              <option value="female">Female</option>
+              <option value="male">Male</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="phone">Phone number <span class="optional-label">Optional</span></label>
+            <input type="tel" id="phone" name="phone" class="form-control" placeholder="+91 98765 43210" autocomplete="tel">
+          </div>
+          <div class="form-group">
+            <label for="emergency_contact_name">Emergency contact <span class="optional-label">Optional</span></label>
+            <input type="text" id="emergency_contact_name" name="emergency_contact_name" class="form-control" placeholder="Contact name" maxlength="150">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="emergency_contact_phone">Emergency contact phone <span class="optional-label">Optional</span></label>
+          <input type="tel" id="emergency_contact_phone" name="emergency_contact_phone" class="form-control" placeholder="+91 98765 43210" autocomplete="tel">
+        </div>
+      </fieldset>
+
+      <fieldset id="doctorFields" class="auth-role-fields" data-role-panel="doctor" {% if selected_role != 'doctor' %}hidden disabled{% endif %}>
+        <legend>Doctor details</legend>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="licence_number">Medical licence number</label>
+            <input type="text" id="licence_number" name="licence_number" class="form-control" placeholder="MCI-104928" maxlength="50" required>
+          </div>
+          <div class="form-group">
+            <label for="hospital_id">Hospital</label>
+            <select id="hospital_id" name="hospital_id" class="form-control" required>
+              <option value="">Select your hospital</option>
+              {% for hospital in hospitals %}
+              <option value="{{ hospital.id }}">{{ hospital.name }} - {{ hospital.address }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Specialisations</label>
+            <details class="multi-select" id="specialisation-picker">
+              <summary class="form-control multi-select-trigger" id="specialisation-summary">Choose one or more specialisations</summary>
+              <div class="multi-select-options">
+                {% for specialisation in specialisations %}
+                <label class="multi-select-option">
+                  <input type="checkbox" name="specialisation_ids" value="{{ specialisation.id }}" data-label="{{ specialisation.name }}">
+                  <span>{{ specialisation.name }}</span>
+                </label>
+                {% else %}
+                <p class="multi-select-empty">No specialisations are available.</p>
+                {% endfor %}
+              </div>
+            </details>
+            <div class="form-hint">Choose all specialties that apply.</div>
+          </div>
+          <div class="form-group">
+            <label for="years_experience">Years of experience</label>
+            <input type="number" id="years_experience" name="years_experience" class="form-control" value="0" min="0" max="60" required>
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="timezone">Clinical timezone</label>
+            <input type="text" id="timezone" name="timezone" class="form-control" value="Asia/Kolkata" placeholder="Asia/Kolkata" required>
+            <div class="form-hint">Use an IANA timezone, such as Asia/Kolkata or UTC.</div>
+          </div>
+          <div class="form-group">
+            <label for="qualifications">Qualifications <span class="optional-label">Optional</span></label>
+            <textarea id="qualifications" name="qualifications" class="form-control" placeholder="MBBS, MD" rows="3" maxlength="500"></textarea>
+          </div>
+        </div>
+      </fieldset>
+
+      <button type="submit" class="btn btn-primary btn-block" id="registrationSubmit" style="margin-top: 1rem; padding: 0.9rem;">
+        Create Patient Account
       </button>
     </form>
 
     <div class="auth-footer">
-      <span>Already have a doctor account?</span>
-      <a href="{{ url_for('login') }}" style="font-weight: 600; margin-left: 0.35rem;">Sign In</a>
+      <span>Already have an account?</span>
+      <a id="loginLink" href="{{ url_for('login', role=selected_role) }}" style="font-weight: 600; margin-left: 0.35rem;">Sign in</a>
     </div>
-
-    <div class="auth-notice">
-      Patient registration is handled separately via the MediSlot Patient Portal.
-    </div>
-  </div>
+  </main>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
   (() => {
-    const picker = document.getElementById("specialisation-picker");
-    const summary = document.getElementById("specialisation-summary");
-    if (!picker || !summary) return;
+    const roleInput = document.getElementById('registrationRole');
+    const title = document.getElementById('registrationTitle');
+    const description = document.getElementById('registrationDescription');
+    const submitButton = document.getElementById('registrationSubmit');
+    const loginLink = document.getElementById('loginLink');
+    const patientFields = document.getElementById('patientFields');
+    const doctorFields = document.getElementById('doctorFields');
+    const doctorOptionsReady = {{ 'true' if specialisations and hospitals else 'false' }};
+    const roleOptions = [...document.querySelectorAll('[data-role-choice]')];
 
-    const updateSummary = () => {
-      const selected = [...picker.querySelectorAll('input[name="specialisation_ids"]:checked')];
-      summary.textContent = selected.length
-        ? `${selected.length} specialisation${selected.length === 1 ? "" : "s"} selected`
-        : "Choose one or more specialisations";
+    const setRole = role => {
+      const isPatient = role === 'patient';
+      roleInput.value = role;
+      patientFields.hidden = !isPatient;
+      patientFields.disabled = !isPatient;
+      doctorFields.hidden = isPatient;
+      doctorFields.disabled = isPatient;
+      title.textContent = isPatient ? 'Create your patient account' : 'Register as a doctor';
+      description.textContent = isPatient
+        ? 'Set up your account to find doctors and manage your appointments.'
+        : 'Create your provider profile to manage availability and appointments.';
+      submitButton.textContent = `Create ${isPatient ? 'Patient' : 'Doctor'} Account`;
+      submitButton.disabled = !isPatient && !doctorOptionsReady;
+      loginLink.href = `/login?role=${role}`;
+      roleOptions.forEach(option => {
+        const selected = option.dataset.roleChoice === role;
+        option.classList.toggle('active', selected);
+        option.setAttribute('aria-pressed', String(selected));
+      });
     };
 
-    picker.addEventListener("change", updateSummary);
-    updateSummary();
+    roleOptions.forEach(option => option.addEventListener('click', () => setRole(option.dataset.roleChoice)));
+    setRole(roleInput.value);
+
+    const picker = document.getElementById('specialisation-picker');
+    const summary = document.getElementById('specialisation-summary');
+    if (picker && summary) {
+      const updateSummary = () => {
+        const selected = [...picker.querySelectorAll('input[name="specialisation_ids"]:checked')];
+        summary.textContent = selected.length
+          ? `${selected.length} specialisation${selected.length === 1 ? '' : 's'} selected`
+          : 'Choose one or more specialisations';
+      };
+      picker.addEventListener('change', updateSummary);
+      updateSummary();
+    }
+
+    const dateOfBirth = document.getElementById('date_of_birth');
+    if (dateOfBirth) dateOfBirth.max = new Date().toISOString().slice(0, 10);
   })();
 </script>
 {% endblock %}

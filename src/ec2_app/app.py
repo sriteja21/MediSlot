@@ -197,22 +197,30 @@ def health_check():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    """Render unified login or process credentials for either role."""
+    """Render the role-selecting login form or authenticate the selected role."""
     if request.method == "GET":
         if session.get("role") in {"doctor", "patient"}:
             return redirect(url_for("index"))
-        return render_template("login.html")
+        selected_role = request.args.get("role", "patient").lower()
+        if selected_role not in {"doctor", "patient"}:
+            selected_role = "patient"
+        return render_template("login.html", selected_role=selected_role)
 
     email = request.form.get("email", "").strip()
     password = request.form.get("password", "")
+    selected_role = request.form.get("role", "patient").strip().lower()
+
+    if selected_role not in {"doctor", "patient"}:
+        flash("Select whether you are signing in as a patient or doctor.", "danger")
+        return redirect(url_for("login"))
 
     if not email or not password:
         flash("Email and password are required.", "danger")
-        return redirect(url_for("login"))
+        return redirect(url_for("login", role=selected_role))
 
     status, res = api_call(
         "POST",
-        "/auth/login",
+        f"/auth/{selected_role}s/login",
         json_body={"email": email, "password": password},
     )
 
@@ -254,67 +262,93 @@ def login():
 
     error_msg = res.get("message") or "Invalid email or password. Please try again."
     flash(error_msg, "danger")
-    return redirect(url_for("login"))
+    return redirect(url_for("login", role=selected_role))
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    """Render registration page or process doctor account creation."""
+    """Render the role-selecting registration form or create the selected account."""
+    status, options = 200, {"specialisations": [], "hospitals": []}
     if request.method == "GET":
         status, options = api_call("GET", "/auth/registration-options")
         if status != 200:
             logger.warning("Could not load doctor registration options. status=%s", status)
-            flash("Registration options are temporarily unavailable. Please try again.", "warning")
+            flash("Doctor registration options are temporarily unavailable.", "warning")
+
+        selected_role = request.args.get("role", "patient").lower()
+        if selected_role not in {"doctor", "patient"}:
+            selected_role = "patient"
 
         return render_template(
             "register.html",
             specialisations=options.get("specialisations", []),
             hospitals=options.get("hospitals", []),
+            selected_role=selected_role,
         )
+
+    selected_role = request.form.get("role", "patient").strip().lower()
+    if selected_role not in {"doctor", "patient"}:
+        flash("Select whether you are registering as a patient or doctor.", "danger")
+        return redirect(url_for("register"))
 
     full_name = request.form.get("full_name", "").strip()
     email = request.form.get("email", "").strip()
     password = request.form.get("password", "")
-    licence_number = request.form.get("licence_number", "").strip()
-    specialisation_ids_raw = request.form.getlist("specialisation_ids")
-    hospital_id = request.form.get("hospital_id", "").strip()
-    years_experience_raw = request.form.get("years_experience", "0").strip()
-    qualifications = request.form.get("qualifications", "").strip()
-    timezone_name = request.form.get("timezone", "Asia/Kolkata").strip() or "Asia/Kolkata"
 
-    try:
-        specialisation_ids = [int(value) for value in specialisation_ids_raw]
-        years_experience = int(years_experience_raw)
-    except ValueError:
-        flash("Select valid specialisations and enter a valid experience value.", "danger")
-        return redirect(url_for("register"))
+    payload = {"full_name": full_name, "email": email, "password": password}
+    if selected_role == "patient":
+        payload.update(
+            {
+                "date_of_birth": request.form.get("date_of_birth", "").strip(),
+                "gender": request.form.get("gender", "").strip() or None,
+                "phone": request.form.get("phone", "").strip() or None,
+                "emergency_contact_name": request.form.get("emergency_contact_name", "").strip() or None,
+                "emergency_contact_phone": request.form.get("emergency_contact_phone", "").strip() or None,
+            }
+        )
+    else:
+        specialisation_ids_raw = request.form.getlist("specialisation_ids")
+        hospital_id = request.form.get("hospital_id", "").strip()
+        years_experience_raw = request.form.get("years_experience", "0").strip()
+        qualifications = request.form.get("qualifications", "").strip()
+        timezone_name = request.form.get("timezone", "Asia/Kolkata").strip() or "Asia/Kolkata"
 
-    if not specialisation_ids:
-        flash("Select at least one specialisation.", "danger")
-        return redirect(url_for("register"))
+        try:
+            specialisation_ids = [int(value) for value in specialisation_ids_raw]
+            years_experience = int(years_experience_raw)
+        except ValueError:
+            flash("Select valid specialisations and enter a valid experience value.", "danger")
+            return redirect(url_for("register", role=selected_role))
 
-    payload = {
-        "full_name": full_name,
-        "email": email,
-        "password": password,
-        "licence_number": licence_number,
-        "specialisation_id": specialisation_ids[0],
-        "specialisation_ids": specialisation_ids,
-        "hospital_id": hospital_id,
-        "years_experience": years_experience,
-        "qualifications": qualifications or None,
-        "timezone": timezone_name,
-    }
+        if not specialisation_ids:
+            flash("Select at least one specialisation.", "danger")
+            return redirect(url_for("register", role=selected_role))
 
-    status, res = api_call("POST", "/auth/doctors/register", json_body=payload)
+        payload.update(
+            {
+                "licence_number": request.form.get("licence_number", "").strip(),
+                "specialisation_id": specialisation_ids[0],
+                "specialisation_ids": specialisation_ids,
+                "hospital_id": hospital_id,
+                "years_experience": years_experience,
+                "qualifications": qualifications or None,
+                "timezone": timezone_name,
+            }
+        )
+
+    status, res = api_call(
+        "POST",
+        f"/auth/{selected_role}s/register",
+        json_body=payload,
+    )
 
     if status in (200, 201):
-        flash("Your doctor account has been registered successfully! Please sign in.", "success")
-        return redirect(url_for("login"))
+        flash(f"Your {selected_role} account has been registered. Please sign in.", "success")
+        return redirect(url_for("login", role=selected_role))
 
     error_msg = res.get("message") or "Registration failed. Please verify your details and try again."
     flash(error_msg, "danger")
-    return redirect(url_for("register"))
+    return redirect(url_for("register", role=selected_role))
 
 
 @app.route("/logout", methods=["POST"])
