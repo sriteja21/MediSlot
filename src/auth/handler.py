@@ -663,16 +663,11 @@ def store_refresh_token(
  
     expires_at = now + REFRESH_TOKEN_LIFETIME_SECONDS
  
-    issued_at = datetime.fromtimestamp(
-        now,
-        tz=timezone.utc,
-    ).isoformat()
- 
     item = {
         "session_id": split_refresh_token(refresh_token)[0],
         "token_hash": hash_refresh_token(refresh_token),
         "user_id": str(user_id),
-        "created_at": issued_at,
+        "created_at": now,
         "expires_at": expires_at,
     }
  
