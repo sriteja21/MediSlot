@@ -302,8 +302,8 @@ jobs:
 # BUILD DATABASE INITIALIZER
 # ============================================================
 
-  build-database-initializer:
-    name: Build Database Initializer
+  deploy-database-initializer:
+    name: Build and Deploy Database Initializer
     runs-on: ubuntu-latest
     needs: deploy-iam
 
@@ -328,44 +328,17 @@ jobs:
           pip install aws-sam-cli
 
       - name: Build Database Initializer
+        shell: bash
         run: |
+          set -euo pipefail
+
           sam build \
             --template-file "$INIT_TEMPLATE" \
             --region "$AWS_REGION"
 
-      - name: Upload built initializer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: medislot-database-initializer
-          path: .aws-sam/build/
-          include-hidden-files: true   # FIX: .aws-sam is a hidden directory
-          if-no-files-found: error
-          retention-days: 1
-
-# ============================================================
-# DEPLOY DATABASE INITIALIZER
-# ============================================================
-
-  deploy-database-initializer:
-    name: Deploy Database Initializer
-    runs-on: ubuntu-latest
-    needs: build-database-initializer
-
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push'
-
-    environment: ${{ github.event.inputs.environment || 'dev' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download built initializer artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: medislot-database-initializer
-          path: .aws-sam/build/
+          test -f .aws-sam/build/template.yaml
+          test -d .aws-sam/build/DatabaseInitializerFunction
+          echo "Database initializer build output is ready for deployment."
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
