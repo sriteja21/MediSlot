@@ -520,6 +520,30 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /patients/me/dashboard
             Method: GET
+        PatientDoctorSearchGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/doctors/search
+            Method: GET
+        PatientDoctorProfileGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/doctors/{doctor_id}
+            Method: GET
+        PatientDoctorSlotsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/doctors/{doctor_id}/slots
+            Method: GET
+        PatientAppointmentCreate:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/appointments
+            Method: POST
 
   # ==========================================================
   # DAILY SLOT MATERIALISER

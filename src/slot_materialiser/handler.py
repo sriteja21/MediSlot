@@ -199,11 +199,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             ap.start_time AS start_local_time,
             ap.end_time AS end_local_time,
             ct.consultation_type_id AS consultation_type_id,
-            ct.duration_minutes,
+            catalog.duration_minutes,
             ct.capacity
         FROM availability_patterns ap
         JOIN consultation_types ct
             ON ct.consultation_type_id = ap.consultation_type_id
+        JOIN consultation_catalog catalog
+            ON catalog.consultation_type_id = ct.catalog_type_id
         WHERE ap.is_active = TRUE AND ct.is_active = TRUE
         ORDER BY ct.doctor_id, ap.day_of_week, ap.start_time
     """

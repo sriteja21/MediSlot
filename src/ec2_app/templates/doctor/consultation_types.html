@@ -10,7 +10,7 @@
     <div class="page-header">
       <div>
         <h1 class="page-title">Consultation Types</h1>
-        <p class="page-subtitle">Configure consultation formats, durations, clinical fees, and patient capacities</p>
+        <p class="page-subtitle">Choose a fixed consultation format and set your fee and patient capacity</p>
       </div>
       <div>
         <button type="button" class="btn btn-primary" onclick="openAddModal()">
@@ -88,23 +88,8 @@
           </select>
         </div>
 
-        <div class="form-grid-2">
-          <div class="form-group">
-            <label for="addDuration">Duration (Minutes) <span style="color: var(--danger)">*</span></label>
-            <input
-              type="number"
-              id="addDuration"
-              class="form-control"
-              value="30"
-              min="5"
-              max="240"
-              step="5"
-              required
-            >
-          </div>
-
-          <div class="form-group">
-            <label for="addFee">Fee Amount (₹) <span style="color: var(--danger)">*</span></label>
+        <div class="form-group">
+          <label for="addFee">Fee Amount (₹) <span style="color: var(--danger)">*</span></label>
             <input
               type="number"
               id="addFee"
@@ -114,7 +99,6 @@
               step="10"
               required
             >
-          </div>
         </div>
 
         <div class="form-group">
@@ -149,22 +133,8 @@
     <form id="editTypeForm" onsubmit="handleEditTypeSubmit(event)">
       <input type="hidden" id="editTypeId">
       <div class="modal-body">
-        <div class="form-grid-2">
-          <div class="form-group">
-            <label for="editDuration">Duration (Minutes) <span style="color: var(--danger)">*</span></label>
-            <input
-              type="number"
-              id="editDuration"
-              class="form-control"
-              min="5"
-              max="240"
-              step="5"
-              required
-            >
-          </div>
-
-          <div class="form-group">
-            <label for="editFee">Fee Amount (₹) <span style="color: var(--danger)">*</span></label>
+        <div class="form-group">
+          <label for="editFee">Fee Amount (₹) <span style="color: var(--danger)">*</span></label>
             <input
               type="number"
               id="editFee"
@@ -173,7 +143,6 @@
               step="10"
               required
             >
-          </div>
         </div>
 
         <div class="form-group">
@@ -243,7 +212,6 @@
     if (!item) return;
 
     document.getElementById('editTypeId').value = item.id;
-    document.getElementById('editDuration').value = item.duration_minutes || 30;
     document.getElementById('editFee').value = parseFloat(item.fee_amount || 0).toFixed(2);
     document.getElementById('editCapacity').value = item.capacity || 1;
 
@@ -324,7 +292,6 @@
 
     const payload = {
       kind: document.getElementById('addKind').value,
-      duration_minutes: parseInt(document.getElementById('addDuration').value),
       fee_amount: parseFloat(document.getElementById('addFee').value),
       capacity: parseInt(document.getElementById('addCapacity').value),
     };
@@ -361,7 +328,6 @@
 
     const typeId = document.getElementById('editTypeId').value;
     const payload = {
-      duration_minutes: parseInt(document.getElementById('editDuration').value),
       fee_amount: parseFloat(document.getElementById('editFee').value),
       capacity: parseInt(document.getElementById('editCapacity').value),
     };

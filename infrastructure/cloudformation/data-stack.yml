@@ -193,7 +193,7 @@ Resources:
   # ==========================================================
 
   # Holds materialized appointment slots.
-  # slot_id is <consultation_type_id>#<start epoch> for idempotent generation.
+  # doctor_id and slot_sk (<start epoch>#<consultation type>) are the primary key.
   # is_active is an item attribute; blackout or obsolete unbooked slots are retained inactive.
 
   MediSlotSlotsTable:
@@ -203,21 +203,25 @@ Resources:
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: slot_id
-          AttributeType: S
         - AttributeName: doctor_id
+          AttributeType: S
+        - AttributeName: slot_sk
+          AttributeType: S
+        - AttributeName: consultation_type_id
           AttributeType: S
         - AttributeName: start_time
           AttributeType: S
 
       KeySchema:
-        - AttributeName: slot_id
+        - AttributeName: doctor_id
           KeyType: HASH
+        - AttributeName: slot_sk
+          KeyType: RANGE
 
       GlobalSecondaryIndexes:
-        - IndexName: gsi_doctor_time
+        - IndexName: gsi_type_time
           KeySchema:
-            - AttributeName: doctor_id
+            - AttributeName: consultation_type_id
               KeyType: HASH
             - AttributeName: start_time
               KeyType: RANGE
@@ -258,13 +262,13 @@ Resources:
       AttributeDefinitions:
         - AttributeName: user_id
           AttributeType: S
-        - AttributeName: idempotency_key
+        - AttributeName: scope_key
           AttributeType: S
 
       KeySchema:
         - AttributeName: user_id
           KeyType: HASH
-        - AttributeName: idempotency_key
+        - AttributeName: scope_key
           KeyType: RANGE
 
       PointInTimeRecoverySpecification:
@@ -299,15 +303,17 @@ Resources:
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: slot_id
+        - AttributeName: slot_ref
           AttributeType: S
         - AttributeName: patient_id
           AttributeType: S
         - AttributeName: joined_at
           AttributeType: S
+        - AttributeName: slot_start
+          AttributeType: S
 
       KeySchema:
-        - AttributeName: slot_id
+        - AttributeName: slot_ref
           KeyType: HASH
         - AttributeName: patient_id
           KeyType: RANGE
@@ -315,7 +321,7 @@ Resources:
       LocalSecondaryIndexes:
         - IndexName: lsi_queue
           KeySchema:
-            - AttributeName: slot_id
+            - AttributeName: slot_ref
               KeyType: HASH
             - AttributeName: joined_at
               KeyType: RANGE
@@ -327,7 +333,7 @@ Resources:
           KeySchema:
             - AttributeName: patient_id
               KeyType: HASH
-            - AttributeName: slot_id
+            - AttributeName: slot_start
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
@@ -364,16 +370,38 @@ Resources:
       BillingMode: !Ref DynamoDBBillingMode
 
       AttributeDefinitions:
-        - AttributeName: slot_id
+        - AttributeName: slot_ref
           AttributeType: S
         - AttributeName: patient_id
+          AttributeType: S
+        - AttributeName: expires_at
+          AttributeType: N
+        - AttributeName: live_shard
           AttributeType: S
 
       KeySchema:
-        - AttributeName: slot_id
+        - AttributeName: slot_ref
           KeyType: HASH
         - AttributeName: patient_id
           KeyType: RANGE
+
+      GlobalSecondaryIndexes:
+        - IndexName: gsi_patient_offer
+          KeySchema:
+            - AttributeName: patient_id
+              KeyType: HASH
+            - AttributeName: expires_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: gsi_live
+          KeySchema:
+            - AttributeName: live_shard
+              KeyType: HASH
+            - AttributeName: expires_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -412,6 +440,8 @@ Resources:
           AttributeType: S
         - AttributeName: user_id
           AttributeType: S
+        - AttributeName: created_at
+          AttributeType: N
 
       KeySchema:
         - AttributeName: session_id
@@ -422,6 +452,8 @@ Resources:
           KeySchema:
             - AttributeName: user_id
               KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
 
@@ -463,9 +495,9 @@ Resources:
           AttributeType: S
         - AttributeName: notification_id
           AttributeType: S
-        - AttributeName: retry_key
+        - AttributeName: retry_shard
           AttributeType: S
-        - AttributeName: last_attempt_at
+        - AttributeName: next_attempt_at
           AttributeType: N
 
       KeySchema:
@@ -477,9 +509,9 @@ Resources:
       GlobalSecondaryIndexes:
         - IndexName: gsi_retry
           KeySchema:
-            - AttributeName: retry_key
+            - AttributeName: retry_shard
               KeyType: HASH
-            - AttributeName: last_attempt_at
+            - AttributeName: next_attempt_at
               KeyType: RANGE
           Projection:
             ProjectionType: ALL

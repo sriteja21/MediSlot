@@ -163,6 +163,19 @@ def login_required(f):
     return decorated_function
 
 
+def patient_required(f):
+    """Ensure a patient session exists before serving patient pages."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        access_token = request.cookies.get("access_token")
+        refresh_token = request.cookies.get("refresh_token")
+        if (not access_token and not refresh_token) or session.get("role") != "patient":
+            flash("Please sign in with a patient account to continue.", "warning")
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 # ============================================================
 # PUBLIC AUTHENTICATION ROUTES
 # ============================================================
@@ -334,14 +347,31 @@ def doctor_dashboard():
 
 
 @app.route("/patient/dashboard", methods=["GET"])
+@patient_required
 def patient_dashboard():
-    if (
-        (not request.cookies.get("access_token") and not request.cookies.get("refresh_token"))
-        or session.get("role") != "patient"
-    ):
-        flash("Please sign in with a patient account to continue.", "warning")
-        return redirect(url_for("login"))
-    return render_template("patient/dashboard.html")
+    return render_template("patient/dashboard.html", active_page="dashboard")
+
+
+@app.route("/patient/doctors", methods=["GET"])
+@patient_required
+def patient_doctors():
+    return render_template("patient/doctors.html", active_page="doctors")
+
+
+@app.route("/patient/doctors/<doctor_id>", methods=["GET"])
+@patient_required
+def patient_doctor_profile(doctor_id: str):
+    return render_template(
+        "patient/doctor_profile.html",
+        active_page="doctors",
+        doctor_id=doctor_id,
+    )
+
+
+@app.route("/patient/appointments", methods=["GET"])
+@patient_required
+def patient_appointments():
+    return render_template("patient/appointments.html", active_page="appointments")
 
 
 @app.route("/doctor/profile", methods=["GET"])
@@ -531,6 +561,42 @@ def api_patient_dashboard():
     if session.get("role") != "patient":
         return jsonify({"message": "Patient sign-in required."}), 403
     status, res = api_call("GET", "/patients/me/dashboard")
+    return jsonify(res), status
+
+
+@app.route("/api/patient/doctors", methods=["GET"])
+def api_patient_search_doctors():
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call("GET", "/patients/doctors/search", params=request.args)
+    return jsonify(res), status
+
+
+@app.route("/api/patient/doctors/<doctor_id>", methods=["GET"])
+def api_patient_doctor_profile(doctor_id: str):
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call("GET", f"/patients/doctors/{doctor_id}")
+    return jsonify(res), status
+
+
+@app.route("/api/patient/doctors/<doctor_id>/slots", methods=["GET"])
+def api_patient_doctor_slots(doctor_id: str):
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call(
+        "GET", f"/patients/doctors/{doctor_id}/slots", params=request.args
+    )
+    return jsonify(res), status
+
+
+@app.route("/api/patient/book-appointment", methods=["POST"])
+def api_patient_book_appointment():
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+
+    data = request.get_json(silent=True) or request.form.to_dict()
+    status, res = api_call("POST", "/patients/me/appointments", json_body=data)
     return jsonify(res), status
 
 

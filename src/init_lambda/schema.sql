@@ -121,12 +121,32 @@ CREATE TABLE IF NOT EXISTS doctor_specializations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 
-CREATE TABLE IF NOT EXISTS consultation_types (
-    consultation_type_id CHAR(36) NOT NULL,
-    doctor_id CHAR(36) NOT NULL,
+CREATE TABLE IF NOT EXISTS consultation_catalog (
+    consultation_type_id VARCHAR(32) NOT NULL,
     name VARCHAR(80) NOT NULL,
     mode ENUM('IN_PERSON') NOT NULL DEFAULT 'IN_PERSON',
     duration_minutes SMALLINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+        ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (consultation_type_id),
+    UNIQUE KEY uq_consultation_catalog_name (name),
+    CONSTRAINT ck_consultation_catalog_duration CHECK (duration_minutes > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+INSERT IGNORE INTO consultation_catalog (
+    consultation_type_id, name, mode, duration_minutes
+) VALUES
+    ('QUICK', 'QUICK', 'IN_PERSON', 15),
+    ('STANDARD', 'STANDARD', 'IN_PERSON', 30),
+    ('DETAILED', 'DETAILED', 'IN_PERSON', 60),
+    ('HEALTH_CAMP', 'HEALTH_CAMP', 'IN_PERSON', 60);
+
+
+CREATE TABLE IF NOT EXISTS consultation_types (
+    consultation_type_id CHAR(36) NOT NULL,
+    doctor_id CHAR(36) NOT NULL,
+    catalog_type_id VARCHAR(32) NOT NULL,
     fee DECIMAL(10,2) NOT NULL,
     capacity TINYINT UNSIGNED NOT NULL DEFAULT 1,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -134,11 +154,13 @@ CREATE TABLE IF NOT EXISTS consultation_types (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
         ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (consultation_type_id),
-    UNIQUE KEY uq_consultation_type_name (doctor_id, name),
+    UNIQUE KEY uq_consultation_type_doctor_catalog (doctor_id, catalog_type_id),
     KEY idx_consultation_types_doctor_active (doctor_id, is_active),
+    KEY idx_consultation_types_catalog (catalog_type_id),
     CONSTRAINT fk_consultation_types_doctor FOREIGN KEY (doctor_id)
         REFERENCES doctors(doctor_id) ON DELETE CASCADE,
-    CONSTRAINT ck_consultation_type_duration CHECK (duration_minutes > 0),
+    CONSTRAINT fk_consultation_types_catalog FOREIGN KEY (catalog_type_id)
+        REFERENCES consultation_catalog(consultation_type_id),
     CONSTRAINT ck_consultation_type_fee CHECK (fee >= 0),
     CONSTRAINT ck_consultation_type_capacity CHECK (capacity > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

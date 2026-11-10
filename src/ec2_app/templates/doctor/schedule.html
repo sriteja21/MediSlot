@@ -9,10 +9,14 @@
   <main class="main-content">
     <div class="page-header">
       <div>
-        <h1 class="page-title">Daily Clinical Schedule</h1>
+        <h1 class="page-title" id="schedulePageTitle">Daily Clinical Schedule</h1>
         <p class="page-subtitle">Inspect materialized slots, real-time seat capacities, and patient bookings</p>
       </div>
-      <div>
+      <div style="display: flex; gap: 0.75rem; align-items: center;">
+        <div class="segment-control" role="tablist" aria-label="Schedule view toggle">
+          <button type="button" class="btn btn-sm btn-teal active" id="todayViewBtn" onclick="setScheduleMode('today')">Today</button>
+          <button type="button" class="btn btn-sm btn-secondary" id="weekViewBtn" onclick="setScheduleMode('week')">Week</button>
+        </div>
         <button type="button" class="btn btn-secondary btn-sm" onclick="reloadSchedule()">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -108,14 +112,36 @@
 <script>
   const DOCTOR_TIMEZONE = {{ doctor_timezone|tojson }};
   let currentDate = '';
+  let currentMode = 'today';
 
   document.addEventListener('DOMContentLoaded', () => {
     const today = getDoctorToday();
     currentDate = today;
     document.getElementById('scheduleDatePicker').value = today;
-
+    updateViewToggle();
     loadSchedule(today);
   });
+
+  function updateViewToggle() {
+    const todayBtn = document.getElementById('todayViewBtn');
+    const weekBtn = document.getElementById('weekViewBtn');
+    const pageTitle = document.getElementById('schedulePageTitle');
+    const isToday = currentMode === 'today';
+
+    todayBtn.classList.toggle('btn-teal', isToday);
+    todayBtn.classList.toggle('btn-secondary', !isToday);
+    weekBtn.classList.toggle('btn-teal', !isToday);
+    weekBtn.classList.toggle('btn-secondary', isToday);
+    pageTitle.textContent = isToday ? 'Daily Clinical Schedule' : 'Weekly Clinical Schedule';
+  }
+
+  function setScheduleMode(mode) {
+    currentMode = mode;
+    updateViewToggle();
+    if (currentDate) {
+      loadSchedule(currentDate);
+    }
+  }
 
   function showAlert(msg, type = 'success') {
     const banner = document.getElementById('scheduleAlert');
@@ -183,24 +209,49 @@
     grid.style.display = 'none';
     emptyState.style.display = 'none';
 
-    // Update title
     try {
-      const parts = dateStr.split('-');
-      const d = new Date(`${dateStr}T12:00:00Z`);
-      const formatted = d.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-      document.getElementById('scheduleDateTitle').textContent = `Schedule for ${formatted}`;
+      const dateParts = dateStr.split('-');
+      const selectedDate = new Date(`${dateStr}T12:00:00Z`);
+      const formatted = selectedDate.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      document.getElementById('scheduleDateTitle').textContent = currentMode === 'week'
+        ? `Week of ${formatted}`
+        : `Schedule for ${formatted}`;
     } catch (e) {
-      document.getElementById('scheduleDateTitle').textContent = `Schedule for ${dateStr}`;
+      document.getElementById('scheduleDateTitle').textContent = currentMode === 'week' ? `Week of ${dateStr}` : `Schedule for ${dateStr}`;
     }
 
     try {
-      const resp = await fetch(`/api/doctor/schedule?date=${encodeURIComponent(dateStr)}`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      const slots = Array.isArray(data) ? data : (data.slots || []);
-      const appointments = data.appointments || [];
+      let allSlots = [];
+      let allAppointments = [];
+
+      if (currentMode === 'week') {
+        const start = new Date(`${dateStr}T12:00:00Z`);
+        start.setDate(start.getDate() - start.getDay());
+        for (let i = 0; i < 7; i++) {
+          const iter = new Date(start);
+          iter.setDate(start.getDate() + i);
+          const year = iter.getFullYear();
+          const month = String(iter.getMonth() + 1).padStart(2, '0');
+          const day = String(iter.getDate()).padStart(2, '0');
+          const dateKey = `${year}-${month}-${day}`;
+          const resp = await fetch(`/api/doctor/schedule?date=${encodeURIComponent(dateKey)}`);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const data = await resp.json();
+          const slots = Array.isArray(data) ? data : (data.slots || []);
+          const appointments = data.appointments || [];
+          allSlots.push(...slots);
+          allAppointments.push(...appointments);
+        }
+      } else {
+        const resp = await fetch(`/api/doctor/schedule?date=${encodeURIComponent(dateStr)}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        allSlots = Array.isArray(data) ? data : (data.slots || []);
+        allAppointments = data.appointments || [];
+      }
+
       const appointmentsBySlot = new Map();
-      appointments.forEach(appointment => {
+      allAppointments.forEach(appointment => {
         const key = String(appointment.slot_id || '');
         if (!appointmentsBySlot.has(key)) appointmentsBySlot.set(key, []);
         appointmentsBySlot.get(key).push(appointment);
@@ -208,7 +259,7 @@
 
       loading.style.display = 'none';
 
-      let totalCount = slots.length;
+      let totalCount = allSlots.length;
       let openCount = 0;
       let partialCount = 0;
       let fullCount = 0;
@@ -224,7 +275,7 @@
       }
 
       grid.innerHTML = '';
-      slots.forEach(slot => {
+      allSlots.forEach(slot => {
         const capacity = parseInt(slot.capacity || 1);
         const booked = parseInt(slot.booked_count || 0);
         const isBlocked = Boolean(slot.is_blocked);

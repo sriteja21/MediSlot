@@ -1,0 +1,53 @@
+{% extends "patient/_layout.html" %}
+
+{% block title %}Doctor Profile | MediSlot{% endblock %}
+
+{% block page_content %}
+<section class="patient-screen" data-patient-page="doctor-profile" data-doctor-id="{{ doctor_id }}">
+  <header class="page-header">
+    <div>
+      <a class="patient-back-link" href="{{ url_for('patient_doctors') }}">&larr; Back to doctors</a>
+      <p class="patient-eyebrow">DOCTOR PROFILE</p>
+      <h1 class="page-title" id="doctorProfileTitle">Doctor details</h1>
+      <p class="page-subtitle">Review consultation options and choose an available time.</p>
+    </div>
+  </header>
+
+  <div id="doctorProfileLoading" class="patient-loading"><span class="spinner"></span><span>Loading doctor profile...</span></div>
+  <div id="doctorProfileError" class="patient-inline-error" role="alert" hidden></div>
+  <section id="doctorProfileContent" class="doctor-profile-content" aria-live="polite"></section>
+
+  <section class="patient-booking-section" aria-labelledby="bookingTitle">
+    <div class="patient-section-heading">
+      <div>
+        <h2 id="bookingTitle">Book a consultation</h2>
+        <p>Choose an offering and a time that works for you.</p>
+      </div>
+    </div>
+    <div class="patient-booking-controls">
+      <label class="patient-search-field">
+        <span>Consultation</span>
+        <select class="form-control" id="consultationSelect">
+          <option value="">Select a consultation</option>
+        </select>
+      </label>
+      <label class="patient-search-field">
+        <span>Date</span>
+        <input class="form-control" id="bookingDate" type="date">
+      </label>
+    </div>
+    <div class="patient-slot-heading">
+      <h3>Available times</h3>
+      <span id="slotTimezone"></span>
+    </div>
+    <div id="slotLoading" class="patient-loading" hidden><span class="spinner"></span><span>Checking availability...</span></div>
+    <div id="slotError" class="patient-inline-error" role="alert" hidden></div>
+    <div id="slotResults" class="patient-slot-grid" aria-live="polite"></div>
+    <div id="slotEmptyState" class="patient-empty" hidden>No available appointments on this date. Try another date.</div>
+    <div class="patient-booking-footer">
+      <p id="bookingSelectionText">Select an available time to continue.</p>
+      <button type="button" class="btn btn-primary" id="bookAppointmentButton" disabled>Book appointment</button>
+    </div>
+  </section>
+</section>
+{% endblock %}

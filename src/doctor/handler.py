@@ -577,24 +577,21 @@ def list_consultation_types(doctor_id: str, query_params: dict[str, str]) -> dic
     """
     include_all = (query_params.get("all") or "").lower() == "true"
 
-    if include_all:
-        query = """
-                 SELECT consultation_type_id AS id, doctor_id, name AS kind,
-                     duration_minutes, fee AS fee_amount, capacity, is_active
-            FROM consultation_types
-            WHERE doctor_id = %s
-            ORDER BY kind ASC
-        """
-        rows = execute_query(query, (doctor_id,))
-    else:
-        query = """
-                 SELECT consultation_type_id AS id, doctor_id, name AS kind,
-                     duration_minutes, fee AS fee_amount, capacity, is_active
-            FROM consultation_types
-            WHERE doctor_id = %s AND is_active = TRUE
-            ORDER BY kind ASC
-        """
-        rows = execute_query(query, (doctor_id,))
+    query = """
+        SELECT ct.consultation_type_id AS id, ct.doctor_id,
+               catalog.consultation_type_id AS catalog_type_id,
+               catalog.name AS kind, catalog.duration_minutes,
+               ct.fee AS fee_amount, ct.capacity, ct.is_active
+        FROM consultation_types ct
+        JOIN consultation_catalog catalog
+          ON catalog.consultation_type_id = ct.catalog_type_id
+        WHERE ct.doctor_id = %s
+    """
+    params: list[Any] = [doctor_id]
+    if not include_all:
+        query += " AND ct.is_active = TRUE"
+    query += " ORDER BY catalog.name ASC"
+    rows = execute_query(query, tuple(params))
 
     for r in rows:
         r["fee_amount"] = float(r["fee_amount"])
@@ -608,7 +605,7 @@ def list_consultation_types(doctor_id: str, query_params: dict[str, str]) -> dic
 def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """
     POST /doctors/me/consultation-types
-    Create a consultation type using kind, duration, fee, and capacity.
+    Add a fixed catalog consultation type to a doctor, with doctor-specific fee/capacity.
     """
     kind = body.get("kind")
     if not isinstance(kind, str) or kind.upper() not in ALLOWED_CONSULTATION_KINDS:
@@ -617,14 +614,17 @@ def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, 
         )
     kind = kind.upper()
 
-    duration_minutes = body.get("duration_minutes")
-    if (
-        isinstance(duration_minutes, bool)
-        or not isinstance(duration_minutes, int)
-        or duration_minutes <= 0
-        or duration_minutes > 1440
-    ):
-        raise ValueError("duration_minutes must be a positive integer up to 1440.")
+    catalog_rows = execute_query(
+        """
+        SELECT consultation_type_id, name, duration_minutes
+        FROM consultation_catalog
+        WHERE consultation_type_id = %s
+        """,
+        (kind,),
+    )
+    if not catalog_rows:
+        raise ValueError("Selected consultation type is not in the fixed catalog.")
+    catalog_type = catalog_rows[0]
 
     fee_amount = body.get("fee_amount")
     if fee_amount is None:
@@ -653,7 +653,7 @@ def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, 
 
     # Keep one consultation configuration per kind for each doctor.
     existing = execute_query(
-        "SELECT consultation_type_id FROM consultation_types WHERE doctor_id = %s AND name = %s",
+        "SELECT consultation_type_id FROM consultation_types WHERE doctor_id = %s AND catalog_type_id = %s",
         (doctor_id, kind),
     )
     if existing:
@@ -666,18 +666,19 @@ def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, 
     execute_write(
         """
         INSERT INTO consultation_types (
-            consultation_type_id, doctor_id, name, mode, duration_minutes, fee, capacity, is_active
-        ) VALUES (%s, %s, %s, 'IN_PERSON', %s, %s, %s, TRUE)
+            consultation_type_id, doctor_id, catalog_type_id, fee, capacity, is_active
+        ) VALUES (%s, %s, %s, %s, %s, TRUE)
         """,
-        (new_id, doctor_id, kind, duration_minutes, fee_decimal, capacity),
+        (new_id, doctor_id, kind, fee_decimal, capacity),
     )
     trigger_slot_materialisation()
 
     created_record = {
         "id": new_id,
         "doctor_id": doctor_id,
-        "kind": kind,
-        "duration_minutes": duration_minutes,
+        "kind": catalog_type["name"],
+        "catalog_type_id": kind,
+        "duration_minutes": int(catalog_type["duration_minutes"]),
         "fee_amount": float(fee_decimal),
         "capacity": capacity,
         "is_active": True,
@@ -692,14 +693,17 @@ def update_consultation_type(
 ) -> dict[str, Any]:
     """
     PATCH /doctors/me/consultation-types/{id}
-    Update consultation type fee, duration, capacity, or active status.
+    Update doctor-specific fee, capacity, or active status. Duration is fixed in the catalog.
     """
     rows = execute_query(
         """
-        SELECT consultation_type_id, doctor_id, name AS kind,
-               duration_minutes, fee AS fee_amount, capacity, is_active
-        FROM consultation_types
-        WHERE consultation_type_id = %s AND doctor_id = %s
+         SELECT ct.consultation_type_id, ct.doctor_id,
+             catalog.name AS kind, catalog.duration_minutes,
+             ct.fee AS fee_amount, ct.capacity, ct.is_active
+         FROM consultation_types ct
+         JOIN consultation_catalog catalog
+           ON catalog.consultation_type_id = ct.catalog_type_id
+         WHERE ct.consultation_type_id = %s AND ct.doctor_id = %s
         """,
         (ct_id, doctor_id),
     )
@@ -722,11 +726,7 @@ def update_consultation_type(
         params.append(fee_decimal)
 
     if "duration_minutes" in body:
-        dur = body["duration_minutes"]
-        if isinstance(dur, bool) or not isinstance(dur, int) or dur <= 0 or dur > 1440:
-            raise ValueError("duration_minutes must be a positive integer up to 1440.")
-        update_clauses.append("duration_minutes = %s")
-        params.append(dur)
+        raise ValueError("Consultation duration is fixed by the catalog and cannot be edited.")
 
     if "capacity" in body:
         cap = body["capacity"]
@@ -757,10 +757,14 @@ def update_consultation_type(
     # Fetch updated record
     updated_rows = execute_query(
         """
-        SELECT consultation_type_id AS id, doctor_id, name AS kind, mode,
-               duration_minutes, fee AS fee_amount, capacity, is_active
-        FROM consultation_types
-        WHERE consultation_type_id = %s AND doctor_id = %s
+         SELECT ct.consultation_type_id AS id, ct.doctor_id,
+             catalog.name AS kind, catalog.consultation_type_id AS catalog_type_id,
+             catalog.mode, catalog.duration_minutes,
+             ct.fee AS fee_amount, ct.capacity, ct.is_active
+         FROM consultation_types ct
+         JOIN consultation_catalog catalog
+           ON catalog.consultation_type_id = ct.catalog_type_id
+         WHERE ct.consultation_type_id = %s AND ct.doctor_id = %s
         """,
         (ct_id, doctor_id),
     )
@@ -813,13 +817,15 @@ def list_availability(doctor_id: str) -> dict[str, Any]:
             ap.start_time AS start_local_time,
             ap.end_time AS end_local_time,
             ap.consultation_type_id,
-            ct.name AS consultation_type_name,
-            ct.duration_minutes,
+            catalog.name AS consultation_type_name,
+            catalog.duration_minutes,
             ct.fee AS fee_amount,
+            ct.capacity,
             ap.is_active,
             ap.updated_at
         FROM availability_patterns ap
         JOIN consultation_types ct ON ap.consultation_type_id = ct.consultation_type_id
+        JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
         WHERE ct.doctor_id = %s AND ap.is_active = TRUE
         ORDER BY ap.day_of_week ASC, ap.start_time ASC
     """
@@ -1348,10 +1354,11 @@ def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]
                                  ORDER BY pay.created_at DESC LIMIT 1),
                                 ct.fee
                         ) AS fee_amount,
-                        ct.duration_minutes,
+                        catalog.duration_minutes,
                         a.created_at AS booked_at
                 FROM appointments a
                 JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                    JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
                 LEFT JOIN patients p ON p.patient_id = a.patient_id
                 WHERE ct.doctor_id = %s
                     AND a.appointment_datetime >= %s
@@ -1523,10 +1530,11 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
                  ORDER BY pay.created_at DESC LIMIT 1),
                 ct.fee
             ) AS fee_amount,
-            ct.name AS consultation_type_name
+            catalog.name AS consultation_type_name
         FROM appointments a
         LEFT JOIN patients p ON p.patient_id = a.patient_id
         JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
         WHERE ct.doctor_id = %s
         ORDER BY a.created_at DESC
         LIMIT 8
