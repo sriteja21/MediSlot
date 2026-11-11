@@ -1,0 +1,368 @@
+{% extends "base.html" %}
+
+{% block title %}Doctor Profile | MediSlot{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  {% include "doctor/_sidebar.html" %}
+
+  <main class="main-content">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Doctor Profile & Settings</h1>
+        <p class="page-subtitle">Manage your clinical credentials, languages, and profile photo</p>
+      </div>
+    </div>
+
+    <!-- Alert Banner -->
+    <div id="profileAlert" style="display: none; margin-bottom: 1.5rem;">
+      <div id="profileAlertContent" class="alert">
+        <span id="profileAlertText"></span>
+        <button type="button" class="alert-close" onclick="document.getElementById('profileAlert').style.display='none'">&times;</button>
+      </div>
+    </div>
+
+    <div class="profile-grid">
+      <!-- Left Column: Photo Card -->
+      <div class="card" style="height: fit-content;">
+        <div class="card-header">
+          <h2 class="card-title">Profile Photo</h2>
+        </div>
+
+        <div class="avatar-wrapper">
+          <img
+            id="doctorAvatarImg"
+            class="avatar-img"
+            src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='130' height='130' viewBox='0 0 24 24' fill='none' stroke='%236c63ff' stroke-width='1.5'><path d='M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2'></path><circle cx='12' cy='7' r='4'></circle></svg>"
+            alt="Doctor Profile Photo"
+          >
+          <div style="margin-bottom: 1.25rem;">
+            <input
+              type="file"
+              id="photoFileInput"
+              accept="image/png,image/jpeg,image/webp"
+              style="display: none;"
+              onchange="handlePhotoSelected(event)"
+            >
+            <button
+              type="button"
+              id="uploadPhotoBtn"
+              class="btn btn-secondary btn-sm"
+              onclick="document.getElementById('photoFileInput').click()"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Upload New Photo
+            </button>
+          </div>
+          <div id="photoUploadStatus" style="font-size: 0.8rem; color: var(--text-dim);">
+            JPG, PNG or WebP. Max 5MB.
+          </div>
+        </div>
+
+        <div style="border-top: 1px solid var(--border); padding-top: 1.25rem; margin-top: 1rem;">
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+            <strong>Email:</strong> <span id="displayEmail">Loading...</span>
+          </div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+            <strong>Licence:</strong> <span id="displayLicence">Loading...</span>
+          </div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+            <strong>Specialisations:</strong> <span id="displaySpecialisations">Loading...</span>
+          </div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+            <strong>Timezone:</strong> <span id="displayTimezone">Loading...</span>
+          </div>
+          <div style="font-size: 0.82rem; color: var(--text-muted);">
+            <strong>Status:</strong> <span class="badge badge-open">Active Provider</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Edit Profile Form -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Personal & Clinical Details</h2>
+            <p class="card-desc">Update your professional qualifications and consultation settings</p>
+          </div>
+        </div>
+
+        <form id="profileForm" onsubmit="handleProfileSubmit(event)">
+          <div class="form-group">
+            <label for="full_name">Full Name <span style="color: var(--danger)">*</span></label>
+            <input
+              type="text"
+              id="full_name"
+              name="full_name"
+              class="form-control"
+              disabled
+              required
+            >
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="years_experience">Years of Experience <span style="color: var(--danger)">*</span></label>
+              <input
+                type="number"
+                id="years_experience"
+                name="years_experience"
+                class="form-control"
+                min="0"
+                max="65"
+                disabled
+                required
+              >
+            </div>
+
+            <div class="form-group">
+              <label for="languages">Languages Spoken</label>
+              <input
+                type="text"
+                id="languages"
+                name="languages"
+                class="form-control"
+                placeholder="English, Hindi, Telugu, Marathi"
+                disabled
+              >
+              <div class="form-hint">Separate languages with commas.</div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="qualifications">Qualifications & Degrees</label>
+            <textarea
+              id="qualifications"
+              name="qualifications"
+              class="form-control"
+              rows="4"
+              placeholder="MBBS, MD - Cardiology, FACC"
+              disabled
+            ></textarea>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 1rem; margin-top: 1.5rem;">
+            <button
+              type="button"
+              id="editProfileBtn"
+              class="btn btn-secondary"
+              onclick="setProfileEditing(true)"
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              id="cancelProfileBtn"
+              class="btn btn-secondary"
+              onclick="cancelProfileEdit()"
+              hidden
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              id="saveProfileBtn"
+              class="btn btn-primary"
+              disabled
+            >
+              <span id="saveProfileBtnText">Save Changes</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let currentProfileData = {};
+  const profileFieldIds = ['full_name', 'years_experience', 'languages', 'qualifications'];
+
+  document.addEventListener('DOMContentLoaded', () => {
+    loadProfile();
+  });
+
+  function showAlert(message, type = 'success') {
+    const banner = document.getElementById('profileAlert');
+    const content = document.getElementById('profileAlertContent');
+    const text = document.getElementById('profileAlertText');
+
+    content.className = `alert alert-${type}`;
+    text.textContent = message;
+    banner.style.display = 'block';
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function loadProfile() {
+    try {
+      const resp = await fetch('/api/doctor/profile');
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      currentProfileData = data;
+
+      // Populate form fields
+      document.getElementById('full_name').value = data.full_name || '';
+      document.getElementById('years_experience').value = data.years_experience ?? 0;
+      document.getElementById('qualifications').value = data.qualifications || '';
+
+      // Format languages array or comma string
+      if (Array.isArray(data.languages)) {
+        document.getElementById('languages').value = data.languages.join(', ');
+      } else {
+        document.getElementById('languages').value = data.languages || '';
+      }
+
+      // Populate read-only sidebar items
+      document.getElementById('displayEmail').textContent = data.email || '—';
+      document.getElementById('displayLicence').textContent = data.licence_number || '—';
+      document.getElementById('displaySpecialisations').textContent = Array.isArray(data.specialisations)
+        ? data.specialisations.map(item => item.name).join(', ') || '—'
+        : '—';
+      document.getElementById('displayTimezone').textContent = data.timezone || 'UTC';
+
+      // Update photo if S3 presigned URL provided
+      if (data.photo_url) {
+        document.getElementById('doctorAvatarImg').src = data.photo_url;
+      }
+
+      // Update sidebar doctor name
+      const sidebarName = document.getElementById('sidebarDoctorName');
+      if (sidebarName && data.full_name) {
+        sidebarName.textContent = `Dr. ${data.full_name}`;
+      }
+
+      setProfileEditing(false);
+
+    } catch (err) {
+      console.warn('Failed to load doctor profile:', err);
+      showAlert('Could not load profile from API Gateway. Default values displayed.', 'warning');
+    }
+  }
+
+  function setProfileEditing(isEditing) {
+    profileFieldIds.forEach(id => {
+      document.getElementById(id).disabled = !isEditing;
+    });
+    document.getElementById('editProfileBtn').hidden = isEditing;
+    document.getElementById('cancelProfileBtn').hidden = !isEditing;
+    document.getElementById('saveProfileBtn').disabled = !isEditing;
+  }
+
+  function cancelProfileEdit() {
+    document.getElementById('full_name').value = currentProfileData.full_name || '';
+    document.getElementById('years_experience').value = currentProfileData.years_experience ?? 0;
+    document.getElementById('qualifications').value = currentProfileData.qualifications || '';
+    document.getElementById('languages').value = Array.isArray(currentProfileData.languages)
+      ? currentProfileData.languages.join(', ')
+      : (currentProfileData.languages || '');
+    setProfileEditing(false);
+  }
+
+  async function handleProfileSubmit(e) {
+    e.preventDefault();
+    if (document.getElementById('saveProfileBtn').disabled) return;
+    const btn = document.getElementById('saveProfileBtn');
+    const btnText = document.getElementById('saveProfileBtnText');
+
+    btn.disabled = true;
+    btnText.innerHTML = '<span class="spinner" style="margin-right: 6px;"></span> Saving...';
+
+    const rawLanguages = document.getElementById('languages').value;
+    const languagesList = rawLanguages.split(',').map(s => s.trim()).filter(Boolean);
+
+    const payload = {
+      full_name: document.getElementById('full_name').value.trim(),
+      years_experience: parseInt(document.getElementById('years_experience').value) || 0,
+      qualifications: document.getElementById('qualifications').value.trim(),
+      languages: languagesList,
+    };
+
+    try {
+      const resp = await fetch('/doctor/profile/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        currentProfileData = { ...currentProfileData, ...payload };
+        showAlert('Profile updated successfully!', 'success');
+        const sidebarName = document.getElementById('sidebarDoctorName');
+        if (sidebarName && payload.full_name) {
+          sidebarName.textContent = `Dr. ${payload.full_name}`;
+        }
+        setProfileEditing(false);
+      } else {
+        showAlert(resData.message || 'Failed to update profile.', 'danger');
+      }
+    } catch (err) {
+      console.error('Profile update error:', err);
+      showAlert('A network error occurred while updating profile.', 'danger');
+    } finally {
+      btnText.textContent = 'Save Changes';
+      btn.disabled = profileFieldIds.every(id => document.getElementById(id).disabled);
+    }
+  }
+
+  async function handlePhotoSelected(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      showAlert('File size exceeds 5MB limit.', 'danger');
+      return;
+    }
+
+    const uploadStatus = document.getElementById('photoUploadStatus');
+    const uploadBtn = document.getElementById('uploadPhotoBtn');
+
+    uploadBtn.disabled = true;
+    uploadStatus.innerHTML = '<span class="spinner" style="width: 14px; height: 14px; margin-right: 4px;"></span> Requesting upload authorization...';
+
+    try {
+      // 1. Get presigned S3 upload URL from Flask proxy
+      const presignedResp = await fetch(`/doctor/photo-upload-url?content_type=${encodeURIComponent(file.type)}`);
+      if (!presignedResp.ok) {
+        throw new Error('Unable to obtain presigned upload URL.');
+      }
+      const { upload_url, photo_key, photo_url } = await presignedResp.json();
+
+      // 2. Direct PUT to S3
+      uploadStatus.innerHTML = '<span class="spinner" style="width: 14px; height: 14px; margin-right: 4px;"></span> Uploading directly to S3...';
+
+      const s3Resp = await fetch(upload_url, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': file.type,
+        },
+        body: file,
+      });
+
+      if (!s3Resp.ok) {
+        throw new Error(`S3 upload failed with status ${s3Resp.status}`);
+      }
+
+      // Update avatar preview with temporary object URL or S3 URL
+      document.getElementById('doctorAvatarImg').src = URL.createObjectURL(file);
+      uploadStatus.textContent = 'Photo updated successfully!';
+      showAlert('Profile photo uploaded successfully to secure storage!', 'success');
+
+    } catch (err) {
+      console.error('Photo upload failed:', err);
+      uploadStatus.textContent = 'Upload failed. Please try again.';
+      showAlert(`Photo upload failed: ${err.message}`, 'danger');
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  }
+</script>
+{% endblock %}

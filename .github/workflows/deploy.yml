@@ -34,6 +34,7 @@ env:
   IAM_TEMPLATE: infrastructure/cloudformation/iam-stack.yml
   INIT_TEMPLATE: infrastructure/cloudformation/init-stack.yml
   APPLICATION_TEMPLATE: infrastructure/cloudformation/application-stack.yml
+  EC2_TEMPLATE: infrastructure/cloudformation/ec2-app-stack.yml
 
 # ============================================================
 # VALIDATE ALL TEMPLATES
@@ -92,7 +93,8 @@ jobs:
             "$DATA_TEMPLATE" \
             "$IAM_TEMPLATE" \
             "$INIT_TEMPLATE" \
-            "$APPLICATION_TEMPLATE"
+            "$APPLICATION_TEMPLATE" \
+            "$EC2_TEMPLATE"
           do
             if [ ! -f "$template" ]; then
               echo "::error::Template not found: $template"
@@ -112,7 +114,8 @@ jobs:
             "$DATA_TEMPLATE" \
             "$IAM_TEMPLATE" \
             "$INIT_TEMPLATE" \
-            "$APPLICATION_TEMPLATE"
+            "$APPLICATION_TEMPLATE" \
+            "$EC2_TEMPLATE"
           do
             echo "========================================"
             echo "Validating $template"
@@ -207,6 +210,8 @@ jobs:
 
       - name: Deploy Data Stack
         shell: bash
+        env:
+          DB_MASTER_PASSWORD: ${{ secrets.MEDISLOT_DB_MASTER_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -218,8 +223,21 @@ jobs:
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
             --parameter-overrides \
-              Environment="$ENVIRONMENT"
+              Environment="$ENVIRONMENT" \
+              DBMasterPassword="$DB_MASTER_PASSWORD"
+
+          aws ssm put-parameter \
+            --name "/MediSlot/${ENVIRONMENT}/database/master-password-secure" \
+            --type SecureString \
+            --value "$DB_MASTER_PASSWORD" \
+            --overwrite \
+            --region "$AWS_REGION" > /dev/null
+
+          aws ssm delete-parameter \
+            --name "/MediSlot/${ENVIRONMENT}/database/master-password" \
+            --region "$AWS_REGION" 2>/dev/null || true
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -284,8 +302,8 @@ jobs:
 # BUILD DATABASE INITIALIZER
 # ============================================================
 
-  build-database-initializer:
-    name: Build Database Initializer
+  deploy-database-initializer:
+    name: Build and Deploy Database Initializer
     runs-on: ubuntu-latest
     needs: deploy-iam
 
@@ -310,44 +328,17 @@ jobs:
           pip install aws-sam-cli
 
       - name: Build Database Initializer
+        shell: bash
         run: |
+          set -euo pipefail
+
           sam build \
             --template-file "$INIT_TEMPLATE" \
             --region "$AWS_REGION"
 
-      - name: Upload built initializer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: medislot-database-initializer
-          path: .aws-sam/build/
-          include-hidden-files: true   # FIX: .aws-sam is a hidden directory
-          if-no-files-found: error
-          retention-days: 1
-
-# ============================================================
-# DEPLOY DATABASE INITIALIZER
-# ============================================================
-
-  deploy-database-initializer:
-    name: Deploy Database Initializer
-    runs-on: ubuntu-latest
-    needs: build-database-initializer
-
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push'
-
-    environment: ${{ github.event.inputs.environment || 'dev' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download built initializer artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: medislot-database-initializer
-          path: .aws-sam/build/
+          test -f .aws-sam/build/template.yaml
+          test -d .aws-sam/build/DatabaseInitializerFunction
+          echo "Database initializer build output is ready for deployment."
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -362,17 +353,42 @@ jobs:
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-DatabaseInitializer-${ENVIRONMENT}"
+          REPORTS_BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue | [0]" \
+            --output text)"
+
+          if [[ -z "$REPORTS_BUCKET" || "$REPORTS_BUCKET" == "None" ]]; then
+            echo "::error::Could not resolve the reports bucket for ${ENVIRONMENT}."
+            exit 1
+          fi
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --resolve-s3 \
+            --s3-bucket "$REPORTS_BUCKET" \
+            --s3-prefix "lambda/${STACK_NAME}" \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
               Environment="$ENVIRONMENT"
+
+          RESULT_FILE="$RUNNER_TEMP/medislot-db-initializer-result.json"
+          aws lambda invoke \
+            --function-name "medislot-db-initializer-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            "$RESULT_FILE" > /dev/null
+
+          if [[ "$(jq -r '.status' "$RESULT_FILE")" != "SUCCESS" ]]; then
+            jq . "$RESULT_FILE"
+            echo "::error::MediSlot database initialization failed."
+            exit 1
+          fi
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -432,10 +448,19 @@ jobs:
           pip install aws-sam-cli
 
       - name: Build Authentication and Authorization Lambdas
+        shell: bash
         run: |
+          set -euo pipefail
+
+          test -f src/patient/requirements.txt
+          grep -Fxq 'PyMySQL==1.1.1' src/patient/requirements.txt
+
           sam build \
             --template-file "$APPLICATION_TEMPLATE" \
             --region "$AWS_REGION"
+
+          test -d .aws-sam/build/MediSlotPatientFunction/pymysql
+          echo "Patient Lambda build includes PyMySQL."
 
       - name: Upload built application artifact
         uses: actions/upload-artifact@v4
@@ -505,13 +530,24 @@ jobs:
 
           JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
           DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
+          REPORTS_BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue | [0]" \
+            --output text)"
+
+          if [[ -z "$REPORTS_BUCKET" || "$REPORTS_BUCKET" == "None" ]]; then
+            echo "::error::Could not resolve the reports bucket for ${ENVIRONMENT}."
+            exit 1
+          fi
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --resolve-s3 \
+            --s3-bucket "$REPORTS_BUCKET" \
+            --s3-prefix "lambda/${STACK_NAME}" \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
@@ -523,6 +559,75 @@ jobs:
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
+            --output text
+
+# ============================================================
+# DEPLOY EC2 FLASK PORTAL
+# ============================================================
+
+  deploy-ec2-app:
+    name: Deploy EC2 Flask Portal
+    runs-on: ubuntu-latest
+    needs: deploy-application
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload Flask artifact and deploy EC2 stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          STACK_NAME="MediSlot-EC2Portal-${ENVIRONMENT}"
+          ARTIFACT_KEY="ec2-app/${GITHUB_SHA}.zip"
+          ARTIFACT_PATH="${GITHUB_WORKSPACE}/medislot-ec2-app.zip"
+          REPORTS_BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name "MediSlot-Data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue | [0]" \
+            --output text)"
+
+          (cd src/ec2_app && zip -qr "$ARTIFACT_PATH" .)
+          aws s3 cp "$ARTIFACT_PATH" "s3://${REPORTS_BUCKET}/${ARTIFACT_KEY}" \
+            --region "$AWS_REGION"
+
+          PARAMETERS=(
+            Environment="$ENVIRONMENT"
+            AppArtifactKey="$ARTIFACT_KEY"
+          )
+
+          aws cloudformation deploy \
+            --template-file "$EC2_TEMPLATE" \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${PARAMETERS[@]}"
+
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
+
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApplicationUrl'].OutputValue | [0]" \
             --output text
 
 # ============================================================
@@ -539,6 +644,7 @@ jobs:
       - deploy-iam
       - deploy-database-initializer
       - deploy-application
+      - deploy-ec2-app
 
     if: >
       always() &&
@@ -564,13 +670,15 @@ jobs:
           echo "IAM: ${{ needs.deploy-iam.result }}"
           echo "Database Initializer: ${{ needs.deploy-database-initializer.result }}"
           echo "Authentication/Authorization: ${{ needs.deploy-application.result }}"
+          echo "EC2 Flask Portal: ${{ needs.deploy-ec2-app.result }}"
           echo "========================================"
 
           if [[ "${{ needs.deploy-network.result }}" != "success" ||
                 "${{ needs.deploy-data.result }}" != "success" ||
                 "${{ needs.deploy-iam.result }}" != "success" ||
                 "${{ needs.deploy-database-initializer.result }}" != "success" ||
-                "${{ needs.deploy-application.result }}" != "success" ]]; then
+                "${{ needs.deploy-application.result }}" != "success" ||
+                "${{ needs.deploy-ec2-app.result }}" != "success" ]]; then
             echo "::error::One or more MediSlot deployment jobs failed or were skipped."
             exit 1
           fi

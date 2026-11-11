@@ -7,7 +7,7 @@ Responsibilities:
     - Login
     - Access-token generation
     - Access-token refresh (refresh token is NOT rotated)
-    - Logout and access-token revocation
+    - Logout and refresh-session revocation
  
 Security:
     - Passwords hashed with bcrypt.
@@ -38,7 +38,7 @@ import jwt
 import pymysql
 from botocore.exceptions import ClientError
  
-from shared.database import get_database_connection
+from shared.database import execute_query, get_database_connection
  
  
 # ============================================================
@@ -69,11 +69,6 @@ REFRESH_TOKENS_TABLE_NAME = (
     or f"MediSlot-RefreshTokens-{ENVIRONMENT}"
 )
  
-TOKEN_DENYLIST_TABLE_NAME = os.environ.get(
-    "TOKEN_DENYLIST_TABLE_NAME",
-    f"MediSlot-TokenDenylist-{ENVIRONMENT}",
-)
- 
 BCRYPT_WORK_FACTOR = int(
     os.environ.get("BCRYPT_WORK_FACTOR", "12")
 )
@@ -85,19 +80,15 @@ PASSWORD_MIN_LENGTH = int(
 ACCESS_TOKEN_LIFETIME_SECONDS = 15 * 60
 REFRESH_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60
  
-ALLOWED_ROLES = {"doctor", "patient"}
+ALLOWED_ROLES = {"doctor", "patient", "admin"}
  
-ALLOWED_GENDERS = {"female", "male", "other", "undisclosed"}
+ALLOWED_GENDERS = {"female", "male", "other"}
  
 ssm_client = boto3.client("ssm", region_name=AWS_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
  
 refresh_tokens_table = dynamodb.Table(
     REFRESH_TOKENS_TABLE_NAME
-)
- 
-token_denylist_table = dynamodb.Table(
-    TOKEN_DENYLIST_TABLE_NAME
 )
  
 _cached_jwt_secret = None
@@ -377,15 +368,18 @@ def validate_patient_profile(body: dict[str, Any]) -> dict[str, Any]:
         )
  
     gender = body.get("gender")
- 
-    if not isinstance(gender, str) or (
-        gender.strip().lower() not in ALLOWED_GENDERS
+    normalized_gender = None
+    if gender not in (None, "") and (
+        not isinstance(gender, str)
+        or gender.strip().lower() not in ALLOWED_GENDERS
     ):
         raise ValueError(
             "gender must be one of: "
             + ", ".join(sorted(ALLOWED_GENDERS))
             + "."
         )
+    if isinstance(gender, str) and gender.strip():
+        normalized_gender = gender.strip().upper()
  
     emergency_phone = body.get("emergency_contact_phone")
  
@@ -399,9 +393,12 @@ def validate_patient_profile(body: dict[str, Any]) -> dict[str, Any]:
  
     return {
         "date_of_birth": dob.isoformat(),
-        "gender": gender.strip().lower(),
-        "phone": validate_phone(body.get("phone"), "phone"),
-        "city": required_text(body, "city", 100),
+        "gender": normalized_gender,
+        "phone": (
+            validate_phone(body.get("phone"), "phone")
+            if body.get("phone") not in (None, "")
+            else None
+        ),
         "emergency_contact_name": optional_text(
             body,
             "emergency_contact_name",
@@ -416,16 +413,26 @@ def validate_doctor_profile(body: dict[str, Any]) -> dict[str, Any]:
  
     licence_number = required_text(body, "licence_number", 50)
  
-    specialisation_id = body.get("specialisation_id")
- 
-    if (
+    specialisation_ids = body.get("specialisation_ids")
+    if specialisation_ids is None:
+        legacy_specialisation_id = body.get("specialisation_id")
+        specialisation_ids = [legacy_specialisation_id]
+
+    if not isinstance(specialisation_ids, list) or not specialisation_ids:
+        raise ValueError("Select at least one specialisation.")
+
+    if any(
         isinstance(specialisation_id, bool)
         or not isinstance(specialisation_id, int)
         or specialisation_id < 1
+        for specialisation_id in specialisation_ids
     ):
-        raise ValueError(
-            "specialisation_id must be a positive integer."
-        )
+        raise ValueError("Specialisation IDs must be positive integers.")
+
+    if len(set(specialisation_ids)) != len(specialisation_ids):
+        raise ValueError("A specialisation cannot be selected more than once.")
+
+    primary_specialisation_id = specialisation_ids[0]
  
     hospital_id = required_text(body, "hospital_id", 36)
  
@@ -457,11 +464,12 @@ def validate_doctor_profile(body: dict[str, Any]) -> dict[str, Any]:
         )
  
     return {
-        "licence_number": licence_number,
-        "specialisation_id": specialisation_id,
+        "license_number": licence_number,
+        "specialisation_id": primary_specialisation_id,
+        "specialisation_ids": specialisation_ids,
         "hospital_id": hospital_id,
-        "years_experience": years_experience,
-        "qualifications": optional_text(body, "qualifications", 500),
+        "experience_years": years_experience,
+        "qualification": optional_text(body, "qualifications", 500),
         "timezone": timezone_name,
     }
  
@@ -504,17 +512,29 @@ def verify_password(
 # ============================================================
  
 def hash_refresh_token(refresh_token: str) -> str:
-    """Return the SHA-256 hash used as the DynamoDB partition key."""
+    """Hash the secret component of a session_id.secret refresh token."""
  
     return hashlib.sha256(
-        refresh_token.encode("utf-8")
+        split_refresh_token(refresh_token)[1].encode("utf-8")
     ).hexdigest()
  
  
+def split_refresh_token(refresh_token: str) -> tuple[str, str]:
+    """Return the canonical session ID and secret from a refresh token."""
+    session_id, separator, secret = refresh_token.partition(".")
+    if not separator or not session_id or not secret:
+        raise ValueError("Refresh token format is invalid.")
+    try:
+        session_id = str(uuid.UUID(session_id))
+    except ValueError as exc:
+        raise ValueError("Refresh token session identifier is invalid.") from exc
+    return session_id, secret
+
+
 def create_refresh_token() -> str:
-    """Generate an opaque, cryptographically random refresh token."""
+    """Generate a session_id.secret refresh token."""
  
-    return secrets.token_urlsafe(48)
+    return f"{uuid.uuid4()}.{secrets.token_urlsafe(48)}"
  
  
 def create_access_token(
@@ -636,31 +656,24 @@ def store_refresh_token(
     """
     Store only the refresh-token hash.
  
-    Attribute names match the MediSlot refresh-token table:
-    tokenHash, userId, role, issuedAt, expiresAt, ttl.
+    Store a session ID and secret hash; the raw refresh token is never stored.
     """
  
     now = int(time.time())
  
     expires_at = now + REFRESH_TOKEN_LIFETIME_SECONDS
  
-    issued_at = datetime.fromtimestamp(
-        now,
-        tz=timezone.utc,
-    ).isoformat()
- 
     item = {
-        "tokenHash": hash_refresh_token(refresh_token),
-        "userId": str(user_id),
-        "role": role,
-        "issuedAt": issued_at,
-        "expiresAt": expires_at,
-        "ttl": expires_at,
+        "session_id": split_refresh_token(refresh_token)[0],
+        "token_hash": hash_refresh_token(refresh_token),
+        "user_id": str(user_id),
+        "created_at": now,
+        "expires_at": expires_at,
     }
  
     refresh_tokens_table.put_item(
         Item=item,
-        ConditionExpression="attribute_not_exists(tokenHash)",
+        ConditionExpression="attribute_not_exists(session_id)",
     )
  
     return item
@@ -669,31 +682,52 @@ def store_refresh_token(
 def find_refresh_token(
     refresh_token: str,
 ) -> dict[str, Any] | None:
-    """Look up a refresh token by its hash."""
- 
+    """Look up a session and verify its refresh-token secret."""
+    try:
+        session_id, _ = split_refresh_token(refresh_token)
+    except ValueError:
+        return None
+
     result = refresh_tokens_table.get_item(
-        Key={
-            "tokenHash": hash_refresh_token(refresh_token),
-        },
+        Key={"session_id": session_id},
         ConsistentRead=True,
     )
- 
-    return result.get("Item")
+    item = result.get("Item")
+    if not item or item.get("revoked_at") is not None:
+        return None
+    if not hmac.compare_digest(
+        str(item.get("token_hash", "")),
+        hash_refresh_token(refresh_token),
+    ):
+        return None
+    return item
  
  
 def revoke_refresh_token(refresh_token: str) -> bool:
     """
-    Delete a refresh token using a conditional write.
+    Mark a refresh-token session revoked using a conditional write.
  
     Returns False when the token is missing or has already been consumed.
     """
  
-    token_hash = hash_refresh_token(refresh_token)
+    try:
+        session_id, _ = split_refresh_token(refresh_token)
+        token_hash = hash_refresh_token(refresh_token)
+    except ValueError:
+        return False
  
     try:
-        refresh_tokens_table.delete_item(
-            Key={"tokenHash": token_hash},
-            ConditionExpression="attribute_exists(tokenHash)",
+        refresh_tokens_table.update_item(
+            Key={"session_id": session_id},
+            UpdateExpression="SET revoked_at = :revoked_at",
+            ConditionExpression=(
+                "attribute_exists(session_id) AND token_hash = :token_hash "
+                "AND attribute_not_exists(revoked_at)"
+            ),
+            ExpressionAttributeValues={
+                ":revoked_at": int(time.time()),
+                ":token_hash": token_hash,
+            },
         )
  
         return True
@@ -740,19 +774,13 @@ def find_user_by_email(
             cursor.execute(
                 """
                 SELECT
-                    ui.email,
-                    ui.role,
-                    ui.user_id,
-                    CASE
-                        WHEN ui.role = 'doctor' THEN d.password_hash
-                        WHEN ui.role = 'patient' THEN p.password_hash
-                    END AS password_hash
-                FROM user_identities AS ui
-                LEFT JOIN doctors AS d
-                    ON ui.role = 'doctor' AND d.id = ui.user_id
-                LEFT JOIN patients AS p
-                    ON ui.role = 'patient' AND p.id = ui.user_id
-                WHERE ui.email = %s
+                    email,
+                    LOWER(role) AS role,
+                    user_id,
+                    password_hash,
+                    is_active
+                FROM users
+                WHERE email = %s
                 LIMIT 1
                 """,
                 (email,),
@@ -775,6 +803,7 @@ def find_user_by_email(
             "role": row[1],
             "user_id": row[2],
             "password_hash": row[3],
+            "is_active": row[4],
         }
     finally:
         connection.close()
@@ -813,6 +842,10 @@ def register_user(
  
     if len(full_name) > 150:
         raise ValueError("full_name must not exceed 150 characters.")
+
+    name_parts = full_name.split(maxsplit=1)
+    first_name = name_parts[0]
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
  
     # Validate all role-specific input before any hashing or database work.
     if role == "doctor":
@@ -832,73 +865,84 @@ def register_user(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO user_identities (
+                INSERT INTO users (
+                    user_id,
                     email,
+                    password_hash,
                     role,
-                    user_id
+                    is_active
                 )
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s, %s, TRUE)
                 """,
-                (email, role, user_id),
+                (user_id, email, password_hash, role.upper()),
             )
  
             if role == "doctor":
                 cursor.execute(
                     """
                     INSERT INTO doctors (
-                        id,
-                        email,
-                        password_hash,
-                        full_name,
-                        licence_number,
-                        specialisation_id,
+                        doctor_id,
+                        user_id,
+                        first_name,
+                        last_name,
+                        license_number,
                         hospital_id,
-                        years_experience,
-                        qualifications,
+                        experience_years,
+                        qualification,
                         timezone
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
-                        email,
-                        password_hash,
-                        full_name,
-                        profile["licence_number"],
-                        profile["specialisation_id"],
+                        user_id,
+                        first_name,
+                        last_name,
+                        profile["license_number"],
                         profile["hospital_id"],
-                        profile["years_experience"],
-                        profile["qualifications"],
+                        profile["experience_years"],
+                        profile["qualification"],
                         profile["timezone"],
                     ),
+                )
+
+                cursor.executemany(
+                    """
+                    INSERT INTO doctor_specializations (
+                        doctor_id,
+                        specialization_id
+                    ) VALUES (%s, %s)
+                    """,
+                    [
+                        (user_id, specialisation_id)
+                        for specialisation_id in profile["specialisation_ids"]
+                    ],
                 )
  
             else:
                 cursor.execute(
                     """
                     INSERT INTO patients (
-                        id,
-                        email,
-                        password_hash,
-                        full_name,
+                        patient_id,
+                        user_id,
+                        first_name,
+                        last_name,
                         date_of_birth,
                         gender,
-                        phone,
-                        city,
+                        phone_number,
                         emergency_contact_name,
                         emergency_contact_phone
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
-                        email,
-                        password_hash,
-                        full_name,
+                        user_id,
+                        first_name,
+                        last_name,
                         profile["date_of_birth"],
                         profile["gender"],
                         profile["phone"],
-                        profile["city"],
                         profile["emergency_contact_name"],
                         profile["emergency_contact_phone"],
                     ),
@@ -947,13 +991,13 @@ def register_user(
                 },
             }
  
-        # 1452: foreign key failure (specialisation or hospital).
+        # 1452: selected specialisation or hospital does not exist.
         if error_code == 1452:
             return {
                 "statusCode": 400,
                 "body": {
                     "message": (
-                        "specialisation_id or hospital_id "
+                        "A selected specialisation or hospital "
                         "does not exist."
                     ),
                 },
@@ -969,6 +1013,26 @@ def register_user(
         connection.close()
  
  
+def get_registration_options() -> dict[str, Any]:
+    specialisations = execute_query(
+        "SELECT specialization_id AS id, name FROM specializations ORDER BY name ASC"
+    )
+    hospitals = execute_query(
+        """
+        SELECT hospital_id AS id, name, address
+        FROM hospitals
+        ORDER BY name ASC
+        """
+    )
+    return {
+        "statusCode": 200,
+        "body": {
+            "specialisations": specialisations,
+            "hospitals": hospitals,
+        },
+    }
+
+
 # ============================================================
 # LOGIN
 # ============================================================
@@ -1018,6 +1082,9 @@ def login_user(
     if not password_valid:
         logger.info("Login rejected. reason=invalid_credentials correlation_id=%s", correlation_id)
         return {"statusCode": 401, "body": {"message": "Invalid email or password."}}
+
+    if not user.get("is_active"):
+        return {"statusCode": 401, "body": {"message": "Invalid email or password."}}
  
     role = user["role"]
     if expected_role is not None and role != expected_role:
@@ -1054,6 +1121,17 @@ def login_user(
         "Login stage completed. stage=dynamodb_store_refresh_token correlation_id=%s duration_ms=%d",
         correlation_id, int((time.perf_counter() - stage_started) * 1000),
     )
+
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET last_login_at = UTC_TIMESTAMP(3) WHERE user_id = %s",
+                (user_id,),
+            )
+        connection.commit()
+    finally:
+        connection.close()
  
     logger.info(
         "Login succeeded. role=%s user_id=%s correlation_id=%s total_duration_ms=%d",
@@ -1106,9 +1184,8 @@ def refresh_session(
         return invalid
  
     try:
-        expires_at = int(token_item["expiresAt"])
-        user_id = str(token_item["userId"])
-        role = str(token_item["role"])
+        expires_at = int(token_item["expires_at"])
+        user_id = str(token_item["user_id"])
     except (KeyError, TypeError, ValueError):
         logger.error("Refresh token record is malformed.")
         return invalid
@@ -1124,6 +1201,13 @@ def refresh_session(
  
         return invalid
  
+    user_rows = execute_query(
+        "SELECT LOWER(role) AS role, is_active FROM users WHERE user_id = %s",
+        (user_id,),
+    )
+    if not user_rows or not user_rows[0].get("is_active"):
+        return invalid
+    role = str(user_rows[0]["role"]).lower()
     if not user_id or role not in ALLOWED_ROLES:
         return invalid
  
@@ -1158,9 +1242,7 @@ def logout_session(
     body: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Revoke the access token and delete the supplied refresh token.
- 
-    The denylist TTL is set to the access token's expiry time.
+    Revoke the supplied refresh session. The access JWT expires naturally.
     """
  
     refresh_token = body.get("refresh_token")
@@ -1199,19 +1281,18 @@ def logout_session(
  
     token_item = find_refresh_token(refresh_token)
  
-    # If a refresh token exists, it must belong to the same user
-    # as the access token being revoked.
-    if token_item:
-        if str(token_item.get("userId")) != claims["sub"]:
-            return {
-                "statusCode": 403,
-                "body": {
-                    "message": (
-                        "Refresh token does not belong "
-                        "to the authenticated user."
-                    ),
-                },
-            }
+    if not token_item:
+        return {
+            "statusCode": 401,
+            "body": {"message": "Refresh token is invalid or revoked."},
+        }
+    if str(token_item.get("user_id")) != claims["sub"]:
+        return {
+            "statusCode": 403,
+            "body": {
+                "message": "Refresh token does not belong to the authenticated user.",
+            },
+        }
  
     now = int(time.time())
  
@@ -1225,24 +1306,12 @@ def logout_session(
             },
         }
  
-    # Revoke the access token. If this write fails, do not report
-    # logout success.
-    token_denylist_table.put_item(
-        Item={
-            "jti": claims["jti"],
-            "ttl": claims["exp"],
-        },
-    )
- 
-    # Delete the refresh token after the access token is denylisted.
-    # If the token was already consumed or deleted, logout remains
-    # successful once the access token has been revoked.
     try:
-        revoke_refresh_token(refresh_token)
+        revoked = revoke_refresh_token(refresh_token)
  
     except Exception:
         logger.exception(
-            "Access token revoked, but refresh-token deletion failed. "
+            "Refresh-token session revocation failed. "
             "user_id=%s",
             claims["sub"],
         )
@@ -1251,10 +1320,15 @@ def logout_session(
             "statusCode": 500,
             "body": {
                 "message": (
-                    "Access token was revoked, but session cleanup "
-                    "could not be completed. Please retry logout."
+                    "Session cleanup could not be completed. Please retry logout."
                 ),
             },
+        }
+
+    if not revoked:
+        return {
+            "statusCode": 401,
+            "body": {"message": "Refresh token is invalid or already revoked."},
         }
  
     logger.info(
@@ -1296,7 +1370,10 @@ def lambda_handler(
     try:
         body = get_request_body(event)
  
-        if method == "POST" and path == "/auth/doctors/register":
+        if method == "GET" and path == "/auth/registration-options":
+            result = get_registration_options()
+
+        elif method == "POST" and path == "/auth/doctors/register":
             result = register_user(body, "doctor")
  
         elif method == "POST" and path == "/auth/patients/register":

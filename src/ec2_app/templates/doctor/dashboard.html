@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+
+{% block title %}Doctor Dashboard | MediSlot{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  {% include "doctor/_sidebar.html" %}
+
+  <main class="main-content">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title" id="welcomeHeading">Doctor Dashboard</h1>
+        <p class="page-subtitle" id="currentDateSubtitle">Real-time clinical schedule & appointments</p>
+      </div>
+      <div>
+        <a href="{{ url_for('doctor_schedule') }}" class="btn btn-teal">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="16" y1="2" x2="16" y2="6"></line>
+            <line x1="8" y1="2" x2="8" y2="6"></line>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+          </svg>
+          View Today's Schedule
+        </a>
+      </div>
+    </div>
+
+    <!-- Error Alert Banner -->
+    <div id="dashboardErrorBanner" style="display: none; margin-bottom: 1.5rem;">
+      <div class="alert alert-danger">
+        <span id="dashboardErrorMessage">Failed to load dashboard metrics.</span>
+        <button type="button" class="btn btn-sm btn-secondary" onclick="loadDashboard()">Retry</button>
+      </div>
+    </div>
+
+    <!-- Stat Cards Grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Today's Appointments</span>
+          <div class="stat-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="16" y1="2" x2="16" y2="6"></line>
+              <line x1="8" y1="2" x2="8" y2="6"></line>
+              <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value" id="statTodayAppointments">
+          <div class="spinner"></div>
+        </div>
+        <div class="stat-sub">Scheduled for today</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Upcoming Appointments</span>
+          <div class="stat-icon teal">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value" id="statUpcomingAppointments">
+          <div class="spinner"></div>
+        </div>
+        <div class="stat-sub">Next 30 days</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Patients Served</span>
+          <div class="stat-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value" id="statPatientsServed">
+          <div class="spinner"></div>
+        </div>
+        <div class="stat-sub">Completed clinical consultations</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Consultation Types</span>
+          <div class="stat-icon teal">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value" id="statActiveConsultationTypes">
+          <div class="spinner"></div>
+        </div>
+        <div class="stat-sub">Active services offered</div>
+      </div>
+    </div>
+
+    <!-- Recent Appointments Card -->
+    <div class="card" style="margin-top: 2rem;">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Recent Appointments</h2>
+          <p class="card-desc">Overview of your most recently booked or completed consultations</p>
+        </div>
+        <a href="{{ url_for('doctor_schedule') }}" class="btn btn-secondary btn-sm">
+          View All Slots
+        </a>
+      </div>
+
+      <div id="appointmentsLoading" class="loading-container">
+        <div class="spinner spinner-lg"></div>
+        <p>Retrieving clinical appointment records...</p>
+      </div>
+
+      <div id="appointmentsTableContainer" class="table-container" style="display: none;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Time (Local)</th>
+              <th>Patient</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Fee</th>
+            </tr>
+          </thead>
+          <tbody id="recentAppointmentsBody">
+            <!-- Populated via JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <div id="appointmentsEmptyState" class="empty-state" style="display: none;">
+        <svg class="empty-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="16" y1="2" x2="16" y2="6"></line>
+          <line x1="8" y1="2" x2="8" y2="6"></line>
+          <line x1="3" y1="10" x2="21" y2="10"></line>
+        </svg>
+        <div class="empty-title">No Recent Appointments</div>
+        <p class="empty-desc">When patients book your open consultation slots, appointments will appear here.</p>
+      </div>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    // Set formatted today date
+    const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    document.getElementById('currentDateSubtitle').textContent = new Date().toLocaleDateString(undefined, options);
+
+    loadDashboard();
+  });
+
+  async function loadDashboard() {
+    const errorBanner = document.getElementById('dashboardErrorBanner');
+    const errorMessage = document.getElementById('dashboardErrorMessage');
+    const loadingElem = document.getElementById('appointmentsLoading');
+    const tableContainer = document.getElementById('appointmentsTableContainer');
+    const emptyState = document.getElementById('appointmentsEmptyState');
+    const tbody = document.getElementById('recentAppointmentsBody');
+
+    errorBanner.style.display = 'none';
+    loadingElem.style.display = 'flex';
+    tableContainer.style.display = 'none';
+    emptyState.style.display = 'none';
+
+    try {
+      const resp = await fetch('/api/doctor/dashboard');
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+      }
+      const data = await resp.json();
+
+      // Update doctor name
+      if (data.doctor_name) {
+        document.getElementById('welcomeHeading').textContent = `Welcome, Dr. ${data.doctor_name}`;
+        const sidebarName = document.getElementById('sidebarDoctorName');
+        if (sidebarName) sidebarName.textContent = `Dr. ${data.doctor_name}`;
+      }
+
+      // Populate stat cards
+      document.getElementById('statTodayAppointments').textContent = data.today_appointments ?? 0;
+      document.getElementById('statUpcomingAppointments').textContent = data.upcoming_appointments ?? 0;
+      document.getElementById('statPatientsServed').textContent = data.total_patients_served ?? 0;
+      document.getElementById('statActiveConsultationTypes').textContent = data.active_consultation_types ?? 0;
+
+      // Populate appointments
+      loadingElem.style.display = 'none';
+      const recent = data.recent_appointments || [];
+      if (recent.length === 0) {
+        emptyState.style.display = 'block';
+      } else {
+        tbody.innerHTML = '';
+        recent.forEach(appt => {
+          const tr = document.createElement('tr');
+          const statusClass = appt.status === 'CONFIRMED' ? 'badge-open' :
+                             appt.status === 'COMPLETED' ? 'badge-primary' : 'badge-full';
+
+          tr.innerHTML = `
+            <td style="font-weight: 600;">${escapeHtml(formatAppointmentTime(appt.slot_start_utc, data.profile_summary?.timezone || 'UTC'))}</td>
+            <td>${escapeHtml(appt.patient_name || appt.patient_id || 'Registered Patient')}</td>
+            <td><span class="badge badge-primary">${escapeHtml(appt.consultation_type_name || 'Standard')}</span></td>
+            <td><span class="badge ${statusClass}">${escapeHtml(appt.status || 'CONFIRMED')}</span></td>
+            <td>₹${parseFloat(appt.fee_amount || 0).toFixed(2)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+        tableContainer.style.display = 'block';
+      }
+
+    } catch (err) {
+      console.warn('Dashboard fetch error:', err);
+      loadingElem.style.display = 'none';
+      errorBanner.style.display = 'block';
+      errorMessage.textContent = 'Could not load live dashboard data. Service might still be provisioning.';
+
+      // Fallback display to ensure clean presentation
+      document.getElementById('statTodayAppointments').textContent = '0';
+      document.getElementById('statUpcomingAppointments').textContent = '0';
+      document.getElementById('statPatientsServed').textContent = '0';
+      document.getElementById('statActiveConsultationTypes').textContent = '0';
+      emptyState.style.display = 'block';
+    }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatAppointmentTime(value, timeZone) {
+    if (!value) return 'TBD';
+    const isoValue = String(value).includes('T')
+      ? String(value)
+      : String(value).replace(' ', 'T');
+    const utcValue = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(isoValue)
+      ? isoValue
+      : `${isoValue}Z`;
+    const date = new Date(utcValue);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString(undefined, {
+      timeZone,
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+</script>
+{% endblock %}

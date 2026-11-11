@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In | MediSlot{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="auth-logo">M</div>
+      <h1 class="auth-title">Welcome to MediSlot</h1>
+      <p class="auth-tagline">Sign in to continue to your care workspace.</p>
+    </div>
+
+    <div class="auth-role-toggle" role="group" aria-label="Choose account type">
+      <button type="button" class="auth-role-option {% if selected_role == 'patient' %}active{% endif %}" data-role-choice="patient" aria-pressed="{{ 'true' if selected_role == 'patient' else 'false' }}">Patient</button>
+      <button type="button" class="auth-role-option {% if selected_role == 'doctor' %}active{% endif %}" data-role-choice="doctor" aria-pressed="{{ 'true' if selected_role == 'doctor' else 'false' }}">Doctor</button>
+    </div>
+
+    <form action="{{ url_for('login') }}" method="POST" id="loginForm">
+      <input type="hidden" id="loginRole" name="role" value="{{ selected_role }}">
+      <div class="form-group">
+        <label for="email">Email Address</label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          class="form-control"
+          placeholder="you@example.com"
+          required
+          autofocus
+          autocomplete="username"
+        >
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input
+          type="password"
+          id="password"
+          name="password"
+          class="form-control"
+          placeholder="••••••••••••"
+          required
+          autocomplete="current-password"
+        >
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block" id="loginSubmit" style="margin-top: 1.5rem; padding: 0.85rem;">
+        Sign in as {{ selected_role|title }}
+      </button>
+    </form>
+
+    <div class="auth-footer">
+      <span>New to MediSlot?</span>
+      <a id="registerLink" href="{{ url_for('register', role=selected_role) }}" style="font-weight: 600; margin-left: 0.35rem;">Create an account</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (() => {
+    const roleInput = document.getElementById('loginRole');
+    const submitButton = document.getElementById('loginSubmit');
+    const registerLink = document.getElementById('registerLink');
+    const options = [...document.querySelectorAll('[data-role-choice]')];
+
+    options.forEach(option => option.addEventListener('click', () => {
+      const role = option.dataset.roleChoice;
+      roleInput.value = role;
+      submitButton.textContent = `Sign in as ${role === 'doctor' ? 'Doctor' : 'Patient'}`;
+      registerLink.href = `/register?role=${role}`;
+      options.forEach(item => {
+        const selected = item === option;
+        item.classList.toggle('active', selected);
+        item.setAttribute('aria-pressed', String(selected));
+      });
+    }));
+  })();
+</script>
+{% endblock %}

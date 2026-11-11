@@ -1,0 +1,31 @@
+{% extends "patient/_layout.html" %}
+
+{% block title %}My Appointments | MediSlot{% endblock %}
+
+{% block page_content %}
+<section class="patient-screen" data-patient-page="appointments">
+  <header class="page-header">
+    <div>
+      <p class="patient-eyebrow">YOUR VISITS</p>
+      <h1 class="page-title">Appointments</h1>
+      <p class="page-subtitle">Review your upcoming and previous visits.</p>
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm" id="refreshAppointments" title="Refresh appointments" aria-label="Refresh appointments">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+    </button>
+  </header>
+
+  <div id="patientAppointmentsError" class="patient-inline-error" role="alert" hidden></div>
+  <div id="patientAppointmentsLoading" class="patient-loading"><span class="spinner"></span><span>Loading appointments...</span></div>
+  <div id="patientAppointmentsContainer" class="patient-table-wrap" hidden>
+    <table class="table patient-table">
+      <thead><tr><th>Date and time</th><th>Doctor</th><th>Hospital</th><th>Consultation</th><th>Status</th><th>Fee</th></tr></thead>
+      <tbody id="patientAppointmentsBody"></tbody>
+    </table>
+  </div>
+  <div id="patientAppointmentsEmpty" class="patient-empty" hidden>
+    <p>No appointments yet.</p>
+    <a class="btn btn-teal btn-sm" href="{{ url_for('patient_doctors') }}">Find a doctor</a>
+  </div>
+</section>
+{% endblock %}

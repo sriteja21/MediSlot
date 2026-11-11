@@ -1,0 +1,416 @@
+{% extends "base.html" %}
+
+{% block title %}Weekly Availability | MediSlot{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  {% include "doctor/_sidebar.html" %}
+
+  <main class="main-content">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Weekly Availability Patterns</h1>
+        <p class="page-subtitle">Configure your standard weekly clinical consultation windows</p>
+      </div>
+      <div>
+        <button type="button" class="btn btn-primary" onclick="openAddPatternModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          Add Weekly Pattern
+        </button>
+      </div>
+    </div>
+
+    <!-- Alert Banner -->
+    <div id="availAlert" style="display: none; margin-bottom: 1.5rem;">
+      <div id="availAlertContent" class="alert">
+        <span id="availAlertText"></span>
+        <button type="button" class="alert-close" onclick="document.getElementById('availAlert').style.display='none'">&times;</button>
+      </div>
+    </div>
+
+    <!-- Info Callout -->
+    <div class="card" style="margin-bottom: 2rem; background: rgba(108, 99, 255, 0.05); border-color: rgba(108, 99, 255, 0.2);">
+      <div style="display: flex; align-items: flex-start; gap: 1rem;">
+        <div style="color: var(--accent-light); margin-top: 2px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+        </div>
+        <div>
+          <div style="font-weight: 600; color: #fff; margin-bottom: 0.25rem;">Automated 30-Day Slot Materialisation</div>
+          <p style="font-size: 0.88rem; color: var(--text-muted); margin: 0;">
+            The MediSlot materialiser Lambda automatically projects these availability patterns into discrete bookable slots across the upcoming 30-day rolling window, accounting for your blackout dates.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Availability Table Card -->
+    <div class="card">
+      <div id="availLoading" class="loading-container">
+        <div class="spinner spinner-lg"></div>
+        <p>Retrieving availability patterns...</p>
+      </div>
+
+      <div id="availTableContainer" class="table-container" style="display: none;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Day of Week</th>
+              <th>Time Range (Local)</th>
+              <th>Consultation Type</th>
+              <th>Status</th>
+              <th style="text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="availTableBody">
+            <!-- Populated via JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <div id="availEmptyState" class="empty-state" style="display: none;">
+        <svg class="empty-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <div class="empty-title">No Availability Patterns Set</div>
+        <p class="empty-desc">Add recurring weekly time windows to allow MediSlot to generate appointment slots for patients.</p>
+        <button type="button" class="btn btn-teal btn-sm" style="margin-top: 1rem;" onclick="openAddPatternModal()">
+          + Add First Pattern
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Add Pattern Modal -->
+<div id="addPatternModal" class="modal-backdrop">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 class="modal-title" id="patternModalTitle">New Weekly Availability Pattern</h3>
+      <button type="button" class="modal-close" onclick="closeModal('addPatternModal')">&times;</button>
+    </div>
+    <form id="addPatternForm" onsubmit="handleAddPatternSubmit(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="patternDay">Day of Week <span style="color: var(--danger)">*</span></label>
+          <select id="patternDay" class="form-control" required>
+            <option value="0">Sunday</option>
+            <option value="1">Monday</option>
+            <option value="2">Tuesday</option>
+            <option value="3">Wednesday</option>
+            <option value="4">Thursday</option>
+            <option value="5">Friday</option>
+            <option value="6">Saturday</option>
+          </select>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="patternStartTime">Start Time <span style="color: var(--danger)">*</span></label>
+            <input
+              type="time"
+              id="patternStartTime"
+              class="form-control"
+              value="09:00"
+              required
+            >
+          </div>
+
+          <div class="form-group">
+            <label for="patternEndTime">End Time <span style="color: var(--danger)">*</span></label>
+            <input
+              type="time"
+              id="patternEndTime"
+              class="form-control"
+              value="17:00"
+              required
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="patternConsultationType">Consultation Type <span style="color: var(--danger)">*</span></label>
+          <select id="patternConsultationType" class="form-control" required>
+            <option value="" disabled selected>Select consultation type...</option>
+          </select>
+          <div class="form-hint">Slots generated will inherit this duration and capacity.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addPatternModal')">Cancel</button>
+        <button type="submit" id="addPatternSubmitBtn" class="btn btn-primary">Add Pattern</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const DOW_NAMES = {
+    0: 'Sun',
+    1: 'Mon',
+    2: 'Tue',
+    3: 'Wed',
+    4: 'Thu',
+    5: 'Fri',
+    6: 'Sat'
+  };
+
+  const DOW_FULL = {
+    0: 'Sunday',
+    1: 'Monday',
+    2: 'Tuesday',
+    3: 'Wednesday',
+    4: 'Thursday',
+    5: 'Friday',
+    6: 'Saturday'
+  };
+
+  let consultationTypes = [];
+  let availabilityPatterns = [];
+  let editingPatternId = null;
+
+  document.addEventListener('DOMContentLoaded', async () => {
+    await Promise.all([
+      loadConsultationTypeOptions(),
+      loadAvailability()
+    ]);
+  });
+
+  function showAlert(msg, type = 'success') {
+    const banner = document.getElementById('availAlert');
+    const content = document.getElementById('availAlertContent');
+    const text = document.getElementById('availAlertText');
+
+    content.className = `alert alert-${type}`;
+    text.textContent = msg;
+    banner.style.display = 'block';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openAddPatternModal() {
+    editingPatternId = null;
+    document.getElementById('addPatternForm').reset();
+    document.getElementById('patternStartTime').value = '09:00';
+    document.getElementById('patternEndTime').value = '17:00';
+    document.getElementById('patternModalTitle').textContent = 'New Weekly Availability Pattern';
+    document.getElementById('addPatternSubmitBtn').textContent = 'Add Pattern';
+    document.getElementById('addPatternModal').classList.add('show');
+  }
+
+  function openEditPatternModal(id) {
+    const pattern = availabilityPatterns.find(item => String(item.id) === String(id));
+    if (!pattern) return;
+
+    editingPatternId = pattern.id;
+    document.getElementById('patternDay').value = pattern.day_of_week;
+    document.getElementById('patternStartTime').value = formatTime(pattern.start_local_time);
+    document.getElementById('patternEndTime').value = formatTime(pattern.end_local_time);
+    document.getElementById('patternConsultationType').value = pattern.consultation_type_id;
+    document.getElementById('patternModalTitle').textContent = 'Edit Weekly Availability Pattern';
+    document.getElementById('addPatternSubmitBtn').textContent = 'Save Pattern';
+    document.getElementById('addPatternModal').classList.add('show');
+  }
+
+  function closeModal(id) {
+    document.getElementById(id).classList.remove('show');
+  }
+
+  async function loadConsultationTypeOptions() {
+    try {
+      const resp = await fetch('/api/doctor/consultation-types?all=true');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      consultationTypes = Array.isArray(data) ? data : (data.consultation_types || []);
+
+      const select = document.getElementById('patternConsultationType');
+      select.innerHTML = '<option value="" disabled selected>Select consultation type...</option>';
+
+      consultationTypes.forEach(ct => {
+        const opt = document.createElement('option');
+        opt.value = ct.id;
+        opt.textContent = `${ct.kind} (${ct.duration_minutes}m, ₹${parseFloat(ct.fee_amount || 0).toFixed(0)})`;
+        select.appendChild(opt);
+      });
+    } catch (err) {
+      console.warn('Failed to load consultation types for dropdown:', err);
+    }
+  }
+
+  async function loadAvailability() {
+    const loading = document.getElementById('availLoading');
+    const tableContainer = document.getElementById('availTableContainer');
+    const emptyState = document.getElementById('availEmptyState');
+    const tbody = document.getElementById('availTableBody');
+
+    loading.style.display = 'flex';
+    tableContainer.style.display = 'none';
+    emptyState.style.display = 'none';
+
+    try {
+      const resp = await fetch('/api/doctor/availability');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const patterns = Array.isArray(data) ? data : (data.availability_patterns || []);
+      availabilityPatterns = patterns;
+
+      loading.style.display = 'none';
+
+      if (patterns.length === 0) {
+        emptyState.style.display = 'block';
+        return;
+      }
+
+      tbody.innerHTML = '';
+      patterns.forEach(p => {
+        const tr = document.createElement('tr');
+        const dowNum = parseInt(p.day_of_week);
+        const dowLabel = DOW_FULL[dowNum] || `Day ${p.day_of_week}`;
+        const dowBadge = DOW_NAMES[dowNum] || 'Day';
+
+        // Format start/end time display
+        const startTime = formatTime(p.start_local_time);
+        const endTime = formatTime(p.end_local_time);
+
+        // Find type name if mapped
+        const matchedType = consultationTypes.find(ct => String(ct.id) === String(p.consultation_type_id));
+        const typeName = matchedType ? matchedType.kind : (p.consultation_type_name || 'Consultation');
+
+        tr.innerHTML = `
+          <td>
+            <span class="badge badge-primary" style="margin-right: 6px;">${dowBadge}</span>
+            <span style="font-weight: 600;">${dowLabel}</span>
+          </td>
+          <td>
+            <span style="font-family: monospace; font-size: 0.95rem;">${startTime} – ${endTime}</span>
+          </td>
+          <td>
+            <span style="color: var(--text-muted);">${escapeHtml(typeName)}</span>
+          </td>
+          <td>
+            <span class="badge badge-open">Active</span>
+          </td>
+          <td style="text-align: right;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openEditPatternModal('${escapeHtml(p.id)}')">
+              Edit
+            </button>
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="handleDeletePattern('${escapeHtml(p.id)}')">
+              Delete
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      tableContainer.style.display = 'block';
+
+    } catch (err) {
+      console.warn('Availability patterns fetch error:', err);
+      loading.style.display = 'none';
+      showAlert('Could not load weekly availability patterns. Please try again.', 'danger');
+      emptyState.style.display = 'block';
+    }
+  }
+
+  async function handleAddPatternSubmit(e) {
+    e.preventDefault();
+    const btn = document.getElementById('addPatternSubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="margin-right: 6px;"></span> Saving...';
+
+    const startTime = document.getElementById('patternStartTime').value;
+    const endTime = document.getElementById('patternEndTime').value;
+
+    if (endTime <= startTime) {
+      alert('End time must be after start time.');
+      btn.disabled = false;
+      btn.textContent = 'Add Pattern';
+      return;
+    }
+
+    const payload = {
+      day_of_week: parseInt(document.getElementById('patternDay').value),
+      start_local_time: startTime + ':00',
+      end_local_time: endTime + ':00',
+      consultation_type_id: document.getElementById('patternConsultationType').value,
+    };
+
+    const updateId = editingPatternId;
+    const endpoint = updateId
+      ? `/doctor/availability/${encodeURIComponent(updateId)}/update`
+      : '/doctor/availability/create';
+
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        closeModal('addPatternModal');
+        showAlert(
+          updateId ? 'Availability pattern updated.' : 'Availability pattern added.',
+          'success'
+        );
+        await loadAvailability();
+      } else {
+        showAlert(resData.message || 'Failed to add availability pattern.', 'danger');
+      }
+    } catch (err) {
+      showAlert('Network error while creating availability pattern.', 'danger');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = editingPatternId ? 'Save Pattern' : 'Add Pattern';
+    }
+  }
+
+  async function handleDeletePattern(id) {
+    if (!confirm('Are you sure you want to remove this recurring availability pattern?')) {
+      return;
+    }
+
+    try {
+      const resp = await fetch(`/doctor/availability/${encodeURIComponent(id)}/delete`, {
+        method: 'POST',
+      });
+      const resData = await resp.json();
+
+      if (resp.ok) {
+        showAlert('Availability pattern removed successfully.', 'success');
+        await loadAvailability();
+      } else {
+        showAlert(resData.message || 'Failed to delete pattern.', 'danger');
+      }
+    } catch (err) {
+      showAlert('Network error occurred while removing pattern.', 'danger');
+    }
+  }
+
+  function formatTime(val) {
+    if (!val) return '00:00';
+    const s = String(val);
+    const parts = s.split(':');
+    return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+</script>
+{% endblock %}

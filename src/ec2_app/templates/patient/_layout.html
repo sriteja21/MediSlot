@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="app-wrapper patient-page">
+  {% include "patient/_sidebar.html" %}
+  <main class="main-content patient-main-content">
+    <div class="patient-content">
+      <div id="patientNotice" class="patient-notice" role="status" aria-live="polite" hidden></div>
+      {% block page_content %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/patient.js') }}" defer></script>
+{% endblock %}

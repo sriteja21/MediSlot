@@ -1,0 +1,49 @@
+{% extends "patient/_layout.html" %}
+
+{% block title %}Find Doctors | MediSlot{% endblock %}
+
+{% block page_content %}
+<section class="patient-screen" data-patient-page="doctors">
+  <header class="page-header">
+    <div>
+      <p class="patient-eyebrow">CARE THAT FITS YOUR NEEDS</p>
+      <h1 class="page-title">Find a doctor</h1>
+      <p class="page-subtitle">Search verified doctors by name, specialty, or hospital.</p>
+    </div>
+  </header>
+
+  <form id="doctorSearchForm" class="patient-search-form">
+    <label class="patient-search-field patient-search-wide">
+      <span>Name or hospital</span>
+      <input class="form-control" id="doctorSearchInput" name="search" type="search" placeholder="e.g. Dr. Rao or Central City" autocomplete="off">
+    </label>
+    <label class="patient-search-field">
+      <span>Specialty</span>
+      <input class="form-control" id="specializationInput" name="specialization" type="search" placeholder="e.g. Cardiology" autocomplete="off">
+    </label>
+    <label class="patient-search-field">
+      <span>Hospital</span>
+      <input class="form-control" id="hospitalInput" name="hospital" type="search" placeholder="Any hospital" autocomplete="off">
+    </label>
+    <button class="btn btn-teal patient-search-button" type="submit">Search</button>
+  </form>
+
+  <section class="patient-search-section" aria-labelledby="doctorResultsTitle">
+    <div class="patient-section-heading">
+      <div>
+        <h2 id="doctorResultsTitle">Available doctors</h2>
+        <p id="doctorResultCount">Search to see matching doctors.</p>
+      </div>
+    </div>
+    <div id="doctorSearchError" class="patient-inline-error" role="alert" hidden></div>
+    <div id="doctorSearchLoading" class="patient-loading" hidden><span class="spinner"></span><span>Finding doctors...</span></div>
+    <div id="doctorResults" class="doctor-results" aria-live="polite"></div>
+    <div id="doctorEmptyState" class="patient-empty" hidden>No verified doctors match those filters.</div>
+    <nav id="doctorPagination" class="patient-pagination" aria-label="Doctor search pages" hidden>
+      <button type="button" class="btn btn-secondary btn-sm" id="previousDoctors">Previous</button>
+      <span id="doctorPageLabel"></span>
+      <button type="button" class="btn btn-secondary btn-sm" id="nextDoctors">Next</button>
+    </nav>
+  </section>
+</section>
+{% endblock %}

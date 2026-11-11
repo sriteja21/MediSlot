@@ -64,18 +64,35 @@ READ_TIMEOUT_SECONDS = 30
 WRITE_TIMEOUT_SECONDS = 30
 
 EXPECTED_TABLES = {
-    "user_identities",
-    "specialisations",
+    "users",
+    "patients",
     "hospitals",
     "doctors",
-    "doctor_languages",
-    "patients",
+    "specializations",
+    "doctor_specializations",
+    "consultation_catalog",
     "consultation_types",
     "availability_patterns",
     "blackout_dates",
     "appointments",
-    "appointment_events",
-    "refund_ledger",
+    "payments",
+    "refunds",
+}
+
+EXPECTED_COLUMNS = {
+    "users": {"user_id", "email", "password_hash", "role", "is_active", "last_login_at"},
+    "patients": {"patient_id", "user_id", "first_name", "last_name", "date_of_birth", "gender"},
+    "hospitals": {"hospital_id", "name", "address"},
+    "doctors": {"doctor_id", "user_id", "hospital_id", "first_name", "last_name", "license_number", "experience_years", "timezone"},
+    "specializations": {"specialization_id", "name"},
+    "doctor_specializations": {"doctor_id", "specialization_id"},
+    "consultation_catalog": {"consultation_type_id", "name", "mode", "duration_minutes"},
+    "consultation_types": {"consultation_type_id", "doctor_id", "catalog_type_id", "fee", "capacity", "is_active"},
+    "availability_patterns": {"pattern_id", "consultation_type_id", "day_of_week", "start_time", "end_time"},
+    "blackout_dates": {"blackout_id", "doctor_id", "start_datetime", "end_datetime"},
+    "appointments": {"appointment_id", "patient_id", "consultation_type_id", "appointment_datetime", "appointment_status"},
+    "payments": {"payment_id", "appointment_id", "amount", "payment_status", "payment_method"},
+    "refunds": {"refund_id", "payment_id", "refund_amount", "refund_status"},
 }
 
 # schema.sql is packaged alongside this Python file.
@@ -423,6 +440,38 @@ def verify_schema(connection: Connection) -> list[str]:
         raise RuntimeError(
             "Schema verification failed. Missing tables: "
             + ", ".join(missing_tables)
+        )
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT TABLE_NAME, COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+            """,
+            (DB_NAME,),
+        )
+        column_rows = cursor.fetchall()
+
+    existing_columns: dict[str, set[str]] = {}
+    for row in column_rows:
+        if isinstance(row, dict):
+            table_name = row.get("TABLE_NAME")
+            column_name = row.get("COLUMN_NAME")
+        else:
+            table_name, column_name = row[0], row[1]
+        if table_name and column_name:
+            existing_columns.setdefault(table_name, set()).add(column_name)
+
+    missing_columns = sorted(
+        f"{table}.{column}"
+        for table, columns in EXPECTED_COLUMNS.items()
+        for column in columns - existing_columns.get(table, set())
+    )
+    if missing_columns:
+        raise RuntimeError(
+            "Schema verification failed. Existing tables need migration; "
+            "missing columns: " + ", ".join(missing_columns)
         )
 
     verified_tables = sorted(EXPECTED_TABLES)

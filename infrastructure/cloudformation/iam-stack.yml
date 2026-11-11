@@ -104,7 +104,6 @@ Resources:
                   - logs:PutLogEvents
                 Resource:
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthFunction-${Environment}:*"
-
         - PolicyName: !Sub "MediSlot-AuthReadSecrets-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -152,20 +151,6 @@ Resources:
                           Fn::ImportValue:
                             !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
 
-        - PolicyName: !Sub "MediSlot-AuthTokenDenylist-${Environment}"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: RevokeAccessTokens
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-TokenDenylistTableArn-${Environment}"
-
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-AuthLambdaRole-${Environment}"
@@ -179,8 +164,7 @@ Resources:
   # ==========================================================
 
   # This role is deliberately separate from the authentication role.
-  # The authorizer validates JWTs and checks the denylist.
-  # It does not need database credentials or refresh-token write access.
+  # The authorizer validates signed JWTs without database access.
 
   MediSlotAuthorizerLambdaRole:
     Type: AWS::IAM::Role
@@ -242,18 +226,6 @@ Resources:
                   StringEquals:
                     kms:ViaService: !Sub "ssm.${Region}.${AWS::URLSuffix}"
 
-        - PolicyName: !Sub "MediSlot-AuthorizerCheckDenylist-${Environment}"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: CheckRevokedAccessTokens
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-TokenDenylistTableArn-${Environment}"
-
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-AuthorizerLambdaRole-${Environment}"
@@ -309,6 +281,9 @@ Resources:
                   - logs:PutLogEvents
                 Resource:
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-ApiFunction-${Environment}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-DoctorFunction-${Environment}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientFunction-${Environment}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-SlotMaterialiser-${Environment}:*"
 
         - PolicyName: !Sub "MediSlot-ApiReadSecrets-${Environment}"
           PolicyDocument:
@@ -358,28 +333,6 @@ Resources:
                             !Sub "MediSlot-SlotsTableArn-${Environment}"
 
         # ----------------------------------------------------
-        # SEAT CLAIMS TABLE
-        # ----------------------------------------------------
-
-        - PolicyName: !Sub "MediSlot-ApiSeatClaims-${Environment}"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: ManageSeatClaims
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactWriteItems
-                Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-SeatClaimsTableArn-${Environment}"
-
-        # ----------------------------------------------------
         # IDEMPOTENCY TABLE
         # ----------------------------------------------------
 
@@ -417,18 +370,23 @@ Resources:
                   - dynamodb:ConditionCheckItem
                   - dynamodb:TransactWriteItems
                 Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-WaitlistTableArn-${Environment}"
+                  - Fn::ImportValue:
+                      !Sub "MediSlot-WaitlistTableArn-${Environment}"
+                  - Fn::Sub:
+                      - "${TableArn}/index/*"
+                      - TableArn:
+                          Fn::ImportValue:
+                            !Sub "MediSlot-WaitlistTableArn-${Environment}"
 
         # ----------------------------------------------------
-        # HOLD OFFERS TABLE
+        # WAITLIST OFFER TABLE
         # ----------------------------------------------------
 
-        - PolicyName: !Sub "MediSlot-ApiHoldOffers-${Environment}"
+        - PolicyName: !Sub "MediSlot-ApiWaitlistOffer-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ManageHoldOffers
+              - Sid: ManageWaitlistOffers
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -440,12 +398,12 @@ Resources:
                   - dynamodb:TransactWriteItems
                 Resource:
                   - Fn::ImportValue:
-                      !Sub "MediSlot-HoldOffersTableArn-${Environment}"
+                      !Sub "MediSlot-WaitlistOfferTableArn-${Environment}"
                   - Fn::Sub:
                       - "${TableArn}/index/*"
                       - TableArn:
                           Fn::ImportValue:
-                            !Sub "MediSlot-HoldOffersTableArn-${Environment}"
+                            !Sub "MediSlot-WaitlistOfferTableArn-${Environment}"
 
         # ----------------------------------------------------
         # REFRESH TOKENS TABLE
@@ -471,40 +429,29 @@ Resources:
                             !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
 
         # ----------------------------------------------------
-        # TOKEN DENYLIST TABLE
-        # Business APIs should not revoke tokens directly.
+        # NOTIFICATIONS TABLE
         # ----------------------------------------------------
 
-        - PolicyName: !Sub "MediSlot-ApiTokenDenylist-${Environment}"
+        - PolicyName: !Sub "MediSlot-ApiNotifications-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: CheckTokenRevocationIfRequired
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-TokenDenylistTableArn-${Environment}"
-
-        # ----------------------------------------------------
-        # DISPATCH LOG TABLE
-        # ----------------------------------------------------
-
-        - PolicyName: !Sub "MediSlot-ApiDispatchLog-${Environment}"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: ManageDispatchRecords
+              - Sid: ManageNotifications
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
+                  - dynamodb:Query
                 Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-DispatchLogTableArn-${Environment}"
+                  - Fn::ImportValue:
+                      !Sub "MediSlot-NotificationsTableArn-${Environment}"
+                  - Fn::Sub:
+                      - "${TableArn}/index/*"
+                      - TableArn:
+                          Fn::ImportValue:
+                            !Sub "MediSlot-NotificationsTableArn-${Environment}"
 
         # ----------------------------------------------------
         # S3 PROFILE PHOTOS
@@ -546,6 +493,17 @@ Resources:
                     - BucketArn:
                         Fn::ImportValue:
                           !Sub "MediSlot-ReportsBucketArn-${Environment}"
+
+        - PolicyName: !Sub "MediSlot-InvokeSlotMaterialiser-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeSlotMaterialiser
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${Region}:${AWS::AccountId}:function:MediSlot-SlotMaterialiser-${Environment}"
 
       Tags:
         - Key: Name
