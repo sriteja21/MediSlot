@@ -299,8 +299,6 @@ Resources:
           !Sub "MediSlot-AuthLambdaRoleArn-${Environment}"
       LoggingConfig:
         LogFormat: Text
-        ApplicationLogLevel: !Ref LogLevel
-        SystemLogLevel: WARN
         LogGroup: !Ref AuthLogGroup
 
       VpcConfig:
@@ -438,8 +436,6 @@ Resources:
           !Sub "MediSlot-AuthorizerLambdaRoleArn-${Environment}"
       LoggingConfig:
         LogFormat: Text
-        ApplicationLogLevel: !Ref LogLevel
-        SystemLogLevel: WARN
         LogGroup: !Ref AuthorizerLogGroup
 
       Environment:
@@ -473,8 +469,6 @@ Resources:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
       LoggingConfig:
         LogFormat: Text
-        ApplicationLogLevel: !Ref LogLevel
-        SystemLogLevel: WARN
         LogGroup: !Ref DoctorLogGroup
       VpcConfig:
         SecurityGroupIds:
@@ -633,8 +627,6 @@ Resources:
           !Sub "MediSlot-PatientLambdaRoleArn-${Environment}"
       LoggingConfig:
         LogFormat: Text
-        ApplicationLogLevel: !Ref LogLevel
-        SystemLogLevel: WARN
         LogGroup: !Ref PatientApiLogGroup
       Environment:
         Variables:
@@ -780,8 +772,6 @@ Resources:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
       LoggingConfig:
         LogFormat: Text
-        ApplicationLogLevel: !Ref LogLevel
-        SystemLogLevel: WARN
         LogGroup: !Ref SlotMaterialiserLogGroup
       VpcConfig:
         SecurityGroupIds:
