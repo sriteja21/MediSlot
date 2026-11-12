@@ -8,10 +8,9 @@ HttpOnly cookies with automatic token refresh on 401 responses.
 
 import logging
 import os
-from functools import wraps
 from typing import Any
+from urllib.parse import urlsplit
 
-import requests
 from flask import (
     Flask,
     flash,
@@ -24,6 +23,10 @@ from flask import (
     url_for,
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+from api_client import api_call
+from patient import register_blueprints as register_patient_blueprints
+from route_guards import doctor_required as login_required
 
 # ============================================================
 # APP CONFIGURATION
@@ -44,96 +47,6 @@ app.config.update(
     SESSION_COOKIE_SECURE=COOKIE_SECURE,
 )
 
-API_BASE_URL = os.environ.get(
-    "API_BASE_URL",
-    "http://localhost:3000",
-).rstrip("/")
-
-
-# ============================================================
-# COOKIE & API CALL HELPERS
-# ============================================================
-
-def api_call(
-    method: str,
-    path: str,
-    json_body: dict[str, Any] | None = None,
-    params: dict[str, Any] | None = None,
-) -> tuple[int, dict[str, Any]]:
-    """
-    Proxy an HTTP call to the API Gateway using the Bearer token in cookies.
-
-    If the API Gateway returns 401, attempts to refresh the access token using
-    the refresh_token cookie, retries the request once upon success, and sets
-    the new token in Flask's request context for subsequent cookie updating.
-    """
-    token = request.cookies.get("access_token")
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    url = f"{API_BASE_URL}{path}"
-
-    try:
-        resp = requests.request(
-            method=method,
-            url=url,
-            headers=headers,
-            json=json_body,
-            params=params,
-            timeout=15,
-        )
-        status_code = resp.status_code
-        try:
-            data = resp.json()
-        except Exception:
-            data = {"message": resp.text or f"HTTP {status_code}"}
-    except requests.RequestException as exc:
-        logger.warning("API connection failed. url=%s exc=%s", url, exc)
-        return 503, {
-            "message": "Unable to communicate with MediSlot API Gateway. Please try again shortly.",
-            "detail": str(exc),
-        }
-
-    # Handle 401 Unauthorized by attempting a token refresh
-    if status_code == 401:
-        refresh_token = request.cookies.get("refresh_token")
-        if refresh_token:
-            logger.info("Attempting access token refresh after 401 response")
-            try:
-                refresh_resp = requests.post(
-                    f"{API_BASE_URL}/auth/refresh",
-                    json={"refresh_token": refresh_token},
-                    timeout=10,
-                )
-                if refresh_resp.status_code == 200:
-                    refresh_data = refresh_resp.json()
-                    new_access_token = refresh_data.get("access_token")
-                    if new_access_token:
-                        # Store in g so @app.after_request writes the updated cookie
-                        g.new_access_token = new_access_token
-                        headers["Authorization"] = f"Bearer {new_access_token}"
-
-                        # Retry the original request once
-                        retry_resp = requests.request(
-                            method=method,
-                            url=url,
-                            headers=headers,
-                            json=json_body,
-                            params=params,
-                            timeout=15,
-                        )
-                        try:
-                            retry_data = retry_resp.json()
-                        except Exception:
-                            retry_data = {"message": retry_resp.text or f"HTTP {retry_resp.status_code}"}
-                        return retry_resp.status_code, retry_data
-            except requests.RequestException as ref_exc:
-                logger.warning("Refresh token attempt failed: %s", ref_exc)
-
-    return status_code, data
-
-
 @app.after_request
 def update_cookies_after_refresh(response):
     """If a new access token was issued during a 401 refresh, update the cookie."""
@@ -147,33 +60,25 @@ def update_cookies_after_refresh(response):
             secure=COOKIE_SECURE,
             max_age=15 * 60,
         )
+    if (
+        getattr(g, "session_expired", False)
+        and request.endpoint != "login"
+        and not request.path.startswith("/api/")
+    ):
+        query_string = request.query_string.decode("utf-8", errors="replace")
+        next_path = f"{request.path}?{query_string}" if query_string else request.path
+        response = redirect(
+            url_for(
+                "login",
+                role=session.get("role", "patient"),
+                expired="1",
+                next=_safe_next_url(next_path),
+            )
+        )
+    correlation_id = getattr(g, "api_correlation_id", None)
+    if correlation_id:
+        response.headers["X-Correlation-ID"] = correlation_id
     return response
-
-
-def login_required(f):
-    """Ensure a doctor session exists before serving a doctor page."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        access_token = request.cookies.get("access_token")
-        refresh_token = request.cookies.get("refresh_token")
-        if (not access_token and not refresh_token) or session.get("role") != "doctor":
-            flash("Please sign in with a doctor account to continue.", "warning")
-            return redirect(url_for("login"))
-        return f(*args, **kwargs)
-    return decorated_function
-
-
-def patient_required(f):
-    """Ensure a patient session exists before serving patient pages."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        access_token = request.cookies.get("access_token")
-        refresh_token = request.cookies.get("refresh_token")
-        if (not access_token and not refresh_token) or session.get("role") != "patient":
-            flash("Please sign in with a patient account to continue.", "warning")
-            return redirect(url_for("login"))
-        return f(*args, **kwargs)
-    return decorated_function
 
 
 # ============================================================
@@ -182,12 +87,21 @@ def patient_required(f):
 
 @app.route("/", methods=["GET"])
 def index():
-    """Send authenticated users to the dashboard for their role."""
+    """Send authenticated users to the first page in their workspace."""
     if session.get("role") == "doctor":
         return redirect(url_for("doctor_dashboard"))
     if session.get("role") == "patient":
-        return redirect(url_for("patient_dashboard"))
+        return redirect(url_for("patient_doctors.doctor_search_page"))
     return redirect(url_for("login"))
+
+
+def _safe_next_url(candidate: str | None) -> str | None:
+    if not candidate or not candidate.startswith("/") or candidate.startswith("//"):
+        return None
+    parsed = urlsplit(candidate)
+    if parsed.scheme or parsed.netloc or "\\" in candidate:
+        return None
+    return candidate
 
 
 @app.route("/healthz", methods=["GET"])
@@ -199,24 +113,38 @@ def health_check():
 def login():
     """Render the role-selecting login form or authenticate the selected role."""
     if request.method == "GET":
-        if session.get("role") in {"doctor", "patient"}:
+        expired = request.args.get("expired") == "1"
+        if expired:
+            session.clear()
+        elif session.get("role") in {"doctor", "patient"}:
             return redirect(url_for("index"))
         selected_role = request.args.get("role", "patient").lower()
         if selected_role not in {"doctor", "patient"}:
             selected_role = "patient"
-        return render_template("login.html", selected_role=selected_role)
+        if expired:
+            flash("Session expired, please log in again.", "warning")
+        response = app.make_response(render_template(
+            "login.html",
+            selected_role=selected_role,
+            next_url=_safe_next_url(request.args.get("next")),
+        ))
+        if expired:
+            response.delete_cookie("access_token")
+            response.delete_cookie("refresh_token")
+        return response
 
     email = request.form.get("email", "").strip()
     password = request.form.get("password", "")
     selected_role = request.form.get("role", "patient").strip().lower()
+    next_url = _safe_next_url(request.form.get("next"))
 
     if selected_role not in {"doctor", "patient"}:
         flash("Select whether you are signing in as a patient or doctor.", "danger")
-        return redirect(url_for("login"))
+        return redirect(url_for("login", next=next_url) if next_url else url_for("login"))
 
     if not email or not password:
         flash("Email and password are required.", "danger")
-        return redirect(url_for("login", role=selected_role))
+        return redirect(url_for("login", role=selected_role, next=next_url) if next_url else url_for("login", role=selected_role))
 
     status, res = api_call(
         "POST",
@@ -227,9 +155,9 @@ def login():
     if status == 200 and "access_token" in res:
         user = res.get("user") or {}
         role = user.get("role")
-        if role not in {"doctor", "patient"}:
+        if role != selected_role:
             flash("This account has an unsupported role.", "danger")
-            return redirect(url_for("login"))
+            return redirect(url_for("login", role=selected_role))
 
         access_token = res["access_token"]
         refresh_token = res.get("refresh_token")
@@ -239,7 +167,7 @@ def login():
         session.clear()
         session["role"] = role
         session["user_id"] = user.get("user_id")
-        resp = redirect(url_for("index"))
+        resp = redirect(next_url or url_for("index"))
         resp.set_cookie(
             "access_token",
             access_token,
@@ -262,7 +190,7 @@ def login():
 
     error_msg = res.get("message") or "Invalid email or password. Please try again."
     flash(error_msg, "danger")
-    return redirect(url_for("login", role=selected_role))
+    return redirect(url_for("login", role=selected_role, next=next_url) if next_url else url_for("login", role=selected_role))
 
 
 @app.route("/register", methods=["GET", "POST"])
@@ -380,34 +308,6 @@ def doctor_dashboard():
     return render_template("doctor/dashboard.html", active_page="dashboard")
 
 
-@app.route("/patient/dashboard", methods=["GET"])
-@patient_required
-def patient_dashboard():
-    return render_template("patient/dashboard.html", active_page="dashboard")
-
-
-@app.route("/patient/doctors", methods=["GET"])
-@patient_required
-def patient_doctors():
-    return render_template("patient/doctors.html", active_page="doctors")
-
-
-@app.route("/patient/doctors/<doctor_id>", methods=["GET"])
-@patient_required
-def patient_doctor_profile(doctor_id: str):
-    return render_template(
-        "patient/doctor_profile.html",
-        active_page="doctors",
-        doctor_id=doctor_id,
-    )
-
-
-@app.route("/patient/appointments", methods=["GET"])
-@patient_required
-def patient_appointments():
-    return render_template("patient/appointments.html", active_page="appointments")
-
-
 @app.route("/doctor/profile", methods=["GET"])
 @login_required
 def doctor_profile():
@@ -454,6 +354,7 @@ def doctor_schedule():
 # ============================================================
 
 @app.route("/doctor/profile/update", methods=["POST"])
+@login_required
 def doctor_profile_update():
     """Proxy doctor profile updates to PATCH /doctors/me."""
     data = request.get_json(silent=True) or request.form.to_dict()
@@ -462,6 +363,7 @@ def doctor_profile_update():
 
 
 @app.route("/doctor/consultation-types/create", methods=["POST"])
+@login_required
 def create_consultation_type():
     """Proxy creation of consultation types to POST /doctors/me/consultation-types."""
     data = request.get_json(silent=True) or request.form.to_dict()
@@ -476,6 +378,7 @@ def create_consultation_type():
 
 
 @app.route("/doctor/consultation-types/<id>/update", methods=["POST"])
+@login_required
 def update_consultation_type(id: str):
     """Proxy update of consultation types to PATCH /doctors/me/consultation-types/<id>."""
     data = request.get_json(silent=True) or request.form.to_dict()
@@ -490,6 +393,7 @@ def update_consultation_type(id: str):
 
 
 @app.route("/doctor/consultation-types/<id>/delete", methods=["POST"])
+@login_required
 def delete_consultation_type(id: str):
     """Proxy deletion of consultation types to DELETE /doctors/me/consultation-types/<id>."""
     status, res = api_call("DELETE", f"/doctors/me/consultation-types/{id}")
@@ -497,6 +401,7 @@ def delete_consultation_type(id: str):
 
 
 @app.route("/doctor/availability/create", methods=["POST"])
+@login_required
 def create_availability():
     """Proxy creation of availability pattern to POST /doctors/me/availability."""
     data = request.get_json(silent=True) or request.form.to_dict()
@@ -507,6 +412,7 @@ def create_availability():
 
 
 @app.route("/doctor/availability/<id>/delete", methods=["POST"])
+@login_required
 def delete_availability(id: str):
     """Proxy deletion of availability pattern to DELETE /doctors/me/availability/<id>."""
     status, res = api_call("DELETE", f"/doctors/me/availability/{id}")
@@ -514,6 +420,7 @@ def delete_availability(id: str):
 
 
 @app.route("/doctor/availability/<id>/update", methods=["POST"])
+@login_required
 def update_availability(id: str):
     data = request.get_json(silent=True) or request.form.to_dict()
     if "day_of_week" in data:
@@ -523,6 +430,7 @@ def update_availability(id: str):
 
 
 @app.route("/doctor/blackouts/create", methods=["POST"])
+@login_required
 def create_blackout():
     """Proxy creation of blackout date to POST /doctors/me/blackouts."""
     data = request.get_json(silent=True) or request.form.to_dict()
@@ -531,6 +439,7 @@ def create_blackout():
 
 
 @app.route("/doctor/blackouts/<id>/delete", methods=["POST"])
+@login_required
 def delete_blackout(id: str):
     """Proxy deletion of blackout date to DELETE /doctors/me/blackouts/<id>."""
     status, res = api_call("DELETE", f"/doctors/me/blackouts/{id}")
@@ -538,6 +447,7 @@ def delete_blackout(id: str):
 
 
 @app.route("/doctor/photo-upload-url", methods=["GET"])
+@login_required
 def photo_upload_url():
     """Proxy request for presigned S3 upload URL for doctor profile photo."""
     status, res = api_call("GET", "/doctors/me/photo-upload-url", params=request.args)
@@ -549,6 +459,7 @@ def photo_upload_url():
 # ============================================================
 
 @app.route("/api/doctor/profile", methods=["GET"])
+@login_required
 def api_doctor_profile():
     """Proxy to GET /doctors/me."""
     status, res = api_call("GET", "/doctors/me")
@@ -556,6 +467,7 @@ def api_doctor_profile():
 
 
 @app.route("/api/doctor/consultation-types", methods=["GET"])
+@login_required
 def api_doctor_consultation_types():
     """Proxy to GET /doctors/me/consultation-types."""
     status, res = api_call("GET", "/doctors/me/consultation-types", params=request.args)
@@ -563,6 +475,7 @@ def api_doctor_consultation_types():
 
 
 @app.route("/api/doctor/availability", methods=["GET"])
+@login_required
 def api_doctor_availability():
     """Proxy to GET /doctors/me/availability."""
     status, res = api_call("GET", "/doctors/me/availability")
@@ -570,6 +483,7 @@ def api_doctor_availability():
 
 
 @app.route("/api/doctor/blackouts", methods=["GET"])
+@login_required
 def api_doctor_blackouts():
     """Proxy to GET /doctors/me/blackouts."""
     status, res = api_call("GET", "/doctors/me/blackouts")
@@ -577,6 +491,7 @@ def api_doctor_blackouts():
 
 
 @app.route("/api/doctor/schedule", methods=["GET"])
+@login_required
 def api_doctor_schedule():
     """Proxy to GET /doctors/me/schedule?date=..."""
     status, res = api_call("GET", "/doctors/me/schedule", params=request.args)
@@ -584,54 +499,14 @@ def api_doctor_schedule():
 
 
 @app.route("/api/doctor/dashboard", methods=["GET"])
+@login_required
 def api_doctor_dashboard():
     """Proxy to GET /doctors/me/dashboard."""
     status, res = api_call("GET", "/doctors/me/dashboard")
     return jsonify(res), status
 
 
-@app.route("/api/patient/dashboard", methods=["GET"])
-def api_patient_dashboard():
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-    status, res = api_call("GET", "/patients/me/dashboard")
-    return jsonify(res), status
-
-
-@app.route("/api/patient/doctors", methods=["GET"])
-def api_patient_search_doctors():
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-    status, res = api_call("GET", "/patients/doctors/search", params=request.args)
-    return jsonify(res), status
-
-
-@app.route("/api/patient/doctors/<doctor_id>", methods=["GET"])
-def api_patient_doctor_profile(doctor_id: str):
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-    status, res = api_call("GET", f"/patients/doctors/{doctor_id}")
-    return jsonify(res), status
-
-
-@app.route("/api/patient/doctors/<doctor_id>/slots", methods=["GET"])
-def api_patient_doctor_slots(doctor_id: str):
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-    status, res = api_call(
-        "GET", f"/patients/doctors/{doctor_id}/slots", params=request.args
-    )
-    return jsonify(res), status
-
-
-@app.route("/api/patient/book-appointment", methods=["POST"])
-def api_patient_book_appointment():
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-
-    data = request.get_json(silent=True) or request.form.to_dict()
-    status, res = api_call("POST", "/patients/me/appointments", json_body=data)
-    return jsonify(res), status
+register_patient_blueprints(app)
 
 
 # ============================================================

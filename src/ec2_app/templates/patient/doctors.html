@@ -4,46 +4,78 @@
 
 {% block page_content %}
 <section class="patient-screen" data-patient-page="doctors">
-  <header class="page-header">
+  <header class="patient-page-heading">
     <div>
       <p class="patient-eyebrow">CARE THAT FITS YOUR NEEDS</p>
-      <h1 class="page-title">Find a doctor</h1>
-      <p class="page-subtitle">Search verified doctors by name, specialty, or hospital.</p>
+      <h1>Find Doctors</h1>
+      <p class="patient-subtitle">Search verified doctors and compare consultation options.</p>
     </div>
   </header>
 
-  <form id="doctorSearchForm" class="patient-search-form">
-    <label class="patient-search-field patient-search-wide">
-      <span>Name or hospital</span>
-      <input class="form-control" id="doctorSearchInput" name="search" type="search" placeholder="e.g. Dr. Rao or Central City" autocomplete="off">
-    </label>
+  <form id="doctorSearchForm" class="doctor-filter-form">
     <label class="patient-search-field">
-      <span>Specialty</span>
-      <input class="form-control" id="specializationInput" name="specialization" type="search" placeholder="e.g. Cardiology" autocomplete="off">
+      <span>Doctor name</span>
+      <input class="form-control" id="doctorNameFilter" name="name" type="search" autocomplete="off" placeholder="Search by name">
     </label>
     <label class="patient-search-field">
       <span>Hospital</span>
-      <input class="form-control" id="hospitalInput" name="hospital" type="search" placeholder="Any hospital" autocomplete="off">
+      <input class="form-control" id="doctorHospitalFilter" name="hospital" type="search" autocomplete="off" placeholder="Search hospitals">
     </label>
-    <button class="btn btn-teal patient-search-button" type="submit">Search</button>
+    <label class="patient-search-field">
+      <span>Specialisation</span>
+      <input class="form-control" id="doctorSpecialisationFilter" name="specialisation" list="doctorSpecialisations" autocomplete="off" placeholder="Any specialisation">
+      <datalist id="doctorSpecialisations"></datalist>
+    </label>
+    <label class="patient-search-field">
+      <span>City</span>
+      <input class="form-control" id="doctorCityFilter" name="city" list="doctorCities" autocomplete="off" placeholder="Any city">
+      <datalist id="doctorCities"></datalist>
+    </label>
+    <label class="patient-search-field">
+      <span>Sort by</span>
+      <select class="form-control" id="doctorSort" name="sort">
+        <option value="relevance">Relevance</option>
+        <option value="name">Name</option>
+        <option value="lowest_fee">Lowest fee</option>
+        <option value="experience">Most experience</option>
+      </select>
+    </label>
+    <div class="doctor-filter-actions">
+      <button class="btn btn-teal" id="doctorSearchButton" type="submit">Search</button>
+      <button class="btn btn-secondary" id="clearDoctorFilters" type="button">Clear filters</button>
+    </div>
   </form>
 
-  <section class="patient-search-section" aria-labelledby="doctorResultsTitle">
+  <section class="patient-search-section" aria-labelledby="doctorResultsTitle" id="doctorResultsSection">
     <div class="patient-section-heading">
       <div>
-        <h2 id="doctorResultsTitle">Available doctors</h2>
-        <p id="doctorResultCount">Search to see matching doctors.</p>
+        <h2 id="doctorResultsTitle">Doctors</h2>
+        <p id="doctorResultSummary" aria-live="polite"></p>
       </div>
     </div>
-    <div id="doctorSearchError" class="patient-inline-error" role="alert" hidden></div>
-    <div id="doctorSearchLoading" class="patient-loading" hidden><span class="spinner"></span><span>Finding doctors...</span></div>
+    <div id="activeDoctorFilters" class="patient-filter-chips" aria-label="Active filters"></div>
+    <div id="doctorOptionsError" class="patient-state-error" role="alert" hidden></div>
+    <div id="doctorSearchError" class="patient-state-error" role="alert" hidden></div>
+    <div id="doctorSearchLoading" class="patient-loading" hidden><span class="spinner" aria-hidden="true"></span><span>Finding doctors...</span></div>
     <div id="doctorResults" class="doctor-results" aria-live="polite"></div>
-    <div id="doctorEmptyState" class="patient-empty" hidden>No verified doctors match those filters.</div>
-    <nav id="doctorPagination" class="patient-pagination" aria-label="Doctor search pages" hidden>
+    <div id="doctorEmptyState" class="patient-empty" hidden>
+      <p>No doctors found. Try changing your filters.</p>
+      <button type="button" class="btn btn-secondary btn-sm" id="emptyClearFilters">Clear filters</button>
+    </div>
+    <div id="doctorPagination" class="patient-pagination" hidden>
       <button type="button" class="btn btn-secondary btn-sm" id="previousDoctors">Previous</button>
-      <span id="doctorPageLabel"></span>
+      <div id="doctorPageNumbers" class="patient-page-numbers" aria-label="Doctor search pages"></div>
       <button type="button" class="btn btn-secondary btn-sm" id="nextDoctors">Next</button>
-    </nav>
+      <label class="patient-page-size">Rows
+        <select class="form-control" id="doctorPageSize" aria-label="Doctors per page">
+          <option value="10">10</option><option value="20">20</option><option value="50">50</option>
+        </select>
+      </label>
+    </div>
   </section>
 </section>
+{% endblock %}
+
+{% block patient_scripts %}
+<script src="{{ url_for('static', filename='js/patient/doctors.js') }}" defer></script>
 {% endblock %}

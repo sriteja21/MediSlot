@@ -22,7 +22,6 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
 import os
 import re
 import secrets
@@ -39,14 +38,47 @@ import pymysql
 from botocore.exceptions import ClientError
  
 from shared.database import execute_query, get_database_connection
+from shared.logging_utils import (
+    current_correlation_id,
+    extract_field_names,
+    get_correlation_id as shared_get_correlation_id,
+    get_logger,
+    log_exception,
+    log_info,
+    log_warning,
+    reset_correlation_id,
+    set_correlation_id,
+)
  
  
 # ============================================================
 # LOGGING
 # ============================================================
  
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = get_logger("auth")
+
+_AUTH_VALIDATION_FIELDS = {
+    "address",
+    "city",
+    "date_of_birth",
+    "emergency_contact_name",
+    "emergency_contact_phone",
+    "email",
+    "experience_years",
+    "full_name",
+    "gender",
+    "hospital_id",
+    "last_name",
+    "license_number",
+    "licence_number",
+    "password",
+    "phone",
+    "refresh_token",
+    "role",
+    "specialisation_id",
+    "specialisation_ids",
+    "timezone",
+}
  
  
 # ============================================================
@@ -110,6 +142,7 @@ def response(
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
+            "X-Correlation-ID": current_correlation_id() or "",
         },
         "body": json.dumps(body, default=str),
     }
@@ -188,11 +221,7 @@ def get_header(
  
 def get_correlation_id(event: dict[str, Any]) -> str:
     """Get a request identifier for structured log correlation."""
- 
-    return (
-        event.get("requestContext", {}).get("requestId")
-        or str(uuid.uuid4())
-    )
+    return shared_get_correlation_id(event)
  
  
 # ============================================================
@@ -1133,9 +1162,13 @@ def login_user(
     finally:
         connection.close()
  
-    logger.info(
-        "Login succeeded. role=%s user_id=%s correlation_id=%s total_duration_ms=%d",
-        role, user_id, correlation_id, int((time.perf_counter() - login_started) * 1000),
+    log_info(
+        "authentication_login_succeeded",
+        "Authentication login succeeded",
+        correlation_id,
+        role=role,
+        user_id=user_id,
+        duration_ms=int((time.perf_counter() - login_started) * 1000),
     )
     return {
         "statusCode": 200,
@@ -1348,7 +1381,7 @@ def logout_session(
 # ROUTER
 # ============================================================
  
-def lambda_handler(
+def _handle_auth_request(
     event: dict[str, Any],
     context: Any,
 ) -> dict[str, Any]:
@@ -1410,11 +1443,14 @@ def lambda_handler(
         )
  
     except ValueError as exc:
-        logger.info(
-            "Authentication request validation failed. "
-            "correlation_id=%s reason=%s",
-            correlation_id,
-            str(exc),
+        log_warning(
+            "auth_validation_failed",
+            "Authentication request validation failed",
+            current_correlation_id(),
+            http_status=400,
+            field_names=extract_field_names(
+                str(exc), _AUTH_VALIDATION_FIELDS
+            ),
         )
  
         return response(
@@ -1452,6 +1488,82 @@ def lambda_handler(
             500,
             {
                 "message": "An unexpected authentication error occurred.",
-                "correlation_id": correlation_id,
             },
         )
+
+
+def lambda_handler(
+    event: dict[str, Any] | None,
+    context: Any = None,
+) -> dict[str, Any]:
+    """Log the request lifecycle and return only generic unexpected errors."""
+    event = event if isinstance(event, dict) else {}
+    correlation_id = shared_get_correlation_id(event, context)
+    token = set_correlation_id(correlation_id)
+    started = time.perf_counter()
+    try:
+        method = get_http_method(event)
+    except (AttributeError, TypeError):
+        method = "UNKNOWN"
+    request_context = event.get("requestContext")
+    if not isinstance(request_context, dict):
+        request_context = {}
+    http_context = request_context.get("http")
+    if not isinstance(http_context, dict):
+        http_context = {}
+    route = (
+        event.get("resource")
+        or event.get("routeKey")
+        or http_context.get("routeKey")
+        or "/auth"
+    )
+    log_info(
+        "auth_request_started",
+        "Authentication request started",
+        correlation_id,
+        method=method,
+        route=route,
+    )
+    try:
+        result = _handle_auth_request(event, context)
+    except Exception as exc:
+        log_exception(
+            "auth_request_failed",
+            "Authentication request failed unexpectedly",
+            correlation_id,
+            error_type=type(exc).__name__,
+            error_message="Internal request failure",
+        )
+        result = response(
+            500,
+            {"message": "An unexpected error occurred."},
+        )
+
+    status = int(result.get("statusCode", 500))
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    if status in {401, 403, 404, 409}:
+        log_warning(
+            "auth_request_rejected",
+            "Authentication request was rejected",
+            correlation_id,
+            http_status=status,
+            duration_ms=duration_ms,
+        )
+    if status >= 500:
+        log_error(
+            "auth_request_failed",
+            "Authentication request failed unexpectedly",
+            correlation_id,
+            http_status=status,
+            duration_ms=duration_ms,
+            error_message="Internal request failure",
+        )
+    log_info(
+        "auth_request_finished",
+        "Authentication request finished",
+        correlation_id,
+        http_status=status,
+        duration_ms=duration_ms,
+    )
+    reset_correlation_id(token)
+    return result

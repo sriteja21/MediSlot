@@ -1,0 +1,12 @@
+{% extends "patient/_layout.html" %}
+
+{% block title %}Doctor Not Found | MediSlot{% endblock %}
+
+{% block page_content %}
+<section class="patient-screen patient-not-found" role="status">
+  <p class="patient-eyebrow">PROFILE UNAVAILABLE</p>
+  <h1>Doctor not found</h1>
+  <p class="patient-subtitle">This doctor may no longer be listed or the profile link may be incorrect.</p>
+  <a class="btn btn-teal" href="{{ url_for('patient_doctors.doctor_search_page') }}">Back to Find Doctors</a>
+</section>
+{% endblock %}

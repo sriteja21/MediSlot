@@ -33,6 +33,44 @@ Parameters:
       Name of the SSM parameter containing the database credentials.
     Default: /MediSlot/dev/database/application-credentials
 
+  MaxDoctorPageSize:
+    Type: Number
+    MinValue: 1
+    MaxValue: 200
+    Description: Required environment configuration for the maximum doctor-search page size.
+
+  MaxSlotRangeDays:
+    Type: Number
+    MinValue: 1
+    MaxValue: 30
+    Description: Required environment configuration for the maximum slot-query date range.
+
+  SlotWindowDays:
+    Type: Number
+    MinValue: 1
+    MaxValue: 90
+    Description: Required environment configuration for the rolling patient slot window.
+
+  ProfilePhotoUrlTtlSeconds:
+    Type: Number
+    Default: 900
+    MinValue: 60
+    MaxValue: 3600
+    Description: Expiration in seconds for signed doctor profile-photo URLs.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+    Description: Retention for application Lambda log groups.
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [INFO, WARN, ERROR]
+    Description: Application log level for all Lambda functions.
+
+
 # ============================================================
 # GLOBAL LAMBDA CONFIGURATION
 # ============================================================
@@ -54,6 +92,8 @@ Globals:
       Variables:
 
         ENVIRONMENT: !Ref Environment
+
+        LOG_LEVEL: !Ref LogLevel
 
         JWT_SECRET_PARAMETER_NAME: !Ref JWTSecretParameterName
 
@@ -158,8 +198,47 @@ Resources:
 
       Cors:
         AllowOrigin: "'*'"
-        AllowHeaders: "'Content-Type,Authorization'"
+        AllowHeaders: "'Content-Type,Authorization,X-Correlation-ID'"
         AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+
+      Models:
+        Empty:
+          type: object
+          title: Empty
+          properties: {}
+        PatientProfile:
+          type: object
+          title: PatientProfile
+          additionalProperties: false
+          required:
+            - name
+            - date_of_birth
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 150
+            date_of_birth:
+              type: string
+              format: date
+            gender:
+              type: string
+              enum: [female, male, other, ""]
+            phone:
+              type: string
+              maxLength: 24
+            city:
+              type: string
+              maxLength: 100
+            emergency_contact_name:
+              type: string
+              maxLength: 150
+            emergency_contact_phone:
+              type: string
+              maxLength: 24
+            notes:
+              type: string
+              maxLength: 2000
 
       # All routes require JWT authorization by default.
       # Public authentication routes explicitly disable the
@@ -195,6 +274,8 @@ Resources:
 
   MediSlotAuthFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AuthLogGroup
 
     Properties:
 
@@ -216,6 +297,11 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-AuthLambdaRoleArn-${Environment}"
+      LoggingConfig:
+        LogFormat: Text
+        ApplicationLogLevel: !Ref LogLevel
+        SystemLogLevel: WARN
+        LogGroup: !Ref AuthLogGroup
 
       VpcConfig:
 
@@ -327,6 +413,8 @@ Resources:
 
   MediSlotAuthorizerFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AuthorizerLogGroup
 
     Properties:
 
@@ -348,6 +436,11 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-AuthorizerLambdaRoleArn-${Environment}"
+      LoggingConfig:
+        LogFormat: Text
+        ApplicationLogLevel: !Ref LogLevel
+        SystemLogLevel: WARN
+        LogGroup: !Ref AuthorizerLogGroup
 
       Environment:
         Variables:
@@ -366,6 +459,8 @@ Resources:
 
   MediSlotDoctorFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - DoctorLogGroup
     Properties:
       FunctionName: !Sub "MediSlot-DoctorFunction-${Environment}"
       Description: !Sub "MediSlot doctor profile and schedule API (${Environment})."
@@ -376,6 +471,11 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      LoggingConfig:
+        LogFormat: Text
+        ApplicationLogLevel: !Ref LogLevel
+        SystemLogLevel: WARN
+        LogGroup: !Ref DoctorLogGroup
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue:
@@ -492,18 +592,59 @@ Resources:
             Path: /doctors/me/dashboard
             Method: GET
 
+  AuthLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MediSlot-AuthFunction-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  AuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MediSlot-AuthorizerFunction-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  DoctorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MediSlot-DoctorFunction-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  PatientApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/medislot/${Environment}/patient-api"
+      RetentionInDays: !Ref LogRetentionDays
+
   MediSlotPatientFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - PatientApiLogGroup
     Properties:
-      FunctionName: !Sub "MediSlot-PatientFunction-${Environment}"
-      Description: !Sub "MediSlot patient dashboard API (${Environment})."
+      FunctionName: !Sub "MediSlot-PatientApi-${Environment}"
+      Description: !Sub "MediSlot patient profile and discovery API (${Environment})."
       CodeUri: ../../src/patient/
       Handler: handler.lambda_handler
       Timeout: 30
       MemorySize: 256
+      Tracing: Active
       Role:
         Fn::ImportValue:
-          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+          !Sub "MediSlot-PatientLambdaRoleArn-${Environment}"
+      LoggingConfig:
+        LogFormat: Text
+        ApplicationLogLevel: !Ref LogLevel
+        SystemLogLevel: WARN
+        LogGroup: !Ref PatientApiLogGroup
+      Environment:
+        Variables:
+          PROFILE_PHOTOS_BUCKET:
+            Fn::ImportValue: !Sub "MediSlot-ProfilePhotosBucketName-${Environment}"
+          MAX_PAGE_SIZE: !Ref MaxDoctorPageSize
+          MAX_SLOT_RANGE_DAYS: !Ref MaxSlotRangeDays
+          SLOT_WINDOW_DAYS: !Ref SlotWindowDays
+          PROFILE_PHOTO_URL_TTL_SECONDS: !Ref ProfilePhotoUrlTtlSeconds
+          LOG_LEVEL: !Ref LogLevel
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue:
@@ -514,43 +655,119 @@ Resources:
           - Fn::ImportValue:
               !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
       Events:
-        PatientDashboardGet:
+        PatientProfileGet:
           Type: Api
           Properties:
             RestApiId: !Ref MediSlotApi
-            Path: /patients/me/dashboard
+            Path: /patients/me
             Method: GET
+        PatientProfilePut:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me
+            Method: PUT
+            RequestModel:
+              Model: PatientProfile
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+        PatientProfileDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me
+            Method: DELETE
         PatientDoctorSearchGet:
           Type: Api
           Properties:
             RestApiId: !Ref MediSlotApi
-            Path: /patients/doctors/search
+            Path: /doctors
             Method: GET
+            RequestParameters:
+              - method.request.querystring.page:
+                  Required: false
+              - method.request.querystring.page_size:
+                  Required: false
+              - method.request.querystring.sort:
+                  Required: false
+              - method.request.querystring.name:
+                  Required: false
+              - method.request.querystring.hospital:
+                  Required: false
+              - method.request.querystring.specialisation:
+                  Required: false
+              - method.request.querystring.city:
+                  Required: false
+              - method.request.header.X-Correlation-ID:
+                  Required: false
+            RequestModel:
+              Model: Empty
+              ValidateBody: false
+              ValidateParameters: true
+            Auth:
+              Authorizer: NONE
+        PatientDoctorOptionsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/options
+            Method: GET
+            Auth:
+              Authorizer: NONE
         PatientDoctorProfileGet:
           Type: Api
           Properties:
             RestApiId: !Ref MediSlotApi
-            Path: /patients/doctors/{doctor_id}
+            Path: /doctors/{doctor_id}
             Method: GET
+            RequestParameters:
+              - method.request.path.doctor_id:
+                  Required: true
+              - method.request.header.X-Correlation-ID:
+                  Required: false
+            RequestModel:
+              Model: Empty
+              ValidateBody: false
+              ValidateParameters: true
+            Auth:
+              Authorizer: NONE
         PatientDoctorSlotsGet:
           Type: Api
           Properties:
             RestApiId: !Ref MediSlotApi
-            Path: /patients/doctors/{doctor_id}/slots
+            Path: /doctors/{doctor_id}/slots
             Method: GET
-        PatientAppointmentCreate:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /patients/me/appointments
-            Method: POST
+            RequestParameters:
+              - method.request.path.doctor_id:
+                  Required: true
+              - method.request.querystring.from:
+                  Required: true
+              - method.request.querystring.to:
+                  Required: true
+              - method.request.querystring.consultationTypeId:
+                  Required: false
+              - method.request.header.X-Correlation-ID:
+                  Required: false
+            RequestModel:
+              Model: Empty
+              ValidateBody: false
+              ValidateParameters: true
 
   # ==========================================================
   # DAILY SLOT MATERIALISER
   # ==========================================================
 
+  SlotMaterialiserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MediSlot-SlotMaterialiser-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+
   MediSlotSlotMaterialiserFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - SlotMaterialiserLogGroup
     Properties:
       FunctionName: !Sub "MediSlot-SlotMaterialiser-${Environment}"
       Description: !Sub "Materializes the rolling MediSlot appointment window (${Environment})."
@@ -561,6 +778,11 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      LoggingConfig:
+        LogFormat: Text
+        ApplicationLogLevel: !Ref LogLevel
+        SystemLogLevel: WARN
+        LogGroup: !Ref SlotMaterialiserLogGroup
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue:

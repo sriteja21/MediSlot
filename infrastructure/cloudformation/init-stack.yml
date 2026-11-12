@@ -16,6 +16,18 @@ Parameters:
       - prod
     Description: Deployment environment.
 
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+    Description: Retention for the database initializer Lambda log group.
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [INFO, WARN, ERROR]
+    Description: Application log level for the database initializer Lambda.
+
 Resources:
   # ==========================================================
   # DATABASE INITIALIZER SECURITY GROUP
@@ -138,20 +150,36 @@ Resources:
   # DATABASE INITIALIZER LAMBDA
   # ==========================================================
 
+  DatabaseInitializerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/medislot-db-initializer-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+
   DatabaseInitializerFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: python3.12
+      BuildProperties:
+        RequirementsFile: init_lambda/requirements.txt
     DependsOn:
       - DatabaseInitializerToRDSIngress
+      - DatabaseInitializerLogGroup
 
     Properties:
       FunctionName: !Sub "medislot-db-initializer-${Environment}"
       Description: Initialize and verify MediSlot MySQL schema
       Runtime: python3.12
-      Handler: handler.lambda_handler
-      CodeUri: ../../src/init_lambda/
+      Handler: init_lambda.handler.lambda_handler
+      CodeUri: ../../src/
       MemorySize: 512
       Timeout: 900
       Role: !GetAtt DatabaseInitializerRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        ApplicationLogLevel: !Ref LogLevel
+        SystemLogLevel: WARN
+        LogGroup: !Ref DatabaseInitializerLogGroup
 
       VpcConfig:
         SecurityGroupIds:
@@ -170,6 +198,7 @@ Resources:
             Fn::ImportValue: !Sub "MediSlot-DatabaseName-${Environment}"
           DB_USERNAME: medislot_admin
           DB_PASSWORD_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/database/master-password-secure"
+          LOG_LEVEL: !Ref LogLevel
 
       Tags:
         Application: MediSlot

@@ -1,39 +1,17 @@
-<aside class="sidebar">
-  <div class="sidebar-brand">
-    <div class="brand-icon">M</div>
-    <div>
-      <span class="brand-text">MediSlot</span>
-      <span class="brand-badge">Patient</span>
-    </div>
-  </div>
-
-  <nav class="sidebar-nav" aria-label="Patient navigation">
-    <div class="nav-section-title">Your Care</div>
-    <a href="{{ url_for('patient_dashboard') }}" class="nav-item {% if active_page == 'dashboard' %}active{% endif %}">
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
-      <span>Dashboard</span>
-    </a>
-    <a href="{{ url_for('patient_doctors') }}" class="nav-item {% if active_page == 'doctors' %}active{% endif %}">
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><circle cx="10" cy="8" r="5"></circle><path stroke-linecap="round" stroke-linejoin="round" d="M2 21a8 8 0 0116 0M19 8v6m-3-3h6"></path></svg>
-      <span>Find Doctors</span>
-    </a>
-    <a href="{{ url_for('patient_appointments') }}" class="nav-item {% if active_page == 'appointments' %}active{% endif %}">
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path stroke-linecap="round" d="M16 2v4M8 2v4M3 10h18"></path></svg>
-      <span>Appointments</span>
-    </a>
+<header class="patient-topnav">
+  <a class="patient-brand" href="{{ url_for('patient_doctors.doctor_search_page') }}" aria-label="MediSlot home">
+    <span class="patient-brand-mark">M</span>
+    <span>MediSlot</span>
+  </a>
+  <button type="button" class="patient-menu-toggle" id="patientMenuToggle" aria-controls="patientNavigation" aria-expanded="false" aria-label="Open navigation">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+  </button>
+  <nav class="patient-navigation" id="patientNavigation" aria-label="Patient navigation">
+    <a href="{{ url_for('patient_doctors.doctor_search_page') }}" class="patient-nav-link {% if active_page == 'doctors' %}active{% endif %}">Find Doctors</a>
+    <a href="{{ url_for('patient_profile.profile_page') }}" class="patient-nav-link {% if active_page == 'profile' %}active{% endif %}">My Profile</a>
+    <span class="patient-nav-name" id="patientFirstName">Patient</span>
+    <form action="{{ url_for('logout') }}" method="POST">
+      <button type="submit" class="patient-nav-logout">Log out</button>
+    </form>
   </nav>
-
-  <div class="sidebar-footer">
-    <div class="sidebar-user">
-      <div class="user-info">
-        <span class="user-name" id="sidebarPatientName">Patient</span>
-        <span class="user-role">MediSlot member</span>
-      </div>
-      <form action="{{ url_for('logout') }}" method="POST" style="margin: 0;">
-        <button type="submit" class="btn btn-secondary btn-sm" title="Sign out" aria-label="Sign out" style="padding: 0.4rem 0.6rem;">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-        </button>
-      </form>
-    </div>
-  </div>
-</aside>
+</header>

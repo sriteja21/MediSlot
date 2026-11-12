@@ -3,10 +3,9 @@ MediSlot Slot Materialiser Lambda
 
 Generates appointment slots for the rolling 30-day window [tomorrow, today + 30 days]
 based on active availability patterns and consultation types, excluding blackout dates.
-Slots are written idempotently into DynamoDB with ConditionExpression=Attr('slot_id').not_exists().
+Slots are written idempotently with the DynamoDB key (doctor_id, slot_sk).
 """
 
-import logging
 import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
@@ -21,13 +20,20 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from shared.database import execute_query
+from shared.logging_utils import (
+    get_correlation_id,
+    get_logger,
+    log_exception,
+    log_info,
+    reset_correlation_id,
+    set_correlation_id,
+)
 
 # ============================================================
 # LOGGING & CONFIGURATION
 # ============================================================
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = get_logger("slot_materialiser")
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
@@ -113,7 +119,8 @@ def query_doctor_slots(
 
 
 def update_unbooked_slot(
-    slot_id: str,
+    doctor_id: str,
+    slot_sk: str,
     *,
     is_active: bool,
     is_blocked: bool,
@@ -143,7 +150,7 @@ def update_unbooked_slot(
         values[":end_time"] = end_time
 
     update_args: dict[str, Any] = {
-        "Key": {"slot_id": slot_id},
+        "Key": {"doctor_id": doctor_id, "slot_sk": slot_sk},
         "UpdateExpression": "SET " + ", ".join(expressions),
         "ConditionExpression": (
             "attribute_not_exists(booked_count) OR booked_count = :zero"
@@ -166,7 +173,7 @@ def update_unbooked_slot(
 # HANDLER
 # ============================================================
 
-def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+def _run_materialisation(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
     Main Lambda entrypoint.
 
@@ -176,8 +183,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
          slots inactive instead of omitting them.
      3. Reconcile existing slots in the same window, changing only unbooked items.
     """
-    logger.info("Starting slot materialisation run. table=%s environment=%s", SLOTS_TABLE_NAME, ENVIRONMENT)
-
     now_utc = datetime.now(timezone.utc)
     fallback_start_date = now_utc.date() + timedelta(days=1)
     fallback_end_date = now_utc.date() + timedelta(days=30)
@@ -210,8 +215,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         ORDER BY ct.doctor_id, ap.day_of_week, ap.start_time
     """
     patterns = execute_query(query_patterns)
-    logger.info("Retrieved %d active availability patterns from database", len(patterns))
-
     # Group patterns by doctor_id
     doctor_patterns: dict[str, list[dict[str, Any]]] = {}
     for p in patterns:
@@ -223,12 +226,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     ] = {}
     window_start_dates: list[date] = []
     window_end_dates: list[date] = []
+    invalid_timezone_count = 0
     for doctor in doctors:
         doc_id = str(doctor["doctor_id"])
         try:
             doctor_timezone = ZoneInfo(str(doctor.get("timezone") or "UTC"))
         except Exception:
-            logger.exception("Invalid timezone for doctor %s; skipping doctor", doc_id)
+            invalid_timezone_count += 1
             continue
 
         local_today = now_utc.astimezone(doctor_timezone).date()
@@ -265,14 +269,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             },
         }
 
+
     window_start = min(window_start_dates, default=fallback_start_date)
     window_end = max(window_end_dates, default=fallback_end_date)
-    logger.info(
-        "Materialisation local-date range across doctors: %s to %s (inclusive)",
-        window_start.isoformat(),
-        window_end.isoformat(),
-    )
-
     # 2. Query blackout ranges for these doctors within the window
     doctor_ids = list(doctor_windows.keys())
     if not doctor_ids:
@@ -325,8 +324,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if d_id in blackouts_by_doctor:
             blackouts_by_doctor[d_id].append((blackout_start, blackout_end))
 
-    logger.info("Retrieved %d blackout date entries for active doctors in window", len(blackout_rows))
-
     existing_by_doctor: dict[str, dict[str, dict[str, Any]]] = {}
     booked_ranges_by_doctor: dict[str, list[tuple[str, datetime, datetime]]] = {}
     for doc_id, (_, _, utc_start, utc_end) in doctor_windows.items():
@@ -350,6 +347,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     total_updated = 0
     total_deactivated = 0
     total_skipped = 0
+    overlap_count = 0
+    invalid_pattern_count = 0
     generated_day_ranges: dict[tuple[str, date], list[tuple[datetime, datetime]]] = {}
     desired_slots: dict[str, dict[str, Any]] = {}
 
@@ -366,19 +365,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             consultation_type_id = str(p["consultation_type_id"])
 
             if duration_minutes <= 0:
-                logger.warning(
-                    "Invalid duration_minutes (%d) for consultation type %s; skipping pattern %s",
-                    duration_minutes,
-                    consultation_type_id,
-                    p["pattern_id"],
-                )
+                invalid_pattern_count += 1
                 continue
 
             try:
                 start_t = to_time_object(p["start_local_time"])
                 end_t = to_time_object(p["end_local_time"])
-            except Exception as e:
-                logger.error("Failed to parse pattern times for pattern %s: %s", p["pattern_id"], e)
+            except Exception:
+                invalid_pattern_count += 1
                 continue
 
             step = timedelta(minutes=duration_minutes)
@@ -395,16 +389,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
                 for existing_start, existing_end in day_ranges:
                     if time_ranges_overlap(pattern_start.time(), pattern_end.time(), existing_start.time(), existing_end.time()):
-                        logger.warning(
-                            "Skipping overlapping availability for doctor=%s date=%s existing=[%s,%s] incoming=[%s,%s]",
-                            doc_id,
-                            target_date.isoformat(),
-                            existing_start.strftime("%H:%M:%S"),
-                            existing_end.strftime("%H:%M:%S"),
-                            pattern_start.strftime("%H:%M:%S"),
-                            pattern_end.strftime("%H:%M:%S"),
-                        )
                         total_skipped += 1
+                        overlap_count += 1
                         break
                 else:
                     slot_start_dt = pattern_start
@@ -420,16 +406,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         candidate_overlaps = False
                         for existing_start, existing_end in day_ranges:
                             if slot_start_dt < existing_end and existing_start < slot_end_dt:
-                                logger.warning(
-                                    "Skipping overlapping generated slot for doctor=%s date=%s slot_start=%s slot_end=%s existing_start=%s existing_end=%s",
-                                    doc_id,
-                                    target_date.isoformat(),
-                                    slot_start_dt.isoformat(),
-                                    slot_end_dt.isoformat(),
-                                    existing_start.isoformat(),
-                                    existing_end.isoformat(),
-                                )
                                 candidate_overlaps = True
+                                overlap_count += 1
                                 break
                         if candidate_overlaps:
                             slot_start_dt = slot_end_dt
@@ -460,6 +438,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
                         item = {
                             "slot_id": slot_id,
+                            "slot_sk": f"{start_epoch}#{consultation_type_id}",
                             "doctor_id": doc_id,
                             "consultation_type_id": consultation_type_id,
                             "start_time": start_iso,
@@ -491,14 +470,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 try:
                     slots_table.put_item(
                         Item=item,
-                        ConditionExpression=Attr("slot_id").not_exists(),
+                        ConditionExpression=Attr("doctor_id").not_exists(),
                     )
                     total_generated += 1
                 except ClientError as exc:
                     if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                         total_skipped += 1
                     else:
-                        logger.exception("Unexpected DynamoDB error writing slot %s", slot_id)
                         raise
                 continue
 
@@ -507,7 +485,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 continue
 
             if update_unbooked_slot(
-                slot_id,
+                doc_id,
+                str(existing["slot_sk"]),
                 is_active=bool(item["is_active"]),
                 is_blocked=bool(item["is_blocked"]),
                 inactive_reason=str(item["inactive_reason"]),
@@ -525,7 +504,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 total_skipped += 1
                 continue
             if update_unbooked_slot(
-                slot_id,
+                doc_id,
+                str(existing["slot_sk"]),
                 is_active=False,
                 is_blocked=False,
                 inactive_reason="AVAILABILITY_CHANGED",
@@ -534,12 +514,17 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             else:
                 total_skipped += 1
 
-    logger.info(
-        "Slot materialisation completed. generated=%d updated=%d deactivated=%d skipped=%d",
-        total_generated,
-        total_updated,
-        total_deactivated,
-        total_skipped,
+    log_info(
+        "slot_materialisation_reconciled",
+        "Slot schedule reconciliation completed",
+        result_count=total_generated,
+        updated_count=total_updated,
+        deactivated_count=total_deactivated,
+        skipped_count=total_skipped,
+        overlap_count=overlap_count,
+        pattern_count=len(patterns),
+        invalid_timezone_count=invalid_timezone_count,
+        invalid_pattern_count=invalid_pattern_count,
     )
 
     return {
@@ -554,3 +539,52 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "total_skipped": total_skipped,
         },
     }
+
+
+def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[str, Any]:
+    """Run one materialisation with structured lifecycle and failure logs."""
+    event = event if isinstance(event, dict) else {}
+    correlation_id = get_correlation_id(event, context)
+    token = set_correlation_id(correlation_id)
+    started = datetime.now(timezone.utc)
+    log_info(
+        "slot_materialisation_started",
+        "Slot materialisation started",
+        correlation_id,
+        method="INVOKE",
+        route="slot_materialiser",
+    )
+    try:
+        result = _run_materialisation(event, context)
+        status = int(result.get("statusCode", 500))
+    except Exception as exc:
+        log_exception(
+            "slot_materialisation_failed",
+            "Slot materialisation failed unexpectedly",
+            correlation_id,
+            error_type=type(exc).__name__,
+            error_message="Slot materialisation failed",
+        )
+        result = {
+            "statusCode": 500,
+            "body": {"message": "Slot materialisation failed."},
+        }
+        status = 500
+
+    duration_ms = int(
+        (datetime.now(timezone.utc) - started).total_seconds() * 1000
+    )
+    log_info(
+        "slot_materialisation_finished",
+        "Slot materialisation finished",
+        correlation_id,
+        http_status=status,
+        duration_ms=duration_ms,
+        result_count=(
+            result.get("body", {}).get("total_generated")
+            if isinstance(result.get("body"), dict)
+            else None
+        ),
+    )
+    reset_correlation_id(token)
+    return result

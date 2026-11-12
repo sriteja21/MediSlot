@@ -227,6 +227,14 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        - IndexName: gsi_doctor_time
+          KeySchema:
+            - AttributeName: doctor_id
+              KeyType: HASH
+            - AttributeName: start_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true

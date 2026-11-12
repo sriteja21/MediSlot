@@ -22,8 +22,10 @@ CREATE TABLE IF NOT EXISTS patients (
     phone_number VARCHAR(20),
     date_of_birth DATE NOT NULL,
     gender ENUM('MALE', 'FEMALE', 'OTHER'),
+    city VARCHAR(100) NOT NULL DEFAULT '',
     emergency_contact_name VARCHAR(150),
     emergency_contact_phone VARCHAR(20),
+    notes TEXT,
     profile_image_key VARCHAR(255),
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
@@ -43,12 +45,14 @@ CREATE TABLE IF NOT EXISTS hospitals (
     hospital_id CHAR(36) NOT NULL,
     name VARCHAR(200) NOT NULL,
     address VARCHAR(500) NOT NULL,
+    city VARCHAR(100) NOT NULL DEFAULT '',
     phone_number VARCHAR(20),
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
         ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (hospital_id),
-    UNIQUE KEY uq_hospital_name_address (name, address)
+    UNIQUE KEY uq_hospital_name_address (name, address),
+    KEY idx_hospitals_city_id (city, hospital_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 INSERT IGNORE INTO hospitals (hospital_id, name, address) VALUES
@@ -79,6 +83,7 @@ CREATE TABLE IF NOT EXISTS doctors (
     UNIQUE KEY uq_doctors_license (license_number),
     KEY idx_doctors_name (last_name, first_name),
     KEY idx_doctors_hospital (hospital_id),
+    KEY idx_doctors_verified_experience (is_verified, experience_years, doctor_id),
     CONSTRAINT fk_doctors_user FOREIGN KEY (user_id)
         REFERENCES users(user_id) ON DELETE CASCADE,
     CONSTRAINT fk_doctors_hospital FOREIGN KEY (hospital_id)
@@ -156,6 +161,7 @@ CREATE TABLE IF NOT EXISTS consultation_types (
     PRIMARY KEY (consultation_type_id),
     UNIQUE KEY uq_consultation_type_doctor_catalog (doctor_id, catalog_type_id),
     KEY idx_consultation_types_doctor_active (doctor_id, is_active),
+    KEY idx_consultation_types_active_fee (is_active, fee, doctor_id),
     KEY idx_consultation_types_catalog (catalog_type_id),
     CONSTRAINT fk_consultation_types_doctor FOREIGN KEY (doctor_id)
         REFERENCES doctors(doctor_id) ON DELETE CASCADE,

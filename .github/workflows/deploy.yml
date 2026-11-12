@@ -522,11 +522,22 @@ jobs:
 
       - name: Deploy Authentication and Authorization Stack
         shell: bash
+        env:
+          MAX_DOCTOR_PAGE_SIZE: ${{ vars.MEDISLOT_MAX_DOCTOR_PAGE_SIZE }}
+          MAX_SLOT_RANGE_DAYS: ${{ vars.MEDISLOT_MAX_SLOT_RANGE_DAYS }}
+          SLOT_WINDOW_DAYS: ${{ vars.MEDISLOT_SLOT_WINDOW_DAYS }}
         run: |
           set -euo pipefail
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-Application-${ENVIRONMENT}"
+
+          for config_value in "$MAX_DOCTOR_PAGE_SIZE" "$MAX_SLOT_RANGE_DAYS" "$SLOT_WINDOW_DAYS"; do
+            if [[ ! "$config_value" =~ ^[0-9]+$ ]]; then
+              echo "::error::Set MEDISLOT_MAX_DOCTOR_PAGE_SIZE, MEDISLOT_MAX_SLOT_RANGE_DAYS, and MEDISLOT_SLOT_WINDOW_DAYS as GitHub Actions variables."
+              exit 1
+            fi
+          done
 
           JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
           DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
@@ -553,7 +564,10 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
               JWTSecretParameterName="$JWT_SECRET_PARAMETER_NAME" \
-              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME"
+              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME" \
+              MaxDoctorPageSize="$MAX_DOCTOR_PAGE_SIZE" \
+              MaxSlotRangeDays="$MAX_SLOT_RANGE_DAYS" \
+              SlotWindowDays="$SLOT_WINDOW_DAYS"
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \

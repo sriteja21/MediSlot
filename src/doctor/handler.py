@@ -18,10 +18,10 @@ Security & Auth:
 
 import base64
 import json
-import logging
 import os
 import re
 import sys
+import time
 import uuid
 from datetime import date, datetime, time as time_type, timedelta, timezone
 from decimal import Decimal
@@ -43,13 +43,24 @@ from shared.database import (
     execute_query,
     execute_write,
 )
+from shared.logging_utils import (
+    current_correlation_id,
+    extract_field_names,
+    get_correlation_id,
+    get_logger,
+    log_error,
+    log_exception,
+    log_info,
+    log_warning,
+    reset_correlation_id,
+    set_correlation_id,
+)
 
 # ============================================================
 # LOGGING SETUP
 # ============================================================
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = get_logger("doctor")
 
 # ============================================================
 # CONFIGURATION & CONSTANTS
@@ -74,11 +85,30 @@ PROFILE_PHOTO_BUCKET = (
 )
 
 ALLOWED_CONSULTATION_KINDS = {"QUICK", "STANDARD", "DETAILED", "HEALTH_CAMP"}
+_DOCTOR_VALIDATION_FIELDS = {
+    "blackout_date",
+    "capacity",
+    "consultation_type_id",
+    "content_type",
+    "date",
+    "day_of_week",
+    "end_local_time",
+    "experience_years",
+    "fee_amount",
+    "full_name",
+    "is_active",
+    "languages",
+    "phone",
+    "qualifications",
+    "reason",
+    "start_local_time",
+    "years_experience",
+}
 
 CORS_HEADERS = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Correlation-ID",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
 }
 
@@ -141,7 +171,13 @@ def trigger_slot_materialisation() -> None:
         _lambda_client.invoke(
             FunctionName=SLOT_MATERIALISER_FUNCTION_NAME,
             InvocationType="Event",
-            Payload=b"{}",
+            Payload=json.dumps(
+                {
+                    "headers": {
+                        "X-Correlation-ID": current_correlation_id() or "",
+                    }
+                }
+            ).encode("utf-8"),
         )
     except Exception:
         logger.exception("Could not trigger slot materialization.")
@@ -211,9 +247,11 @@ class MediSlotJSONEncoder(json.JSONEncoder):
 
 def format_response(status_code: int, body: Any) -> dict[str, Any]:
     """Return a standard API Gateway response dictionary."""
+    headers = dict(CORS_HEADERS)
+    headers["X-Correlation-ID"] = current_correlation_id() or ""
     return {
         "statusCode": status_code,
-        "headers": CORS_HEADERS,
+        "headers": headers,
         "body": json.dumps(body, cls=MediSlotJSONEncoder),
     }
 
@@ -1564,7 +1602,7 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
 # MAIN ENTRY POINT
 # ============================================================
 
-def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[str, Any]:
+def _handle_doctor_request(event: dict[str, Any] | None, context: Any = None) -> dict[str, Any]:
     """
     MediSlot Doctor Business Lambda entry point.
     Dispatches API Gateway requests based on HTTP method and path.
@@ -1574,8 +1612,6 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
 
     method = get_http_method(event)
     raw_path = get_path(event)
-
-    logger.info("Doctor Lambda invoked: method=%s, path=%s", method, raw_path)
 
     try:
         # Handle CORS OPTIONS preflight directly
@@ -1588,22 +1624,18 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
         role = authorizer.get("role")
 
         if not doctor_id:
-            logger.warning("Unauthorized request: missing authorizer userId.")
             return format_response(401, {"error": "Unauthorized: Missing authentication context."})
 
         if role and role.lower() != "doctor":
-            logger.warning("Forbidden request: role '%s' is not doctor.", role)
             return format_response(403, {"error": "Forbidden: Doctor role required."})
 
         # Route matching
         route_pattern, resource_id = parse_route(raw_path)
 
         if route_pattern not in ROUTE_METHODS:
-            logger.warning("Route not found: %s (raw: %s)", route_pattern, raw_path)
             return format_response(404, {"error": f"Route not found: {raw_path}"})
 
         if method not in ROUTE_METHODS[route_pattern]:
-            logger.warning("Method not allowed: %s for %s", method, route_pattern)
             return format_response(
                 405,
                 {"error": f"Method {method} not allowed for {raw_path}"},
@@ -1672,9 +1704,98 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
         return format_response(404, {"error": f"Route not found: {raw_path}"})
 
     except ValueError as exc:
-        logger.info("Validation error: %s", exc)
+        log_warning(
+            "doctor_validation_failed",
+            "Doctor API request validation failed",
+            current_correlation_id(),
+            http_status=400,
+            field_names=extract_field_names(
+                str(exc), _DOCTOR_VALIDATION_FIELDS
+            ),
+        )
         return format_response(400, {"error": str(exc)})
 
+
+def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[str, Any]:
+    """Log the request lifecycle and enforce a generic failure response."""
+    event = event if isinstance(event, dict) else {}
+    correlation_id = get_correlation_id(event, context)
+    token = set_correlation_id(correlation_id)
+    started = time.perf_counter()
+    try:
+        method = get_http_method(event)
+    except (AttributeError, TypeError):
+        method = "UNKNOWN"
+    request_context = event.get("requestContext")
+    if not isinstance(request_context, dict):
+        request_context = {}
+    http_context = request_context.get("http")
+    if not isinstance(http_context, dict):
+        http_context = {}
+    route = (
+        event.get("resource")
+        or event.get("routeKey")
+        or http_context.get("routeKey")
+        or "/doctors/me"
+    )
+    authorizer = request_context.get("authorizer")
+    if not isinstance(authorizer, dict):
+        authorizer = {}
+    doctor_id = authorizer.get("userId")
+    log_info(
+        "doctor_request_started",
+        "Doctor API request started",
+        correlation_id,
+        method=method,
+        route=route,
+        user_id=doctor_id,
+        role="doctor" if doctor_id else None,
+    )
+    try:
+        result = _handle_doctor_request(event, context)
     except Exception as exc:
-        logger.exception("Internal error handling request: %s", exc)
-        return format_response(500, {"error": "Internal server error."})
+        log_exception(
+            "doctor_request_failed",
+            "Doctor API request failed unexpectedly",
+            correlation_id,
+            error_type=type(exc).__name__,
+            error_message="Internal request failure",
+            user_id=doctor_id,
+            role="doctor" if doctor_id else None,
+        )
+        result = format_response(500, {"error": "Internal server error."})
+
+    status = int(result.get("statusCode", 500))
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    if status >= 500:
+        log_error(
+            "doctor_request_failed",
+            "Doctor API request failed unexpectedly",
+            correlation_id,
+            http_status=status,
+            duration_ms=duration_ms,
+            error_message="Internal request failure",
+            user_id=doctor_id,
+            role="doctor" if doctor_id else None,
+        )
+    if status in {401, 403, 404, 405, 409}:
+        log_warning(
+            "doctor_request_rejected",
+            "Doctor API request was rejected",
+            correlation_id,
+            http_status=status,
+            duration_ms=duration_ms,
+            user_id=doctor_id,
+            role="doctor" if doctor_id else None,
+        )
+    log_info(
+        "doctor_request_finished",
+        "Doctor API request finished",
+        correlation_id,
+        http_status=status,
+        duration_ms=duration_ms,
+        user_id=doctor_id,
+        role="doctor" if doctor_id else None,
+    )
+    reset_correlation_id(token)
+    return result

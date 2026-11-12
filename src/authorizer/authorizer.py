@@ -17,13 +17,21 @@ Expected JWT claims:
     jti  - Unique access-token identifier
 """
 
-import json
-import logging
 import time
 
 import jwt
 
 from shared.config import get_jwt_secret
+from shared.logging_utils import (
+    current_correlation_id,
+    get_correlation_id,
+    log_event as structured_log_event,
+    log_exception,
+    log_info,
+    log_warning,
+    reset_correlation_id,
+    set_correlation_id,
+)
 
 
 # ---------------------------------------------------------
@@ -34,26 +42,20 @@ ACCESS_TOKEN_MAX_LIFETIME_SECONDS = 15 * 60
 
 ALLOWED_ROLES = {"doctor", "patient", "admin"}
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-
 # ---------------------------------------------------------
 # LOGGING
 # ---------------------------------------------------------
 
 def log_event(level, event_name, **details):
-    """
-    Write structured JSON logs without recording JWTs,
-    passwords, refresh tokens, or signing secrets.
-    """
-    record = {
-        "event": event_name,
+    """Write an allow-listed event through the shared structured logger."""
+    request_id = details.pop("request_id", None)
+    correlation_id = current_correlation_id() or request_id
+    structured_log_event(
+        level,
+        event_name,
+        "Authorization check completed",
+        correlation_id,
         **details,
-    }
-
-    getattr(logger, level)(
-        json.dumps(record, default=str)
     )
 
 
@@ -264,7 +266,16 @@ def required_role_from_method_arn(method_arn):
         first_segment = segments[0]
 
         if first_segment in {"doctor", "doctors"}:
-            return "doctor"
+            if len(segments) >= 2 and segments[1] == "me":
+                return "doctor"
+            if (
+                first_segment == "doctors"
+                and len(segments) == 3
+                and segments[2] == "slots"
+                and resource_parts[2].upper() == "GET"
+            ):
+                return "patient"
+            return None
 
         if first_segment in {"patient", "patients"}:
             return "patient"
@@ -279,7 +290,7 @@ def required_role_from_method_arn(method_arn):
 # LAMBDA HANDLER
 # ---------------------------------------------------------
 
-def lambda_handler(event, context):
+def _handle_authorizer_request(event, context):
     """
     API Gateway TOKEN authorizer entry point.
 
@@ -361,5 +372,73 @@ def lambda_handler(event, context):
             "userId": user_id,
             "role": role,
             "jti": token_id,
+            "correlationId": current_correlation_id() or "",
         },
     )
+
+
+def lambda_handler(event, context):
+    """Emit safe start/finish records around API Gateway authorization."""
+    event = event if isinstance(event, dict) else {}
+    correlation_id = get_correlation_id(event, context)
+    token = set_correlation_id(correlation_id)
+    method_arn = event.get("methodArn") or ""
+    arn_parts = method_arn.split("/")
+    method = arn_parts[2] if len(arn_parts) > 2 else "UNKNOWN"
+    log_info(
+        "authorizer_request_started",
+        "Authorization request started",
+        correlation_id,
+        method=method,
+        route="api_gateway_authorizer",
+    )
+    started = time.perf_counter()
+    try:
+        result = _handle_authorizer_request(event, context)
+    except Exception as exc:
+        unauthorized = str(exc) == "Unauthorized"
+        status = 401 if unauthorized else 500
+        if unauthorized:
+            log_warning(
+                "authorizer_request_rejected",
+                "Authorization request was rejected",
+                correlation_id,
+                http_status=status,
+            )
+        else:
+            log_exception(
+                "authorizer_request_failed",
+                "Authorization request failed unexpectedly",
+                correlation_id,
+                error_type=type(exc).__name__,
+                error_message="Authorization failed",
+            )
+        log_info(
+            "authorizer_request_finished",
+            "Authorization request finished",
+            correlation_id,
+            http_status=status,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        reset_correlation_id(token)
+        raise
+
+    statement = result.get("policyDocument", {}).get("Statement", [])
+    effect = statement[0].get("Effect") if statement else "Deny"
+    status = 200 if effect == "Allow" else 403
+    if status == 403:
+        log_warning(
+            "authorizer_request_rejected",
+            "Authorization request was rejected",
+            correlation_id,
+            http_status=status,
+        )
+    log_info(
+        "authorizer_request_finished",
+        "Authorization request finished",
+        correlation_id,
+        http_status=status,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+    )
+    reset_correlation_id(token)
+    return result

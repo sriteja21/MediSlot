@@ -513,6 +513,102 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  MediSlotPatientLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MediSlot-PatientLambdaRole-${Environment}"
+      Description: !Sub "Least-privilege execution role for patient profile and discovery APIs (${Environment})."
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+      Policies:
+        - PolicyName: !Sub "MediSlot-PatientApiLogs-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/medislot/${Environment}/patient-api:*"
+        - PolicyName: !Sub "MediSlot-PatientApiTracing-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+        - PolicyName: !Sub "MediSlot-PatientDatabase-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${Region}.${AWS::URLSuffix}"
+        - PolicyName: !Sub "MediSlot-PatientRefreshTokens-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - Fn::ImportValue:
+                      !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
+                  - Fn::Sub:
+                      - "${TableArn}/index/gsi_user"
+                      - TableArn:
+                          Fn::ImportValue:
+                            !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
+        - PolicyName: !Sub "MediSlot-PatientSlotReads-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:Query
+                Resource:
+                  - Fn::ImportValue:
+                      !Sub "MediSlot-SlotsTableArn-${Environment}"
+                  - Fn::Sub:
+                      - "${TableArn}/index/gsi_doctor_time"
+                      - TableArn:
+                          Fn::ImportValue:
+                            !Sub "MediSlot-SlotsTableArn-${Environment}"
+        - PolicyName: !Sub "MediSlot-PatientDoctorPhotos-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  Fn::Sub:
+                    - "${BucketArn}/*"
+                    - BucketArn:
+                        Fn::ImportValue:
+                          !Sub "MediSlot-ProfilePhotosBucketArn-${Environment}"
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-PatientLambdaRole-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
 # ============================================================
 # OUTPUTS
 # ============================================================
@@ -536,6 +632,12 @@ Outputs:
     Value: !GetAtt MediSlotApiLambdaRole.Arn
     Export:
       Name: !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+
+  PatientLambdaRoleArn:
+    Description: IAM execution role ARN for patient profile and discovery APIs.
+    Value: !GetAtt MediSlotPatientLambdaRole.Arn
+    Export:
+      Name: !Sub "MediSlot-PatientLambdaRoleArn-${Environment}"
 
   AuthLambdaRoleName:
     Description: IAM execution role name for the authentication Lambda.

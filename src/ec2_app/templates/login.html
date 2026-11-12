@@ -18,6 +18,7 @@
 
     <form action="{{ url_for('login') }}" method="POST" id="loginForm">
       <input type="hidden" id="loginRole" name="role" value="{{ selected_role }}">
+      <input type="hidden" name="next" value="{{ next_url or '' }}">
       <div class="form-group">
         <label for="email">Email Address</label>
         <input
@@ -70,7 +71,10 @@
       const role = option.dataset.roleChoice;
       roleInput.value = role;
       submitButton.textContent = `Sign in as ${role === 'doctor' ? 'Doctor' : 'Patient'}`;
-      registerLink.href = `/register?role=${role}`;
+      const registerQuery = new URLSearchParams({ role });
+      const nextUrl = document.querySelector('[name="next"]').value;
+      if (nextUrl) registerQuery.set('next', nextUrl);
+      registerLink.href = `/register?${registerQuery}`;
       options.forEach(item => {
         const selected = item === option;
         item.classList.toggle('active', selected);

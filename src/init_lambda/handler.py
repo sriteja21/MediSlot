@@ -18,8 +18,8 @@ Required dependencies:
 """
 
 import json
-import logging
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -31,13 +31,25 @@ import pymysql
 from botocore.exceptions import BotoCoreError, ClientError
 from pymysql.connections import Connection
 
+# The initializer package is deployed from src/ so the shared logger is available.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from shared.logging_utils import (
+    get_correlation_id,
+    get_logger,
+    log_error,
+    log_exception,
+    log_info,
+    reset_correlation_id,
+    set_correlation_id,
+)
+
 
 # ============================================================
 # LOGGING
 # ============================================================
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = get_logger("database_initializer")
 
 
 # ============================================================
@@ -81,8 +93,8 @@ EXPECTED_TABLES = {
 
 EXPECTED_COLUMNS = {
     "users": {"user_id", "email", "password_hash", "role", "is_active", "last_login_at"},
-    "patients": {"patient_id", "user_id", "first_name", "last_name", "date_of_birth", "gender"},
-    "hospitals": {"hospital_id", "name", "address"},
+    "patients": {"patient_id", "user_id", "first_name", "last_name", "date_of_birth", "gender", "city", "notes"},
+    "hospitals": {"hospital_id", "name", "address", "city"},
     "doctors": {"doctor_id", "user_id", "hospital_id", "first_name", "last_name", "license_number", "experience_years", "timezone"},
     "specializations": {"specialization_id", "name"},
     "doctor_specializations": {"doctor_id", "specialization_id"},
@@ -346,29 +358,15 @@ def execute_schema(
 
     try:
         with connection.cursor() as cursor:
-            for index, statement in enumerate(
-                statements,
-                start=1,
-            ):
-                # Log the statement number, not the full SQL.
-                logger.info(
-                    "Executing schema statement %s of %s.",
-                    index,
-                    total_statements,
-                )
-
+            for statement in statements:
                 cursor.execute(statement)
-
-                logger.info(
-                    "Schema statement %s executed successfully.",
-                    index,
-                )
 
         connection.commit()
 
-        logger.info(
-            "All %s schema statements executed successfully.",
-            total_statements,
+        log_info(
+            "database_schema_statements_completed",
+            "Database schema statements completed",
+            result_count=total_statements,
         )
 
     except Exception:
@@ -485,6 +483,98 @@ def verify_schema(connection: Connection) -> list[str]:
     return verified_tables
 
 
+def apply_schema_migrations(connection: Connection) -> None:
+    """Add milestone columns and indexes to databases created by earlier schemas."""
+    column_migrations = {
+        "patients": {
+            "city": "VARCHAR(100) NOT NULL DEFAULT ''",
+            "notes": "TEXT NULL",
+        },
+        "hospitals": {
+            "city": "VARCHAR(100) NOT NULL DEFAULT ''",
+        },
+    }
+    index_migrations = {
+        "hospitals": {
+            "idx_hospitals_city_id": "(city, hospital_id)",
+        },
+        "doctors": {
+            "idx_doctors_name": "(last_name, first_name)",
+            "idx_doctors_hospital": "(hospital_id)",
+            "idx_doctors_verified_experience": "(is_verified, experience_years, doctor_id)",
+        },
+        "doctor_specializations": {
+            "idx_doctor_specializations_specialization": "(specialization_id, doctor_id)",
+        },
+        "consultation_types": {
+            "idx_consultation_types_doctor_active": "(doctor_id, is_active)",
+            "idx_consultation_types_active_fee": "(is_active, fee, doctor_id)",
+        },
+    }
+
+    added_columns = 0
+    added_indexes = 0
+    with connection.cursor() as cursor:
+        for table_name, columns in column_migrations.items():
+            cursor.execute(
+                """
+                SELECT COLUMN_NAME
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                """,
+                (DB_NAME, table_name),
+            )
+            existing_columns = {
+                row["COLUMN_NAME"] if isinstance(row, dict) else row[0]
+                for row in cursor.fetchall()
+            }
+            for column_name, definition in columns.items():
+                if column_name not in existing_columns:
+                    cursor.execute(
+                        f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {definition}"
+                    )
+                    added_columns += 1
+
+        for table_name, indexes in index_migrations.items():
+            cursor.execute(
+                """
+                SELECT INDEX_NAME
+                FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                """,
+                (DB_NAME, table_name),
+            )
+            existing_indexes = {
+                row["INDEX_NAME"] if isinstance(row, dict) else row[0]
+                for row in cursor.fetchall()
+            }
+            for index_name, columns_sql in indexes.items():
+                if index_name not in existing_indexes:
+                    cursor.execute(
+                        f"CREATE INDEX `{index_name}` ON `{table_name}` {columns_sql}"
+                    )
+                    added_indexes += 1
+
+        cursor.execute(
+            "UPDATE hospitals SET city = 'Bengaluru' "
+            "WHERE city = '' AND address LIKE %s",
+            ("%Bengaluru%",),
+        )
+        cursor.execute(
+            "UPDATE hospitals SET city = 'Mysuru' "
+            "WHERE city = '' AND address LIKE %s",
+            ("%Mysuru%",),
+        )
+
+    connection.commit()
+    log_info(
+        "database_schema_migrations_completed",
+        "Database schema migrations completed",
+        column_count=added_columns,
+        index_count=added_indexes,
+    )
+
+
 # ============================================================
 # INITIALIZATION WORKFLOW
 # ============================================================
@@ -518,6 +608,8 @@ def initialize_database() -> dict[str, Any]:
             connection=connection,
             statements=statements,
         )
+
+        apply_schema_migrations(connection)
 
         verified_tables = verify_schema(connection)
 
@@ -580,10 +672,7 @@ def send_cloudformation_response(
 
     response_body = {
         "Status": status,
-        "Reason": (
-            f"{reason}. Log stream: "
-            f"{getattr(context, 'log_stream_name', 'unknown')}"
-        ),
+        "Reason": reason,
         "PhysicalResourceId": physical_resource_id,
         "StackId": event.get("StackId", ""),
         "RequestId": event.get("RequestId", ""),
@@ -635,7 +724,7 @@ def send_cloudformation_response(
 # LAMBDA ENTRY POINT
 # ============================================================
 
-def lambda_handler(
+def _handle_initializer(
     event: dict[str, Any] | None,
     context: Any,
 ) -> dict[str, Any]:
@@ -679,11 +768,7 @@ def lambda_handler(
             # Do not attempt to call send_cloudformation_response here.
             return {
                 "status": "FAILED",
-                "error_type": type(exc).__name__,
-                "message": (
-                    "Database initialization failed. Check the Lambda "
-                    "CloudWatch logs for the detailed error."
-                ),
+                "message": "Database initialization failed.",
             }
 
     request_type = str(event.get("RequestType", "Unknown"))
@@ -731,10 +816,7 @@ def lambda_handler(
         }
 
     if request_type not in {"Create", "Update"}:
-        error_message = (
-            f"Unsupported CloudFormation RequestType: {request_type}"
-        )
-        logger.error(error_message)
+        error_message = "Unsupported CloudFormation request type."
         try:
             send_cloudformation_response(
                 event=event,
@@ -768,9 +850,7 @@ def lambda_handler(
 
     except Exception as exc:
         logger.exception("MediSlot database initialization failed.")
-        safe_error_message = (
-            f"Database initialization failed: {type(exc).__name__}"
-        )
+        safe_error_message = "Database initialization failed."
         try:
             send_cloudformation_response(
                 event=event,
@@ -787,6 +867,72 @@ def lambda_handler(
             )
         return {
             "status": "FAILED",
-            "error_type": type(exc).__name__,
-            "message": safe_error_message,
+            "message": "Database initialization failed.",
         }
+
+
+def lambda_handler(
+    event: dict[str, Any] | None,
+    context: Any = None,
+) -> dict[str, Any]:
+    """Log the initializer invocation and keep unexpected failures generic."""
+    event = event if isinstance(event, dict) else {}
+    correlation_id = get_correlation_id(event, context)
+    token = set_correlation_id(correlation_id)
+    started = time.perf_counter()
+    request_type_value = str(event.get("RequestType") or "INVOKE")
+    request_type = (
+        request_type_value
+        if request_type_value in {"Create", "Update", "Delete", "INVOKE"}
+        else "UNKNOWN"
+    )
+    log_info(
+        "database_initializer_started",
+        "Database initializer request started",
+        correlation_id,
+        method=request_type,
+        route="database_initializer",
+    )
+    try:
+        result = _handle_initializer(event, context)
+    except Exception as exc:
+        log_exception(
+            "database_initializer_failed",
+            "Database initialization failed unexpectedly",
+            correlation_id,
+            error_type=type(exc).__name__,
+            error_message="Database initialization failed",
+        )
+        result = {
+            "status": "FAILED",
+            "message": "Database initialization failed.",
+        }
+
+    failed = isinstance(result, dict) and result.get("status") == "FAILED"
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    if failed:
+        if request_type == "UNKNOWN":
+            log_warning(
+                "database_initializer_rejected",
+                "Database initializer request was rejected",
+                correlation_id,
+                http_status=400,
+                duration_ms=duration_ms,
+            )
+        else:
+            log_error(
+                "database_initializer_failed",
+                "Database initializer failed",
+                correlation_id,
+                http_status=500,
+                duration_ms=duration_ms,
+            )
+    log_info(
+        "database_initializer_finished",
+        "Database initializer finished",
+        correlation_id,
+        http_status=500 if failed else 200,
+        duration_ms=duration_ms,
+    )
+    reset_correlation_id(token)
+    return result
