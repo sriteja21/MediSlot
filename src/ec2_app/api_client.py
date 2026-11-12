@@ -16,12 +16,12 @@ API_TIMEOUT_SECONDS = int(os.environ.get("API_TIMEOUT_SECONDS", "15"))
 _CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
-def _json_response(response: requests.Response) -> dict[str, Any]:
+def _json_response(response: requests.Response) -> dict[str, Any] | list[Any]:
     try:
         data = response.json()
     except ValueError:
-        data = {}
-    return data if isinstance(data, dict) else {"message": "Unexpected API response."}
+        return {"message": "Unexpected API response."}
+    return data if isinstance(data, (dict, list)) else {"message": "Unexpected API response."}
 
 
 def api_call(
@@ -29,7 +29,7 @@ def api_call(
     path: str,
     json_body: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, dict[str, Any] | list[Any]]:
     """Call the API, refresh once on 401, and return a safe JSON result."""
     correlation_id = request.headers.get("X-Correlation-ID", "").strip()
     if not _CORRELATION_ID_PATTERN.fullmatch(correlation_id):
@@ -69,7 +69,12 @@ def api_call(
                     timeout=API_TIMEOUT_SECONDS,
                 )
                 refresh_data = _json_response(refresh_response)
-                new_token = refresh_data.get("access_token") if refresh_response.status_code == 200 else None
+                new_token = (
+                    refresh_data.get("access_token")
+                    if refresh_response.status_code == 200
+                    and isinstance(refresh_data, dict)
+                    else None
+                )
                 if new_token:
                     g.new_access_token = new_token
                     headers["Authorization"] = f"Bearer {new_token}"
@@ -94,6 +99,8 @@ def api_call(
 
     status = response.status_code
     if status == 403:
+        if not isinstance(data, dict):
+            data = {}
         data["message"] = data.get("message") or "You do not have permission to perform this action."
     elif status >= 500:
         data = {
@@ -101,9 +108,15 @@ def api_call(
             "correlation_id": correlation_id,
         }
     elif status == 404:
+        if not isinstance(data, dict):
+            data = {}
         data["message"] = data.get("message") or "The requested resource was not found."
     elif status == 409:
+        if not isinstance(data, dict):
+            data = {}
         data["message"] = data.get("message") or "This request conflicts with the current state."
     elif status == 400:
+        if not isinstance(data, dict):
+            data = {}
         data["message"] = data.get("message") or "Please correct the highlighted fields."
     return status, data
