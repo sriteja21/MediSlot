@@ -152,8 +152,6 @@ Resources:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: python3.12
-      BuildProperties:
-        RequirementsFile: init_lambda/requirements.txt
     DependsOn:
       - DatabaseInitializerToRDSIngress
 

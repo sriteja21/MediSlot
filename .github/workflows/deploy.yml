@@ -338,7 +338,8 @@ jobs:
 
           test -f .aws-sam/build/template.yaml
           test -d .aws-sam/build/DatabaseInitializerFunction
-          echo "Database initializer build output is ready for deployment."
+          test -d .aws-sam/build/DatabaseInitializerFunction/pymysql
+          echo "Database initializer build output includes PyMySQL."
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
