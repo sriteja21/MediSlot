@@ -1,0 +1,10 @@
+[
+  { "ParameterKey": "Environment", "ParameterValue": "__ENVIRONMENT__" },
+  { "ParameterKey": "Region", "ParameterValue": "ap-south-1" },
+  { "ParameterKey": "DBMasterUsername", "ParameterValue": "medislot_admin" },
+  { "ParameterKey": "DBMasterPassword", "ParameterValue": "__DB_MASTER_PASSWORD__" },
+  { "ParameterKey": "DBInstanceClass", "ParameterValue": "db.t3.micro" },
+  { "ParameterKey": "DBAllocatedStorage", "ParameterValue": "20" },
+  { "ParameterKey": "DBBackupRetentionPeriod", "ParameterValue": "1" },
+  { "ParameterKey": "DynamoDBBillingMode", "ParameterValue": "PAY_PER_REQUEST" }
+]

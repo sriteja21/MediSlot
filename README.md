@@ -20,15 +20,8 @@ Configure these GitHub environment secrets:
 
 - `AWS_DEPLOYMENT_ROLE_ARN`: role assumed by the workflow. It needs CloudFormation deployment permissions, permission to write/delete the database SecureString parameter, and permission to upload SAM Lambda and EC2 artifacts to the environment's reports bucket.
 - `MEDISLOT_DB_MASTER_PASSWORD`: password for the RDS master account.
-- `AWS_REGION`: optional; defaults to `ap-south-1`.
 
-Configure these GitHub environment variables for the application stack:
-
-- `MEDISLOT_MAX_DOCTOR_PAGE_SIZE`: maximum search page size (1–200).
-- `MEDISLOT_MAX_SLOT_RANGE_DAYS`: maximum inclusive date range for one slot query (1–30).
-- `MEDISLOT_SLOT_WINDOW_DAYS`: patient-visible rolling slot window (1–90).
-
-The workflow requires these values rather than embedding deployment defaults in the template. Doctor-search index rationale and the SQL needed to capture plans against the deployed RDS schema are in [docs/doctor-search-indexes.md](./docs/doctor-search-indexes.md). Patient deletion behavior, including the Milestone 5 appointment-preservation rule, is documented in [docs/patient-account-deletion.md](./docs/patient-account-deletion.md).
+CloudFormation parameter values for every stack are maintained in `infrastructure/cloudformation/parameters/`. The deployment workflow resolves the selected environment in these files; the RDS master password remains a GitHub secret and is never stored in the repository. The AWS region is configured as `ap-south-1` in the workflow and stack parameter files. Doctor-search index rationale and the SQL needed to capture plans against the deployed RDS schema are in [docs/doctor-search-indexes.md](./docs/doctor-search-indexes.md). Patient deletion behavior, including the Milestone 5 appointment-preservation rule, is documented in [docs/patient-account-deletion.md](./docs/patient-account-deletion.md).
 
 Before deploying the application, provision SecureString parameters `/MediSlot/{environment}/auth/jwt-secret` and `/MediSlot/{environment}/database/application-credentials` in Systems Manager Parameter Store. The database credentials value must be JSON with `username` and `password`; CI writes the RDS master password to `/MediSlot/{environment}/database/master-password-secure` as a SecureString and removes the legacy plaintext parameter. The EC2 website does not require app-specific SSM parameters: bootstrap generates its Flask session key and a self-signed TLS certificate locally.
 

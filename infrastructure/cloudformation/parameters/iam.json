@@ -1,0 +1,6 @@
+[
+  { "ParameterKey": "Environment", "ParameterValue": "__ENVIRONMENT__" },
+  { "ParameterKey": "Region", "ParameterValue": "ap-south-1" },
+  { "ParameterKey": "JWTSecretParameterName", "ParameterValue": "/MediSlot/__ENVIRONMENT__/auth/jwt-secret" },
+  { "ParameterKey": "DatabaseCredentialsParameterName", "ParameterValue": "/MediSlot/__ENVIRONMENT__/database/application-credentials" }
+]

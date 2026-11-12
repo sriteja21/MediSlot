@@ -1,0 +1,4 @@
+[
+  { "ParameterKey": "Environment", "ParameterValue": "__ENVIRONMENT__" },
+  { "ParameterKey": "LogLevel", "ParameterValue": "INFO" }
+]

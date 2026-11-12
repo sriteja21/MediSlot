@@ -1,0 +1,5 @@
+[
+  { "ParameterKey": "Environment", "ParameterValue": "__ENVIRONMENT__" },
+  { "ParameterKey": "InstanceType", "ParameterValue": "t3.micro" },
+  { "ParameterKey": "AppArtifactKey", "ParameterValue": "__APP_ARTIFACT_KEY__" }
+]
