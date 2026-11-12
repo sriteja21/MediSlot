@@ -58,12 +58,6 @@ Parameters:
     MaxValue: 3600
     Description: Expiration in seconds for signed doctor profile-photo URLs.
 
-  LogRetentionDays:
-    Type: Number
-    Default: 14
-    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
-    Description: Retention for application Lambda log groups.
-
   LogLevel:
     Type: String
     Default: INFO
@@ -274,9 +268,6 @@ Resources:
 
   MediSlotAuthFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - AuthLogGroup
-
     Properties:
 
       FunctionName: !Sub "MediSlot-AuthFunction-${Environment}"
@@ -297,10 +288,6 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-AuthLambdaRoleArn-${Environment}"
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref AuthLogGroup
-
       VpcConfig:
 
         SecurityGroupIds:
@@ -411,9 +398,6 @@ Resources:
 
   MediSlotAuthorizerFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - AuthorizerLogGroup
-
     Properties:
 
       FunctionName: !Sub "MediSlot-AuthorizerFunction-${Environment}"
@@ -434,10 +418,6 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-AuthorizerLambdaRoleArn-${Environment}"
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref AuthorizerLogGroup
-
       Environment:
         Variables:
 
@@ -455,8 +435,6 @@ Resources:
 
   MediSlotDoctorFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - DoctorLogGroup
     Properties:
       FunctionName: !Sub "MediSlot-DoctorFunction-${Environment}"
       Description: !Sub "MediSlot doctor profile and schedule API (${Environment})."
@@ -467,9 +445,6 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref DoctorLogGroup
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue:
@@ -586,34 +561,8 @@ Resources:
             Path: /doctors/me/dashboard
             Method: GET
 
-  AuthLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/MediSlot-AuthFunction-${Environment}"
-      RetentionInDays: !Ref LogRetentionDays
-
-  AuthorizerLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/MediSlot-AuthorizerFunction-${Environment}"
-      RetentionInDays: !Ref LogRetentionDays
-
-  DoctorLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/MediSlot-DoctorFunction-${Environment}"
-      RetentionInDays: !Ref LogRetentionDays
-
-  PatientApiLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/medislot/${Environment}/patient-api"
-      RetentionInDays: !Ref LogRetentionDays
-
   MediSlotPatientFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - PatientApiLogGroup
     Properties:
       FunctionName: !Sub "MediSlot-PatientApi-${Environment}"
       Description: !Sub "MediSlot patient profile and discovery API (${Environment})."
@@ -625,9 +574,6 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-PatientLambdaRoleArn-${Environment}"
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref PatientApiLogGroup
       Environment:
         Variables:
           PROFILE_PHOTOS_BUCKET:
@@ -750,16 +696,8 @@ Resources:
   # DAILY SLOT MATERIALISER
   # ==========================================================
 
-  SlotMaterialiserLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/MediSlot-SlotMaterialiser-${Environment}"
-      RetentionInDays: !Ref LogRetentionDays
-
   MediSlotSlotMaterialiserFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - SlotMaterialiserLogGroup
     Properties:
       FunctionName: !Sub "MediSlot-SlotMaterialiser-${Environment}"
       Description: !Sub "Materializes the rolling MediSlot appointment window (${Environment})."
@@ -770,9 +708,6 @@ Resources:
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref SlotMaterialiserLogGroup
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue:

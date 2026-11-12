@@ -95,7 +95,7 @@ Resources:
                 Action:
                   - logs:CreateLogGroup
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthFunction-${Environment}"
 
               - Sid: WriteAuthLogs
                 Effect: Allow
@@ -196,7 +196,7 @@ Resources:
                 Action:
                   - logs:CreateLogGroup
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-AuthorizerFunction-${Environment}"
 
               - Sid: WriteAuthorizerLogs
                 Effect: Allow
@@ -272,7 +272,8 @@ Resources:
                 Action:
                   - logs:CreateLogGroup
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:*"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-DoctorFunction-${Environment}"
+                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-SlotMaterialiser-${Environment}"
 
               - Sid: WriteApiLogs
                 Effect: Allow
@@ -280,9 +281,7 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-ApiFunction-${Environment}:*"
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-DoctorFunction-${Environment}:*"
-                  - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientFunction-${Environment}:*"
                   - !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-SlotMaterialiser-${Environment}:*"
 
         - PolicyName: !Sub "MediSlot-ApiReadSecrets-${Environment}"
@@ -533,10 +532,13 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
+                Action: logs:CreateLogGroup
+                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientApi-${Environment}"
+              - Effect: Allow
                 Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/medislot/${Environment}/patient-api:*"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientApi-${Environment}:*"
         - PolicyName: !Sub "MediSlot-PatientApiTracing-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
