@@ -8,7 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const requestedType = new URLSearchParams(location.search).get('type');
   let selectedType = requestedType;
   let slots = [];
-  let availabilityStart = localMidnight(new Date());
+  let availabilityStart = localDateKey(new Date());
   let availabilityWeek = 0;
   let windowDays = Number(doctor?.availability_window_days);
   let maxRangeDays = Number(doctor?.max_slot_range_days);
@@ -36,7 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
           || !Number.isInteger(maxRangeDays) || maxRangeDays < 1) {
         throw new Error('Doctor availability configuration is unavailable.');
       }
-      availabilityStart = localMidnight(new Date());
+      availabilityStart = localDateKey(new Date());
       document.getElementById('availabilityRangeDescription').textContent =
         `Browse available appointments for the next ${windowDays} days. Times are shown in ${MediSlotPatient.timeZoneLabel()}.`;
       document.getElementById('previousAvailabilityWeek').addEventListener('click', () => {
@@ -166,16 +166,16 @@ document.addEventListener('DOMContentLoaded', () => {
     error.hidden = true;
     MediSlotPatient.setLoading(loading, true, 'Loading availability...');
     try {
-      const start = availabilityStart;
       const fetchedSlots = [];
       for (let offset = 0; offset < windowDays; offset += maxRangeDays) {
-        const rangeStart = new Date(start);
-        rangeStart.setDate(rangeStart.getDate() + offset);
-        const rangeEnd = new Date(rangeStart);
-        rangeEnd.setDate(rangeEnd.getDate() + Math.min(maxRangeDays, windowDays - offset) - 1);
+        const rangeStart = addCalendarDays(availabilityStart, offset);
+        const rangeEnd = addCalendarDays(
+          rangeStart,
+          Math.min(maxRangeDays, windowDays - offset) - 1
+        );
         const params = new URLSearchParams({
-          from: localDateKey(rangeStart),
-          to: localDateKey(rangeEnd),
+          from: rangeStart,
+          to: rangeEnd,
         });
         const result = await MediSlotPatient.api(
           `/api/doctors/${encodeURIComponent(doctorId)}/slots?${params}`
@@ -197,14 +197,14 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderWeekLabel() {
     const weekStartOffset = availabilityWeek * 7;
     const weekDays = Math.min(7, windowDays - weekStartOffset);
-    const weekStart = new Date(availabilityStart);
-    weekStart.setDate(weekStart.getDate() + weekStartOffset);
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekEnd.getDate() + weekDays - 1);
+    const weekStart = dateKeyAsUtcDate(addCalendarDays(availabilityStart, weekStartOffset));
+    const weekEnd = dateKeyAsUtcDate(
+      addCalendarDays(availabilityStart, weekStartOffset + weekDays - 1)
+    );
     document.getElementById('availabilityWeekLabel').textContent = new Intl.DateTimeFormat(undefined, {
       month: 'short',
       day: 'numeric',
-      timeZone: MediSlotPatient.patientTimezone,
+      timeZone: 'UTC',
     }).formatRange(weekStart, weekEnd);
     document.getElementById('previousAvailabilityWeek').disabled = availabilityWeek === 0;
     document.getElementById('nextAvailabilityWeek').disabled =
@@ -228,9 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const weekSlots = slots.filter(slot => {
       if (selectedType && String(slot.consultation_type.id) !== selectedType) return false;
       const slotDate = localDateKey(new Date(slot.start));
-      const dateOffset = Math.round(
-        (localMidnight(new Date(`${slotDate}T12:00:00`)) - availabilityStart) / 86400000
-      );
+      const dateOffset = calendarDayOffset(availabilityStart, slotDate);
       return dateOffset >= firstDayOffset && dateOffset < firstDayOffset + dayCount;
     }).sort((left, right) => new Date(left.start) - new Date(right.start));
     const openSlots = weekSlots.filter(slot => slot.available);
@@ -248,9 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     empty.hidden = true;
     for (let offset = firstDayOffset; offset < firstDayOffset + dayCount; offset++) {
-      const date = new Date(availabilityStart);
-      date.setDate(date.getDate() + offset);
-      const dateKey = localDateKey(date);
+      const dateKey = addCalendarDays(availabilityStart, offset);
       const daySlots = visibleSlots.filter(slot => localDateKey(new Date(slot.start)) === dateKey);
       if (!daySlots.length) continue;
       const availableSeats = daySlots.reduce(
@@ -264,8 +260,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const dayName = document.createElement('h3');
       dayName.textContent = new Intl.DateTimeFormat(undefined, {
         weekday: 'short', day: 'numeric', month: 'short',
-        timeZone: MediSlotPatient.patientTimezone,
-      }).format(date);
+        timeZone: 'UTC',
+      }).format(dateKeyAsUtcDate(dateKey));
       const dayCountLabel = document.createElement('span');
       dayCountLabel.textContent = `${availableSeats} ${availableSeats === 1 ? 'free seat' : 'free seats'}`;
       heading.append(dayName, dayCountLabel);
@@ -327,10 +323,20 @@ document.addEventListener('DOMContentLoaded', () => {
     return `${values.year}-${values.month}-${values.day}`;
   }
 
-  function localMidnight(value) {
-    const date = new Date(value);
-    date.setHours(0, 0, 0, 0);
-    return date;
+  function addCalendarDays(dateKey, days) {
+    const date = dateKeyAsUtcDate(dateKey);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  }
+
+  function calendarDayOffset(startDateKey, dateKey) {
+    return Math.round(
+      (dateKeyAsUtcDate(dateKey) - dateKeyAsUtcDate(startDateKey)) / 86400000
+    );
+  }
+
+  function dateKeyAsUtcDate(dateKey) {
+    return new Date(`${dateKey}T12:00:00Z`);
   }
 
   function initials(value) {
