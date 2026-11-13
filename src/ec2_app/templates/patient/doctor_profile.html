@@ -16,30 +16,35 @@
   <div id="doctorProfileError" class="patient-state-error" role="alert" hidden></div>
   <section id="doctorProfileContent" class="public-doctor-profile" aria-live="polite"></section>
 
-  <section class="patient-profile-section" aria-labelledby="consultationsTitle">
-    <div class="patient-section-title-row">
-      <div><h2 id="consultationsTitle">Consultation types</h2><p>Choose a consultation to browse its available times.</p></div>
-    </div>
-    <div id="consultationTypes" class="consultation-type-list" role="tablist" aria-label="Consultation type"></div>
-    <div id="consultationEmpty" class="patient-empty" hidden>This doctor has no active consultation types.</div>
-  </section>
-
   <section class="patient-profile-section" aria-labelledby="slotsTitle">
     <div class="patient-section-title-row">
-      <div><h2 id="slotsTitle">Availability</h2><p id="availabilityRangeDescription">Choose a week and date to see available times.</p></div>
+      <div><h2 id="slotsTitle">Free seats</h2><p id="availabilityRangeDescription">Browse the doctor's open appointments by week.</p></div>
       <span class="patient-timezone-label" id="patientTimezoneLabel"></span>
     </div>
     <div id="doctorSlotsLoading" class="patient-loading" hidden><span class="spinner" aria-hidden="true"></span><span>Loading availability...</span></div>
     <div id="doctorSlotsError" class="patient-state-error" role="alert" hidden></div>
     <div class="patient-week-controls" aria-label="Availability week">
-      <button class="btn btn-secondary btn-sm" type="button" id="previousAvailabilityWeek">Previous week</button>
+      <button class="btn btn-secondary btn-sm" type="button" id="previousAvailabilityWeek">&larr; Earlier</button>
       <strong id="availabilityWeekLabel"></strong>
-      <button class="btn btn-secondary btn-sm" type="button" id="nextAvailabilityWeek">Next week</button>
+      <button class="btn btn-secondary btn-sm" type="button" id="nextAvailabilityWeek">Later &rarr;</button>
     </div>
-    <div id="doctorDateStrip" class="doctor-date-strip" aria-label="Available dates"></div>
-    <div class="doctor-slot-heading"><h3 id="selectedSlotDate"></h3><span id="doctorTimezoneNote"></span></div>
-    <div id="doctorSlotsEmpty" class="patient-empty" hidden>No slots available on this date. Try another day.</div>
-    <div id="doctorSlotGroups" class="doctor-slot-groups"></div>
+    <div class="patient-slot-filters">
+      <label class="patient-slot-type">
+        <span class="visually-hidden">Consultation type</span>
+        <select class="form-control" id="slotConsultationType" aria-label="Consultation type"></select>
+      </label>
+      <label class="patient-free-seats-filter">
+        <input type="checkbox" id="onlyFreeSeats">
+        <span>Only slots with free seats</span>
+      </label>
+    </div>
+    <div class="patient-slot-summary" aria-live="polite">
+      <span id="openSlotCount"></span>
+      <span id="freeSeatCount"></span>
+      <span class="patient-timezone-note" id="doctorTimezoneNote"></span>
+    </div>
+    <div id="doctorSlotsEmpty" class="patient-empty" hidden>No appointments match this week and consultation type. Try another week or turn off the free-seats filter.</div>
+    <div id="doctorSlotGroups" class="patient-slot-days"></div>
   </section>
 
   <section id="slotSummary" class="slot-summary" hidden aria-live="polite">
