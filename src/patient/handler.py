@@ -359,6 +359,36 @@ def _doctor_search(params: dict[str, str]) -> tuple[int, dict[str, Any]]:
         + f" ORDER BY {order_by} LIMIT %s OFFSET %s",
         tuple(values + order_values + [criteria["page_size"], (criteria["page"] - 1) * criteria["page_size"]]),
     )
+    consultations_by_doctor: dict[str, list[dict[str, Any]]] = {}
+    if rows:
+        doctor_ids = [str(row["doctor_id"]) for row in rows]
+        placeholders = ", ".join(["%s"] * len(doctor_ids))
+        consultation_rows = execute_query(
+            f"""
+            SELECT ct.doctor_id, ct.consultation_type_id AS id,
+                   catalog.name, catalog.duration_minutes AS duration,
+                   ct.fee, ct.capacity
+            FROM consultation_types ct
+            JOIN consultation_catalog catalog
+              ON catalog.consultation_type_id = ct.catalog_type_id
+            WHERE ct.is_active = TRUE AND ct.doctor_id IN ({placeholders})
+            ORDER BY catalog.duration_minutes, catalog.name
+            """,
+            tuple(doctor_ids),
+        )
+        for consultation in consultation_rows:
+            consultations_by_doctor.setdefault(
+                str(consultation["doctor_id"]), []
+            ).append(
+                {
+                    "id": str(consultation["id"]),
+                    "name": consultation["name"],
+                    "duration": int(consultation["duration"]),
+                    "fee": float(consultation["fee"]),
+                    "capacity": int(consultation["capacity"]),
+                }
+            )
+
     doctors = []
     for row in rows:
         doctors.append(
@@ -374,6 +404,9 @@ def _doctor_search(params: dict[str, str]) -> tuple[int, dict[str, Any]]:
                 "languages": _parse_languages(row.get("languages")),
                 "photo_url": _photo_url(row.get("profile_image_key")),
                 "lowest_fee": row.get("lowest_fee"),
+                "consultations": consultations_by_doctor.get(
+                    str(row["doctor_id"]), []
+                ),
             }
         )
     return 200, {
@@ -403,16 +436,28 @@ def _photo_url(key: Any) -> str | None:
     )
 
 
-def _doctor_options() -> dict[str, list[str]]:
+def _doctor_options() -> dict[str, Any]:
     specialisations = execute_query(
         "SELECT name FROM specializations ORDER BY name"
     )
     cities = execute_query(
         "SELECT DISTINCT city FROM hospitals WHERE city <> '' ORDER BY city"
     )
+    hospitals = execute_query(
+        """
+        SELECT name, city
+        FROM hospitals
+        WHERE name <> ''
+        ORDER BY city, name
+        """
+    )
     return {
         "specialisations": [row["name"] for row in specialisations],
         "cities": [row["city"] for row in cities],
+        "hospitals": [
+            {"name": row["name"], "city": row.get("city") or ""}
+            for row in hospitals
+        ],
         "max_page_size": MAX_PAGE_SIZE,
     }
 

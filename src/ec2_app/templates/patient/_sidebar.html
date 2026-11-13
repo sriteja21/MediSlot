@@ -1,17 +1,53 @@
-<header class="patient-topnav">
-  <a class="patient-brand" href="{{ url_for('patient_doctors.doctor_search_page') }}" aria-label="MediSlot home">
-    <span class="patient-brand-mark">M</span>
-    <span>MediSlot</span>
+<aside class="sidebar patient-sidebar">
+  <a class="sidebar-brand patient-sidebar-brand" href="{{ url_for('patient_doctors.doctor_search_page') }}" aria-label="MediSlot home">
+    <span class="brand-icon">M</span>
+    <span>
+      <span class="brand-text">MediSlot</span>
+      <span class="brand-badge">Patient</span>
+    </span>
   </a>
-  <button type="button" class="patient-menu-toggle" id="patientMenuToggle" aria-controls="patientNavigation" aria-expanded="false" aria-label="Open navigation">
-    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-  </button>
-  <nav class="patient-navigation" id="patientNavigation" aria-label="Patient navigation">
-    <a href="{{ url_for('patient_doctors.doctor_search_page') }}" class="patient-nav-link {% if active_page == 'doctors' %}active{% endif %}">Find Doctors</a>
-    <a href="{{ url_for('patient_profile.profile_page') }}" class="patient-nav-link {% if active_page == 'profile' %}active{% endif %}">My Profile</a>
-    <span class="patient-nav-name" id="patientFirstName">Patient</span>
-    <form action="{{ url_for('logout') }}" method="POST">
-      <button type="submit" class="patient-nav-logout">Log out</button>
-    </form>
+
+  <nav class="sidebar-nav" aria-label="Patient navigation">
+    <div class="nav-section-title">Care Workspace</div>
+
+    <a href="{{ url_for('patient_doctors.doctor_search_page') }}" class="nav-item {% if active_page == 'doctors' %}active{% endif %}">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-4-4"></path>
+      </svg>
+      <span>Find Doctors</span>
+    </a>
+
+    <a href="{{ url_for('patient_doctors.doctor_search_page', _anchor='hospitalBrowse') }}" class="nav-item">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4M9 9v.01M9 12v.01M9 15v.01M9 18v.01M15 13v.01M15 16v.01M15 19v.01"></path>
+      </svg>
+      <span>Browse Hospitals</span>
+    </a>
+
+    <div class="nav-section-title">Account</div>
+
+    <a href="{{ url_for('patient_profile.profile_page') }}" class="nav-item {% if active_page == 'profile' %}active{% endif %}">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+      </svg>
+      <span>My Profile</span>
+    </a>
   </nav>
-</header>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-user">
+      <div class="user-info">
+        <span class="user-name" id="patientFirstName">Patient</span>
+        <span class="user-role">Patient account</span>
+      </div>
+      <form action="{{ url_for('logout') }}" method="POST" style="margin: 0;">
+        <button type="submit" class="btn btn-secondary btn-sm" title="Log out" aria-label="Log out" style="padding: 0.4rem 0.6rem;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+          </svg>
+        </button>
+      </form>
+    </div>
+  </div>
+</aside>

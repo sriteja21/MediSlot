@@ -10,14 +10,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let debounceTimer;
   let searchController;
 
-  if (!window.location.search) {
-    const remembered = sessionStorage.getItem('medislot.lastDoctorSearch');
-    if (remembered) query.set('restore', remembered);
-  }
-  const rememberedParams = query.get('restore') ? new URLSearchParams(query.get('restore')) : query;
-  readState(rememberedParams);
-  page = positiveInt(rememberedParams.get('page'), page);
-  pageSize = positiveInt(rememberedParams.get('page_size'), pageSize);
+  readState(query);
+  page = positiveInt(query.get('page'), page);
+  pageSize = positiveInt(query.get('page_size'), pageSize);
   document.getElementById('doctorPageSize').value = String(pageSize);
 
   form.addEventListener('submit', event => {
@@ -98,7 +93,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const url = `${window.location.pathname}${queryString ? `?${queryString}` : ''}`;
     if (push) window.history.pushState(null, '', url);
     else window.history.replaceState(null, '', url);
-    sessionStorage.setItem('medislot.lastDoctorSearch', queryString);
     loadDoctors();
   }
 
@@ -109,6 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const options = await MediSlotPatient.api('/api/doctors/options');
       populateDatalist('doctorSpecialisations', options.specialisations || []);
       populateDatalist('doctorCities', options.cities || []);
+      renderHospitals(options.hospitals || []);
       const pageSizeSelect = document.getElementById('doctorPageSize');
       const configuredMax = Number(options.max_page_size);
       if (!Number.isInteger(configuredMax) || configuredMax < 1) {
@@ -131,6 +126,36 @@ document.addEventListener('DOMContentLoaded', () => {
       option.value = value;
       return option;
     }));
+  }
+
+  function renderHospitals(hospitals) {
+    const container = document.getElementById('hospitalBrowseList');
+    container.replaceChildren();
+    if (!hospitals.length) {
+      document.getElementById('hospitalBrowse').hidden = true;
+      return;
+    }
+
+    hospitals.forEach(hospital => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'hospital-browse-card';
+      const name = document.createElement('strong');
+      name.textContent = hospital.name;
+      const location = document.createElement('span');
+      location.textContent = hospital.city || 'Location not listed';
+      button.append(name, location);
+      button.addEventListener('click', () => {
+        document.getElementById('doctorHospitalFilter').value = hospital.name;
+        page = 1;
+        navigate(true);
+        document.getElementById('doctorResultsSection').scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      });
+      container.appendChild(button);
+    });
   }
 
   async function loadDoctors() {
@@ -226,6 +251,15 @@ document.addEventListener('DOMContentLoaded', () => {
     languages.className = 'doctor-card-tags';
     (doctor.languages || []).forEach(language => languages.append(MediSlotPatient.createTag(language)));
     details.append(heading, specialisation, facts, languages);
+
+    const consultationList = document.createElement('div');
+    consultationList.className = 'doctor-card-consultations';
+    (doctor.consultations || []).forEach(consultation => {
+      const item = document.createElement('span');
+      item.textContent = `${consultation.name} · ${Number(consultation.duration)} min · INR ${Number(consultation.fee).toFixed(2)}`;
+      consultationList.appendChild(item);
+    });
+    if (consultationList.childElementCount) details.appendChild(consultationList);
 
     const fee = document.createElement('div');
     fee.className = 'doctor-card-fee';

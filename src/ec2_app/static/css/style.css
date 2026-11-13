@@ -1303,10 +1303,47 @@ select.form-control option {
    ============================================================ */
 
 .patient-page {
+  display: flex;
   min-height: 100vh;
   background:
     radial-gradient(ellipse at 92% 5%, rgba(0, 212, 170, 0.08), transparent 28rem),
     var(--bg);
+}
+
+.patient-page .patient-sidebar {
+  flex: 0 0 var(--sidebar-width);
+}
+
+.patient-page .patient-sidebar-brand {
+  color: inherit;
+}
+
+.patient-page .patient-sidebar-brand > span:last-child {
+  display: grid;
+}
+
+.patient-page .patient-sidebar-brand .brand-text {
+  line-height: 1.3;
+}
+
+.patient-page .patient-sidebar-brand .brand-badge {
+  width: fit-content;
+  margin: 0.25rem 0 0;
+  color: #062b27;
+  background: #64e0c3;
+}
+
+.patient-page .patient-main {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  margin: 0 0 0 var(--sidebar-width);
+  padding: 2.5rem clamp(1.25rem, 3vw, 3rem) 4rem;
+}
+
+.patient-page .patient-screen {
+  width: min(1120px, 100%);
+  margin: 0 auto;
 }
 
 .patient-page [hidden] {
@@ -1885,52 +1922,6 @@ select.form-control option {
   }
 }
 
-@media (max-width: 900px) {
-  .patient-page {
-    flex-direction: column;
-  }
-
-  .patient-page .sidebar {
-    position: relative;
-    width: 100%;
-    height: auto;
-    overflow: visible;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .patient-page .sidebar-brand {
-    padding: 0.8rem 1rem;
-    border-bottom: 0;
-  }
-
-  .patient-page .sidebar-nav {
-    flex: none;
-    flex-direction: row;
-    gap: 0.35rem;
-    overflow-x: auto;
-    padding: 0 0.75rem 0.7rem;
-  }
-
-  .patient-page .sidebar-nav .nav-section-title {
-    display: none;
-  }
-
-  .patient-page .nav-item {
-    flex: 0 0 auto;
-    padding: 0.55rem 0.7rem;
-    white-space: nowrap;
-  }
-
-  .patient-page .nav-item.active::before {
-    display: none;
-  }
-
-  .patient-page .sidebar-footer {
-    display: none;
-  }
-}
-
 @media (max-width: 480px) {
   .patient-main-content {
     padding: 1rem;
@@ -2003,35 +1994,6 @@ select.form-control option {
 }
 
 /* Patient portal */
-.patient-topnav {
-  position: sticky;
-  z-index: 20;
-  top: 0;
-  display: flex;
-  min-height: 68px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 clamp(1rem, 5vw, 4.5rem);
-  border-bottom: 1px solid var(--border);
-  background: rgba(11, 17, 34, 0.96);
-  backdrop-filter: blur(14px);
-}
-
-.patient-brand,
-.patient-navigation {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.patient-brand { color: #fff; font-weight: 700; }
-.patient-brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; color: #062b27; background: #64e0c3; }
-.patient-navigation { gap: 1.3rem; }
-.patient-nav-link, .patient-nav-logout { color: var(--text-muted); font: inherit; }
-.patient-nav-link.active, .patient-nav-link:hover, .patient-nav-logout:hover { color: #64e0c3; }
-.patient-nav-name { max-width: 180px; overflow: hidden; color: #fff; text-overflow: ellipsis; white-space: nowrap; }
-.patient-nav-logout { padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; cursor: pointer; }
-.patient-menu-toggle { display: none; color: var(--text); border: 0; background: none; cursor: pointer; }
 .patient-main { width: min(1120px, calc(100% - 2.5rem)); margin: 0 auto; padding: 2.5rem 0 4rem; }
 .patient-page-heading, .patient-section-title-row, .patient-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .patient-page-heading { margin-bottom: 1.6rem; }
@@ -2059,6 +2021,7 @@ select.form-control option {
 .patient-state-error, .patient-inline-error { margin: 0.75rem 0; padding: 0.85rem 1rem; border: 1px solid rgba(255, 71, 87, 0.5); border-radius: var(--radius-sm); color: #ffd1d5; background: rgba(255, 71, 87, 0.08); }
 .patient-loading { display: flex; align-items: center; gap: 0.65rem; padding: 1rem 0; color: var(--text-muted); }
 .patient-empty { margin: 1rem 0; padding: 1.25rem; border: 1px dashed var(--border); border-radius: var(--radius-md); color: var(--text-muted); text-align: center; }
+.patient-empty-hint { max-width: 660px; margin: 0.5rem auto 1rem; font-size: 0.84rem; }
 .patient-filter-chips, .doctor-card-tags, .doctor-profile-languages { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
 .patient-filter-chip, .patient-tag { padding: 0.25rem 0.6rem; border: 1px solid var(--border); border-radius: 999px; color: #c9d5e5; background: rgba(255, 255, 255, 0.04); font-size: 0.76rem; }
 .patient-filter-chip { cursor: pointer; }
@@ -2079,8 +2042,16 @@ select.form-control option {
 .doctor-card-details h2 { color: #fff; font-size: 1rem; }
 .doctor-card-specialisation { color: #64e0c3; }
 .doctor-card-facts { overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 0.82rem; }
+.doctor-card-consultations { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.55rem; }
+.doctor-card-consultations span { padding: 0.25rem 0.55rem; border: 1px solid rgba(100, 224, 195, 0.22); border-radius: 999px; color: #c9d5e5; background: rgba(100, 224, 195, 0.06); font-size: 0.75rem; }
 .doctor-card-fee { color: #fff; font-weight: 600; white-space: nowrap; }
 .doctor-card-action { grid-column: 2 / 4; color: #64e0c3; font-size: 0.82rem; }
+.hospital-browse-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.65rem; }
+.hospital-browse-card { display: grid; gap: 0.2rem; padding: 0.8rem 0.9rem; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.025); text-align: left; cursor: pointer; }
+.hospital-browse-card:hover { border-color: rgba(100, 224, 195, 0.55); background: rgba(100, 224, 195, 0.06); }
+.hospital-browse-card span { color: var(--text-muted); font-size: 0.8rem; }
+.patient-week-controls { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin: 0.75rem 0; }
+.patient-week-controls strong { color: #fff; font-size: 0.9rem; }
 .patient-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.6rem; margin-top: 1.25rem; }
 .patient-page-numbers { display: flex; gap: 0.3rem; }
 .patient-page-number { min-width: 2.1rem; min-height: 2.1rem; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; cursor: pointer; }
@@ -2107,6 +2078,91 @@ select.form-control option {
 .slot-summary p:not(.patient-eyebrow) { color: var(--text-muted); }
 .patient-timezone-label { color: var(--text-muted); font-size: 0.8rem; }
 .patient-toast { position: fixed; z-index: 50; right: 1rem; bottom: 1rem; max-width: min(420px, calc(100% - 2rem)); padding: 0.9rem 1.1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); color: #fff; background: var(--bg-surface); box-shadow: var(--shadow-lg); }
+
+@media (max-width: 900px) {
+  .patient-page {
+    display: block;
+  }
+
+  .patient-page .patient-sidebar {
+    position: relative;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .patient-page .patient-sidebar-brand {
+    padding: 0.8rem 1rem;
+    border-bottom: 0;
+  }
+
+  .patient-page .patient-sidebar .sidebar-nav {
+    flex: none;
+    flex-direction: row;
+    gap: 0.35rem;
+    overflow-x: auto;
+    padding: 0 0.75rem 0.7rem;
+  }
+
+  .patient-page .patient-sidebar .nav-section-title {
+    display: none;
+  }
+
+  .patient-page .patient-sidebar .nav-item {
+    flex: 0 0 auto;
+    padding: 0.55rem 0.7rem;
+    white-space: nowrap;
+  }
+
+  .patient-page .patient-sidebar .nav-item.active::before {
+    display: none;
+  }
+
+  .patient-page .patient-sidebar .sidebar-footer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: block;
+    padding: 0.65rem 0.8rem;
+    border: 0;
+    background: transparent;
+  }
+
+  .patient-page .patient-sidebar .user-info {
+    display: none;
+  }
+
+  .patient-page .patient-main {
+    width: 100%;
+    margin: 0;
+    padding: 1.6rem 1rem 2.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .patient-page .patient-main {
+    padding: 1.25rem 0.75rem 2rem;
+  }
+
+  .patient-week-controls {
+    gap: 0.35rem;
+  }
+
+  .patient-week-controls .btn {
+    padding: 0.4rem 0.5rem;
+    font-size: 0.72rem;
+  }
+
+  .doctor-filter-form {
+    grid-template-columns: 1fr;
+  }
+
+  .doctor-filter-actions {
+    align-items: stretch;
+  }
+}
 .patient-toast-success { border-color: var(--success); }
 .patient-toast-error { border-color: var(--danger); }
 .patient-profile-notes { overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -2116,11 +2172,6 @@ select.form-control option {
 .patient-page :focus-visible { outline: 3px solid #64e0c3; outline-offset: 3px; }
 
 @media (max-width: 760px) {
-  .patient-menu-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 42px; min-height: 42px; }
-  .patient-navigation { position: absolute; top: 100%; right: 0; left: 0; display: none; align-items: stretch; gap: 0; padding: 0.5rem 1rem 1rem; border-bottom: 1px solid var(--border); background: #0b1122; }
-  .patient-navigation.open { display: flex; flex-direction: column; }
-  .patient-nav-link, .patient-nav-name, .patient-nav-logout { padding: 0.65rem 0; }
-  .patient-main { width: min(calc(100% - 1.5rem), 1120px); padding-top: 1.5rem; }
   .doctor-filter-form, .patient-profile-form .patient-form-grid { grid-template-columns: 1fr; }
   .doctor-filter-actions { align-items: stretch; flex-wrap: wrap; }
   .doctor-card { grid-template-columns: auto minmax(0, 1fr); }

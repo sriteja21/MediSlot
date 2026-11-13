@@ -26,11 +26,16 @@
 
   <section class="patient-profile-section" aria-labelledby="slotsTitle">
     <div class="patient-section-title-row">
-      <div><h2 id="slotsTitle">Availability</h2><p>Dates and times are shown in your local timezone.</p></div>
+      <div><h2 id="slotsTitle">Availability</h2><p id="availabilityRangeDescription">Choose a week and date to see available times.</p></div>
       <span class="patient-timezone-label" id="patientTimezoneLabel"></span>
     </div>
     <div id="doctorSlotsLoading" class="patient-loading" hidden><span class="spinner" aria-hidden="true"></span><span>Loading availability...</span></div>
     <div id="doctorSlotsError" class="patient-state-error" role="alert" hidden></div>
+    <div class="patient-week-controls" aria-label="Availability week">
+      <button class="btn btn-secondary btn-sm" type="button" id="previousAvailabilityWeek">Previous week</button>
+      <strong id="availabilityWeekLabel"></strong>
+      <button class="btn btn-secondary btn-sm" type="button" id="nextAvailabilityWeek">Next week</button>
+    </div>
     <div id="doctorDateStrip" class="doctor-date-strip" aria-label="Available dates"></div>
     <div class="doctor-slot-heading"><h3 id="selectedSlotDate"></h3><span id="doctorTimezoneNote"></span></div>
     <div id="doctorSlotsEmpty" class="patient-empty" hidden>No slots available on this date. Try another day.</div>

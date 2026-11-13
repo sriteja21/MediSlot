@@ -8,7 +8,7 @@
     <div>
       <p class="patient-eyebrow">CARE THAT FITS YOUR NEEDS</p>
       <h1>Find Doctors</h1>
-      <p class="patient-subtitle">Search verified doctors and compare consultation options.</p>
+      <p class="patient-subtitle">Browse verified doctors, compare consultation types, and check available times.</p>
     </div>
   </header>
 
@@ -46,6 +46,16 @@
     </div>
   </form>
 
+  <section class="patient-search-section hospital-browse" id="hospitalBrowse" aria-labelledby="hospitalBrowseTitle">
+    <div class="patient-section-heading">
+      <div>
+        <h2 id="hospitalBrowseTitle">Browse by hospital</h2>
+        <p>Choose a hospital to see its verified doctors and active consultation options.</p>
+      </div>
+    </div>
+    <div id="hospitalBrowseList" class="hospital-browse-list"></div>
+  </section>
+
   <section class="patient-search-section" aria-labelledby="doctorResultsTitle" id="doctorResultsSection">
     <div class="patient-section-heading">
       <div>
@@ -60,6 +70,7 @@
     <div id="doctorResults" class="doctor-results" aria-live="polite"></div>
     <div id="doctorEmptyState" class="patient-empty" hidden>
       <p>No doctors found. Try changing your filters.</p>
+      <p class="patient-empty-hint">Only verified doctors with at least one active consultation type appear here. Clear the filters to browse all matching doctors. A doctor does not need a profile photo to appear.</p>
       <button type="button" class="btn btn-secondary btn-sm" id="emptyClearFilters">Clear filters</button>
     </div>
     <div id="doctorPagination" class="patient-pagination" hidden>

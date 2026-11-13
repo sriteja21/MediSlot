@@ -182,35 +182,7 @@
     container.hidden = false;
   }
 
-  function initializeNavigation() {
-    const toggle = document.getElementById('patientMenuToggle');
-    const nav = document.getElementById('patientNavigation');
-    if (!toggle || !nav) return;
-    toggle.addEventListener('click', () => {
-      const expanded = toggle.getAttribute('aria-expanded') === 'true';
-      toggle.setAttribute('aria-expanded', String(!expanded));
-      toggle.setAttribute('aria-label', expanded ? 'Open navigation' : 'Close navigation');
-      nav.classList.toggle('open', !expanded);
-    });
-    nav.addEventListener('click', event => {
-      if (event.target.closest('a')) {
-        toggle.setAttribute('aria-expanded', 'false');
-        toggle.setAttribute('aria-label', 'Open navigation');
-        nav.classList.remove('open');
-      }
-    });
-    document.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
-        toggle.setAttribute('aria-expanded', 'false');
-        toggle.setAttribute('aria-label', 'Open navigation');
-        nav.classList.remove('open');
-        toggle.focus();
-      }
-    });
-  }
-
   document.addEventListener('DOMContentLoaded', () => {
-    initializeNavigation();
     loadPatientName().catch(error => showToast(error.message, 'error'));
   });
 
