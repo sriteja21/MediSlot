@@ -584,13 +584,8 @@ Resources:
               - Effect: Allow
                 Action: dynamodb:Query
                 Resource:
-                  - Fn::ImportValue:
-                      !Sub "MediSlot-SlotsTableArn-${Environment}"
-                  - Fn::Sub:
-                      - "${TableArn}/index/gsi_doctor_time"
-                      - TableArn:
-                          Fn::ImportValue:
-                            !Sub "MediSlot-SlotsTableArn-${Environment}"
+                  Fn::ImportValue:
+                    !Sub "MediSlot-SlotsTableArn-${Environment}"
         - PolicyName: !Sub "MediSlot-PatientDoctorPhotos-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"

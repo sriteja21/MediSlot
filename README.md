@@ -10,7 +10,7 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 - `src/patient` provides patient profile management, public doctor discovery, doctor profiles, and slot availability. Booking and appointment-list workflows are out of scope for Milestone 4.
 - `src/slot_materialiser` reconciles the next 30 local calendar days in `MediSlot-Slots-*` after schedule changes and from a daily EC2 systemd timer; it does not use EventBridge. Blackout and obsolete availability slots remain visible with `is_active=false`, and reconciliation never modifies slots with booked seats.
 - `src/ec2_app` is the Flask portal served directly by EC2 Nginx over HTTPS, with Gunicorn bound to localhost. A stable Elastic IP is assigned by the EC2 portal stack.
-- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table uses `slot_id` as its key and `gsi_doctor_time` (`doctor_id`, `start_time`) for doctor schedules.
+- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table primary key is `(doctor_id, slot_sk)`, where `slot_sk` is `<start_epoch>#<consultation_type_id>`; doctor time-range reads query this primary key.
 
 ## Deployment
 

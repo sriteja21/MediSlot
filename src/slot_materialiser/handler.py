@@ -98,13 +98,14 @@ def query_doctor_slots(
     utc_end: datetime,
 ) -> list[dict[str, Any]]:
     """Return every slot for a doctor in a UTC time range."""
+    start_epoch = int(utc_start.timestamp())
+    end_epoch = int((utc_end - timedelta(seconds=1)).timestamp())
     query_args: dict[str, Any] = {
-        "IndexName": "gsi_doctor_time",
         "KeyConditionExpression": (
             Key("doctor_id").eq(doctor_id)
-            & Key("start_time").between(
-                utc_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                (utc_end - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            & Key("slot_sk").between(
+                f"{start_epoch}#",
+                f"{end_epoch}#\uffff",
             )
         ),
     }

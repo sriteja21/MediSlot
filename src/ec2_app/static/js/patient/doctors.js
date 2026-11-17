@@ -3,6 +3,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!form) return;
 
   const filterNames = ['name', 'hospital', 'specialisation', 'city'];
+  const doctorPageCache = new Map();
+  const doctorPageCacheTtlMs = 60 * 1000;
+  const maxCachedDoctorPages = 20;
   const query = new URLSearchParams(window.location.search);
   let page = positiveInt(query.get('page'), 1);
   let pageSize = positiveInt(query.get('page_size'), 10);
@@ -173,9 +176,24 @@ document.addEventListener('DOMContentLoaded', () => {
     MediSlotPatient.setBusy(searchButton, true, 'Searching...');
 
     try {
-      const data = await MediSlotPatient.api(`/api/doctors?${stateParams()}`, {
-        signal: controller.signal,
-      });
+      const params = stateParams();
+      const cacheKey = params.toString();
+      const cached = doctorPageCache.get(cacheKey);
+      let data;
+      if (cached && Date.now() - cached.cachedAt < doctorPageCacheTtlMs) {
+        doctorPageCache.delete(cacheKey);
+        doctorPageCache.set(cacheKey, cached);
+        data = cached.data;
+      } else {
+        if (cached) doctorPageCache.delete(cacheKey);
+        data = await MediSlotPatient.api(`/api/doctors?${cacheKey}`, {
+          signal: controller.signal,
+        });
+        doctorPageCache.set(cacheKey, { data, cachedAt: Date.now() });
+        while (doctorPageCache.size > maxCachedDoctorPages) {
+          doctorPageCache.delete(doctorPageCache.keys().next().value);
+        }
+      }
       const items = data.items || [];
       total = Number(data.total || 0);
       page = Number(data.page || page);

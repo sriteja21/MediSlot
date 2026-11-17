@@ -565,12 +565,23 @@ def _doctor_slots(doctor_id: str, params: dict[str, str]) -> tuple[int, dict[str
     if type_id and type_id not in type_names:
         return 400, {"message": "Consultation type is not available for this doctor.", "field_errors": {"consultationTypeId": "Choose an active consultation type."}}
 
-    start_key = f"{from_day.isoformat()}T00:00:00Z"
-    end_key = f"{(to_day + timedelta(days=1)).isoformat()}T00:00:00Z"
+    utc_start = datetime.combine(from_day, time_type.min, tzinfo=timezone.utc)
+    utc_end = datetime.combine(
+        to_day + timedelta(days=1),
+        time_type.min,
+        tzinfo=timezone.utc,
+    )
+    start_epoch = int(utc_start.timestamp())
+    end_epoch = int((utc_end - timedelta(seconds=1)).timestamp())
     table = get_slots_table()
     query_args: dict[str, Any] = {
-        "IndexName": "gsi_doctor_time",
-        "KeyConditionExpression": Key("doctor_id").eq(doctor_id) & Key("start_time").between(start_key, end_key),
+        "KeyConditionExpression": (
+            Key("doctor_id").eq(doctor_id)
+            & Key("slot_sk").between(
+                f"{start_epoch}#",
+                f"{end_epoch}#\uffff",
+            )
+        ),
     }
     now_utc = datetime.now(timezone.utc)
     slots: list[dict[str, Any]] = []

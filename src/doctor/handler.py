@@ -198,15 +198,17 @@ def query_doctor_slots(
     utc_start: datetime,
     utc_end: datetime,
 ) -> list[dict[str, Any]]:
-    start_key = utc_start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_key = (utc_end - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    start_epoch = int(utc_start.timestamp())
+    end_epoch = int((utc_end - timedelta(seconds=1)).timestamp())
     table = get_slots_table()
     slots: list[dict[str, Any]] = []
     query_args = {
-        "IndexName": "gsi_doctor_time",
         "KeyConditionExpression": (
             Key("doctor_id").eq(doctor_id)
-            & Key("start_time").between(start_key, end_key)
+            & Key("slot_sk").between(
+                f"{start_epoch}#",
+                f"{end_epoch}#\uffff",
+            )
         ),
     }
 
@@ -1490,7 +1492,7 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     upcoming_rows = execute_query(upcoming_query, (doctor_id,))
     upcoming_appointments_count = int(upcoming_rows[0]["cnt"]) if upcoming_rows else 0
 
-    # 3. Today's slots count from DynamoDB gsi_doctor_time
+    # 3. Today's slots count from the slots table primary key
     today_slots_count = 0
     timezone_name = str(profile.get("timezone") or "UTC")
     local_today = datetime.now(ZoneInfo(timezone_name)).date()
