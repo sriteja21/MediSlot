@@ -134,8 +134,11 @@
     if (Number.isNaN(parsed.getTime())) return String(value);
     return new Intl.DateTimeFormat(undefined, {
       timeZone: patientTimezone,
-      dateStyle: options.dateStyle || 'medium',
-      timeStyle: options.timeStyle || 'short',
+      year: 'numeric',
+      month: options.dateStyle === 'short' ? 'numeric' : 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
       timeZoneName: 'short',
     }).format(parsed);
   }
