@@ -128,6 +128,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const phonePattern = /^\+?[0-9][0-9\s\-]{6,19}$/;
     if (payload.phone && !phonePattern.test(payload.phone)) errors.phone = 'Enter a valid phone number.';
     if (payload.emergency_contact_phone && !phonePattern.test(payload.emergency_contact_phone)) errors.emergency_contact_phone = 'Enter a valid phone number.';
+    const patientDigits = payload.phone.replace(/\D/g, '');
+    const emergencyDigits = payload.emergency_contact_phone.replace(/\D/g, '');
+    if (patientDigits && emergencyDigits && patientDigits === emergencyDigits) {
+      errors.emergency_contact_phone = 'Emergency contact phone must differ from your phone number.';
+    }
     if (Boolean(payload.emergency_contact_name) !== Boolean(payload.emergency_contact_phone)) {
       errors.emergency_contact_name = 'Enter both emergency contact fields or leave both empty.';
       errors.emergency_contact_phone = 'Enter both emergency contact fields or leave both empty.';

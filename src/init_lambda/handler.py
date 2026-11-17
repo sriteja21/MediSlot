@@ -14,20 +14,26 @@ Environment variables:
 
 Required dependencies:
     PyMySQL==1.1.1
+    bcrypt==4.2.1
     cryptography
 """
 
 import json
 import os
+import re
+import secrets
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
+import bcrypt
 import boto3
 import pymysql
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from pymysql.connections import Connection
 
@@ -35,6 +41,7 @@ from pymysql.connections import Connection
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from shared.logging_utils import (
+    current_correlation_id,
     get_correlation_id,
     get_logger,
     log_error,
@@ -66,6 +73,10 @@ DB_PASSWORD_PARAMETER_NAME = os.environ.get(
 ).strip()
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev").strip().lower()
+SLOT_MATERIALISER_FUNCTION_NAME = os.environ.get(
+    "SLOT_MATERIALISER_FUNCTION_NAME", ""
+).strip()
 
 MAX_CONNECTION_ATTEMPTS = 12
 INITIAL_RETRY_DELAY_SECONDS = 5
@@ -119,6 +130,40 @@ ssm_client = boto3.client(
     "ssm",
     region_name=AWS_REGION,
 )
+lambda_client = boto3.client(
+    "lambda",
+    region_name=AWS_REGION,
+    config=Config(
+        connect_timeout=CONNECTION_TIMEOUT_SECONDS,
+        read_timeout=900,
+        retries={"max_attempts": 1},
+    ),
+)
+
+SAMPLE_HOSPITAL_IDS = (
+    "a0000000-0000-0000-0000-000000000001",
+    "a0000000-0000-0000-0000-000000000002",
+    "a0000000-0000-0000-0000-000000000003",
+)
+
+SAMPLE_DOCTORS = (
+    ("Aarav", "Sample", "Cardiology", 0, 7, 650.00),
+    ("Ananya", "Sample", "Dermatology", 1, 5, 550.00),
+    ("Arjun", "Sample", "General Medicine", 2, 12, 500.00),
+    ("Diya", "Sample", "Endocrinology", 0, 9, 600.00),
+    ("Ishaan", "Sample", "Neurology", 1, 15, 800.00),
+    ("Kavya", "Sample", "Obstetrics and Gynaecology", 2, 8, 650.00),
+    ("Meera", "Sample", "Paediatrics", 0, 6, 550.00),
+    ("Neel", "Sample", "Psychiatry", 1, 11, 700.00),
+    ("Priya", "Sample", "Orthopaedics", 2, 14, 750.00),
+    ("Rohan", "Sample", "Pulmonology", 0, 10, 650.00),
+    ("Sana", "Sample", "Cardiology", 1, 4, 600.00),
+    ("Vihaan", "Sample", "Dermatology", 2, 18, 850.00),
+    ("Zoya", "Sample", "General Medicine", 0, 3, 500.00),
+    ("Kabir", "Sample", "Neurology", 1, 16, 800.00),
+    ("Nisha", "Sample", "Paediatrics", 2, 13, 700.00),
+)
+DEMO_DOCTOR_PASSWORD = "Demo@12345"
 
 
 # ============================================================
@@ -153,6 +198,9 @@ def validate_configuration() -> None:
 
     if DB_PORT < 1 or DB_PORT > 65535:
         raise ValueError("DB_PORT must be between 1 and 65535.")
+
+    if ENVIRONMENT not in {"dev", "test", "prod"}:
+        raise ValueError("ENVIRONMENT must be dev, test, or prod.")
 
     if not SCHEMA_FILE.is_file():
         raise FileNotFoundError(
@@ -385,6 +433,285 @@ def execute_schema(
         raise
 
 
+def seed_sample_doctors(connection: Connection) -> int:
+    """Idempotently create fictional, searchable doctors and weekly schedules."""
+    specialization_ids: dict[str, int] = {}
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT specialization_id, name FROM specializations"
+        )
+        for specialization_id, name in cursor.fetchall():
+            specialization_ids[str(name)] = int(specialization_id)
+
+        cursor.execute(
+            "SELECT consultation_type_id FROM consultation_catalog "
+            "WHERE consultation_type_id = %s",
+            ("STANDARD",),
+        )
+        if not cursor.fetchone():
+            raise RuntimeError(
+                "The STANDARD consultation catalog entry is missing."
+            )
+
+        try:
+            for index, sample in enumerate(SAMPLE_DOCTORS, start=1):
+                first_name, last_name, specialization, hospital_index, experience, fee = sample
+                doctor_id = str(
+                    uuid5(NAMESPACE_URL, f"medislot-demo-doctor-{index:02d}")
+                )
+                user_id = str(
+                    uuid5(NAMESPACE_URL, f"medislot-demo-user-{index:02d}")
+                )
+                consultation_type_id = str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"medislot-demo-consultation-{index:02d}",
+                    )
+                )
+                email = f"doctor{index:02d}@sample.medislot.example"
+                cursor.execute(
+                    "SELECT license_number FROM doctors WHERE doctor_id = %s",
+                    (doctor_id,),
+                )
+                existing_doctor_license = cursor.fetchone()
+                license_number = (
+                    existing_doctor_license[0]
+                    if existing_doctor_license
+                    and re.fullmatch(r"MCI-\d{5}", existing_doctor_license[0])
+                    else _new_sample_license(cursor, doctor_id)
+                )
+
+                if specialization not in specialization_ids:
+                    raise RuntimeError(
+                        "A sample doctor specialization is missing from the catalog."
+                    )
+
+                cursor.execute(
+                    """
+                    SELECT user_id, role, is_active
+                    FROM users WHERE email = %s
+                    """,
+                    (email,),
+                )
+                existing_user = cursor.fetchone()
+                if existing_user and (
+                    existing_user[0] != user_id
+                    or existing_user[1] != "DOCTOR"
+                    or not existing_user[2]
+                ):
+                    raise RuntimeError(
+                        "A sample doctor email conflicts with an existing account."
+                    )
+
+                password_hash = bcrypt.hashpw(
+                    DEMO_DOCTOR_PASSWORD.encode("utf-8"),
+                    bcrypt.gensalt(rounds=12),
+                ).decode("utf-8")
+                if not existing_user:
+                    cursor.execute(
+                        """
+                        INSERT IGNORE INTO users (
+                            user_id, email, password_hash, role, is_active
+                        ) VALUES (%s, %s, %s, 'DOCTOR', TRUE)
+                        """,
+                        (user_id, email, password_hash),
+                    )
+                    cursor.execute(
+                        "SELECT user_id, role, is_active FROM users WHERE email = %s",
+                        (email,),
+                    )
+                    existing_user = cursor.fetchone()
+                    if not existing_user or (
+                        existing_user[0] != user_id
+                        or existing_user[1] != "DOCTOR"
+                        or not existing_user[2]
+                    ):
+                        raise RuntimeError(
+                            "A sample doctor account could not be created safely."
+                        )
+                cursor.execute(
+                    "UPDATE users SET password_hash = %s WHERE user_id = %s",
+                    (password_hash, user_id),
+                )
+
+                cursor.execute(
+                    """
+                    INSERT IGNORE INTO doctors (
+                        doctor_id, user_id, hospital_id, first_name,
+                        last_name, license_number, experience_years,
+                        qualification, timezone, languages, is_verified
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, 'Asia/Kolkata', %s, TRUE
+                    )
+                    """,
+                    (
+                        doctor_id,
+                        user_id,
+                        SAMPLE_HOSPITAL_IDS[hospital_index],
+                        first_name,
+                        last_name,
+                        license_number,
+                        experience,
+                        "Demo profile - fictional sample data",
+                        "English, Kannada, Hindi",
+                    ),
+                )
+                cursor.execute(
+                    "SELECT user_id FROM doctors WHERE doctor_id = %s",
+                    (doctor_id,),
+                )
+                existing_doctor = cursor.fetchone()
+                if not existing_doctor or existing_doctor[0] != user_id:
+                    raise RuntimeError(
+                        "A sample doctor profile conflicts with existing data."
+                    )
+                cursor.execute(
+                    "SELECT license_number FROM doctors WHERE doctor_id = %s",
+                    (doctor_id,),
+                )
+                current_license = cursor.fetchone()
+                if not current_license:
+                    raise RuntimeError(
+                        "A sample doctor license could not be verified."
+                    )
+                if not re.fullmatch(r"MCI-\d{5}", current_license[0]):
+                    license_number = _new_sample_license(cursor, doctor_id)
+                    cursor.execute(
+                        "UPDATE doctors SET license_number = %s WHERE doctor_id = %s",
+                        (license_number, doctor_id),
+                    )
+
+                cursor.execute(
+                    """
+                    INSERT IGNORE INTO doctor_specializations (
+                        doctor_id, specialization_id
+                    ) VALUES (%s, %s)
+                    """,
+                    (doctor_id, specialization_ids[specialization]),
+                )
+                cursor.execute(
+                    """
+                    INSERT IGNORE INTO consultation_types (
+                        consultation_type_id, doctor_id, catalog_type_id,
+                        fee, capacity, is_active
+                    ) VALUES (%s, %s, 'STANDARD', %s, 1, TRUE)
+                    """,
+                    (consultation_type_id, doctor_id, fee),
+                )
+                cursor.execute(
+                    """
+                    SELECT doctor_id, catalog_type_id
+                    FROM consultation_types
+                    WHERE consultation_type_id = %s
+                    """,
+                    (consultation_type_id,),
+                )
+                existing_consultation = cursor.fetchone()
+                if not existing_consultation or existing_consultation != (
+                    doctor_id,
+                    "STANDARD",
+                ):
+                    raise RuntimeError(
+                        "A sample doctor consultation type conflicts with existing data."
+                    )
+
+                start_time, end_time = (
+                    ("09:00:00", "12:00:00")
+                    if index % 2
+                    else ("14:00:00", "17:00:00")
+                )
+                weekdays = sorted(
+                    {((index + offset - 1) % 5) + 1 for offset in range(3)}
+                )
+                for day_of_week in weekdays:
+                    pattern_id = str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            "medislot-demo-availability-"
+                            f"{index:02d}-{day_of_week}",
+                        )
+                    )
+                    cursor.execute(
+                        """
+                        INSERT IGNORE INTO availability_patterns (
+                            pattern_id, consultation_type_id, day_of_week,
+                            start_time, end_time, is_active
+                        ) VALUES (%s, %s, %s, %s, %s, TRUE)
+                        """,
+                        (
+                            pattern_id,
+                            consultation_type_id,
+                            day_of_week,
+                            start_time,
+                            end_time,
+                        ),
+                    )
+
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    log_info(
+        "sample_doctors_seeded",
+        "Fictional sample doctors and availability were ensured",
+        result_count=len(SAMPLE_DOCTORS),
+    )
+    return len(SAMPLE_DOCTORS)
+
+
+def _new_sample_license(cursor: Any, doctor_id: str) -> str:
+    """Generate an unused five-digit MCI-shaped identifier for demo data."""
+    for _ in range(100):
+        license_number = f"MCI-{secrets.randbelow(100000):05d}"
+        cursor.execute(
+            "SELECT doctor_id FROM doctors WHERE license_number = %s",
+            (license_number,),
+        )
+        owner = cursor.fetchone()
+        if not owner or owner[0] == doctor_id:
+            return license_number
+    raise RuntimeError("Could not allocate a unique sample doctor license.")
+
+
+def invoke_slot_materialiser() -> dict[str, Any]:
+    """Generate DynamoDB slots from the seeded availability patterns."""
+    if not SLOT_MATERIALISER_FUNCTION_NAME:
+        raise ValueError(
+            "SLOT_MATERIALISER_FUNCTION_NAME is not configured."
+        )
+
+    correlation_id = current_correlation_id()
+    payload: dict[str, Any] = {}
+    if correlation_id:
+        payload["headers"] = {"X-Correlation-ID": correlation_id}
+
+    response = lambda_client.invoke(
+        FunctionName=SLOT_MATERIALISER_FUNCTION_NAME,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    result_payload = response["Payload"].read()
+    result = json.loads(result_payload or b"{}")
+    if (
+        response.get("FunctionError")
+        or not isinstance(result, dict)
+        or result.get("statusCode") != 200
+    ):
+        raise RuntimeError("Slot materialisation did not complete successfully.")
+
+    materialisation = result.get("body")
+    if not isinstance(materialisation, dict):
+        materialisation = {}
+    log_info(
+        "sample_doctor_slots_materialised",
+        "Sample doctor availability was materialised into slots",
+        result_count=materialisation.get("total_generated"),
+    )
+    return materialisation
+
+
 # ============================================================
 # SCHEMA VERIFICATION
 # ============================================================
@@ -610,6 +937,15 @@ def initialize_database() -> dict[str, Any]:
         )
 
         apply_schema_migrations(connection)
+
+        if ENVIRONMENT in {"dev", "test"}:
+            seed_sample_doctors(connection)
+            invoke_slot_materialiser()
+        else:
+            log_info(
+                "sample_doctors_seed_skipped",
+                "Sample doctor seeding is disabled in production",
+            )
 
         verified_tables = verify_schema(connection)
 

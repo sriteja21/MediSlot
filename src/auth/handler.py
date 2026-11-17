@@ -419,20 +419,36 @@ def validate_patient_profile(body: dict[str, Any]) -> dict[str, Any]:
             emergency_phone,
             "emergency_contact_phone",
         )
- 
+
+    patient_phone = (
+        validate_phone(body.get("phone"), "phone")
+        if body.get("phone") not in (None, "")
+        else None
+    )
+    emergency_name = optional_text(
+        body,
+        "emergency_contact_name",
+        150,
+    )
+    if bool(emergency_name) != bool(emergency_phone):
+        raise ValueError(
+            "emergency_contact_name and emergency_contact_phone must both be provided or both be empty."
+        )
+    if (
+        patient_phone
+        and emergency_phone
+        and re.sub(r"\D", "", patient_phone)
+        == re.sub(r"\D", "", emergency_phone)
+    ):
+        raise ValueError(
+            "phone and emergency_contact_phone must be different."
+        )
+
     return {
         "date_of_birth": dob.isoformat(),
         "gender": normalized_gender,
-        "phone": (
-            validate_phone(body.get("phone"), "phone")
-            if body.get("phone") not in (None, "")
-            else None
-        ),
-        "emergency_contact_name": optional_text(
-            body,
-            "emergency_contact_name",
-            150,
-        ),
+        "phone": patient_phone,
+        "emergency_contact_name": emergency_name,
         "emergency_contact_phone": emergency_phone,
     }
  
@@ -441,6 +457,11 @@ def validate_doctor_profile(body: dict[str, Any]) -> dict[str, Any]:
     """Validate the doctor-specific registration fields."""
  
     licence_number = required_text(body, "licence_number", 50)
+    if not re.fullmatch(r"MCI-\d{5}", licence_number, re.IGNORECASE):
+        raise ValueError(
+            "licence_number must use the format MCI-12345."
+        )
+    licence_number = licence_number.upper()
  
     specialisation_ids = body.get("specialisation_ids")
     if specialisation_ids is None:

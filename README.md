@@ -14,7 +14,7 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 
 ## Deployment
 
-The GitHub Actions workflow deploys Network, Data, IAM, initializes the database schema and sample registration catalogs, then deploys the SAM application and EC2 portal. A push deploys to `dev`; `workflow_dispatch` can select `dev`, `test`, or `prod`. The sample hospitals are fictional; replace them with the real provider catalog before production use.
+The GitHub Actions workflow deploys Network, Data, IAM, and the database initializer, then deploys the SAM application before initializing the database. In `dev` and `test`, the initializer idempotently adds 15 fictional, verified demo doctors, their consultation types, and weekly availability, then invokes the slot materialiser so their slots are available immediately. Every demo account uses the shared demo password `Demo@12345`; this is intentionally a public development credential and must never be used for real accounts. Each initializer run resets the demo accounts to this password. Sample doctors use fictional `MCI-` plus five-digit identifiers; this format check does not verify a real medical license. Sample doctor seeding is skipped in `prod`; sample hospitals are fictional and should be replaced with the real provider catalog before production use. A push deploys to `dev`; `workflow_dispatch` can select `dev`, `test`, or `prod`.
 
 Configure these GitHub environment secrets:
 

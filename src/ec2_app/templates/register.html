@@ -74,7 +74,7 @@
         <div class="form-grid-2">
           <div class="form-group">
             <label for="licence_number">Medical licence number</label>
-            <input type="text" id="licence_number" name="licence_number" class="form-control" placeholder="MCI-104928" maxlength="50" required>
+            <input type="text" id="licence_number" name="licence_number" class="form-control" placeholder="MCI-12345" pattern="[Mm][Cc][Ii]-[0-9]{5}" title="Enter a licence number in the format MCI-12345." maxlength="9" required>
           </div>
           <div class="form-group">
             <label for="hospital_id">Hospital</label>
@@ -147,6 +147,10 @@
     const loginLink = document.getElementById('loginLink');
     const patientFields = document.getElementById('patientFields');
     const doctorFields = document.getElementById('doctorFields');
+    const registrationForm = document.getElementById('registrationForm');
+    const patientPhone = document.getElementById('phone');
+    const emergencyName = document.getElementById('emergency_contact_name');
+    const emergencyPhone = document.getElementById('emergency_contact_phone');
     const doctorOptionsReady = {{ 'true' if specialisations and hospitals else 'false' }};
     const roleOptions = [...document.querySelectorAll('[data-role-choice]')];
 
@@ -173,6 +177,27 @@
 
     roleOptions.forEach(option => option.addEventListener('click', () => setRole(option.dataset.roleChoice)));
     setRole(roleInput.value);
+
+    registrationForm.addEventListener('submit', event => {
+      emergencyPhone.setCustomValidity('');
+      if (roleInput.value !== 'patient') return;
+
+      const patientDigits = patientPhone.value.replace(/\D/g, '');
+      const emergencyDigits = emergencyPhone.value.replace(/\D/g, '');
+      if (Boolean(emergencyName.value.trim()) !== Boolean(emergencyPhone.value.trim())) {
+        emergencyPhone.setCustomValidity('Enter both emergency contact fields or leave both empty.');
+      } else if (patientDigits && emergencyDigits && patientDigits === emergencyDigits) {
+        emergencyPhone.setCustomValidity('Emergency contact phone must differ from your phone number.');
+      }
+
+      if (!emergencyPhone.checkValidity()) {
+        event.preventDefault();
+        emergencyPhone.reportValidity();
+      }
+    });
+    [patientPhone, emergencyName, emergencyPhone].forEach(field => {
+      field.addEventListener('input', () => emergencyPhone.setCustomValidity(''));
+    });
 
     const picker = document.getElementById('specialisation-picker');
     const summary = document.getElementById('specialisation-summary');

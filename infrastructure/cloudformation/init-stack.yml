@@ -129,6 +129,15 @@ Resources:
                   StringEquals:
                     kms:ViaService: !Sub "ssm.${AWS::Region}.${AWS::URLSuffix}"
 
+        - PolicyName: InvokeSlotMaterialiser
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:MediSlot-SlotMaterialiser-${Environment}"
+
         - PolicyName: CloudWatchLogs
           PolicyDocument:
             Version: "2012-10-17"
@@ -181,6 +190,8 @@ Resources:
             Fn::ImportValue: !Sub "MediSlot-DatabaseName-${Environment}"
           DB_USERNAME: medislot_admin
           DB_PASSWORD_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/database/master-password-secure"
+          ENVIRONMENT: !Ref Environment
+          SLOT_MATERIALISER_FUNCTION_NAME: !Sub "MediSlot-SlotMaterialiser-${Environment}"
           LOG_LEVEL: !Ref LogLevel
 
       Tags:

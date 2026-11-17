@@ -364,7 +364,8 @@ jobs:
           test -f .aws-sam/build/template.yaml
           test -d .aws-sam/build/DatabaseInitializerFunction
           test -d .aws-sam/build/DatabaseInitializerFunction/pymysql
-          echo "Database initializer build output includes PyMySQL."
+          test -d .aws-sam/build/DatabaseInitializerFunction/bcrypt
+          echo "Database initializer build output includes PyMySQL and bcrypt."
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -404,20 +405,6 @@ jobs:
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --parameter-overrides "${CFN_PARAMETER_OVERRIDES[@]}"
-
-          RESULT_FILE="$RUNNER_TEMP/medislot-db-initializer-result.json"
-          aws lambda invoke \
-            --function-name "medislot-db-initializer-${ENVIRONMENT}" \
-            --region "$AWS_REGION" \
-            --cli-binary-format raw-in-base64-out \
-            --payload '{}' \
-            "$RESULT_FILE" > /dev/null
-
-          if [[ "$(jq -r '.status' "$RESULT_FILE")" != "SUCCESS" ]]; then
-            jq . "$RESULT_FILE"
-            echo "::error::MediSlot database initialization failed."
-            exit 1
-          fi
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -589,13 +576,57 @@ jobs:
             --output text
 
 # ============================================================
+# INITIALIZE DATABASE AFTER THE SLOT MATERIALISER IS DEPLOYED
+# ============================================================
+
+  initialize-database:
+    name: Initialize Database and Seed Demo Doctors
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-database-initializer
+      - deploy-application
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Initialize database and materialize sample slots
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          RESULT_FILE="$RUNNER_TEMP/medislot-db-initializer-result.json"
+          aws lambda invoke \
+            --function-name "medislot-db-initializer-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            "$RESULT_FILE" > /dev/null
+
+          if [[ "$(jq -r '.status' "$RESULT_FILE")" != "SUCCESS" ]]; then
+            jq . "$RESULT_FILE"
+            echo "::error::MediSlot database initialization or sample slot materialisation failed."
+            exit 1
+          fi
+
+# ============================================================
 # DEPLOY EC2 FLASK PORTAL
 # ============================================================
 
   deploy-ec2-app:
     name: Deploy EC2 Flask Portal
     runs-on: ubuntu-latest
-    needs: deploy-application
+    needs: initialize-database
 
     if: >
       github.event_name == 'workflow_dispatch' ||

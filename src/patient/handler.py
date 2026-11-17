@@ -229,6 +229,20 @@ def _validate_profile(payload: Any) -> tuple[dict[str, Any] | None, dict[str, st
         errors["emergency_contact_name"] = "Enter both emergency contact name and phone, or leave both empty."
         errors["emergency_contact_phone"] = "Enter both emergency contact name and phone, or leave both empty."
 
+    phone = normalized.get("phone")
+    emergency_phone = normalized.get("emergency_contact_phone")
+    if (
+        isinstance(phone, str)
+        and isinstance(emergency_phone, str)
+        and phone
+        and emergency_phone
+        and re.sub(r"\D", "", phone)
+        == re.sub(r"\D", "", emergency_phone)
+    ):
+        errors["emergency_contact_phone"] = (
+            "Emergency contact phone must differ from your phone number."
+        )
+
     if errors:
         return None, errors
 
