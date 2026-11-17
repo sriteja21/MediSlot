@@ -33,7 +33,11 @@ document.addEventListener('DOMContentLoaded', () => {
     page = 1;
     navigate(true);
   });
-  ['doctorNameFilter', 'doctorHospitalFilter', 'doctorSpecialisationFilter', 'doctorCityFilter'].forEach(id => {
+  document.getElementById('doctorHospitalFilter').addEventListener('change', () => {
+    page = 1;
+    navigate(true);
+  });
+  ['doctorNameFilter', 'doctorSpecialisationFilter', 'doctorCityFilter'].forEach(id => {
     const field = document.getElementById(id);
     field.addEventListener('input', () => {
       window.clearTimeout(debounceTimer);
@@ -103,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const options = await MediSlotPatient.api('/api/doctors/options');
       populateDatalist('doctorSpecialisations', options.specialisations || []);
       populateDatalist('doctorCities', options.cities || []);
-      renderHospitals(options.hospitals || []);
+      populateHospitals(options.hospitals || []);
       const pageSizeSelect = document.getElementById('doctorPageSize');
       const configuredMax = Number(options.max_page_size);
       if (!Number.isInteger(configuredMax) || configuredMax < 1) {
@@ -128,34 +132,26 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
   }
 
-  function renderHospitals(hospitals) {
-    const container = document.getElementById('hospitalBrowseList');
-    container.replaceChildren();
-    if (!hospitals.length) {
-      document.getElementById('hospitalBrowse').hidden = true;
-      return;
-    }
-
+  function populateHospitals(hospitals) {
+    const select = document.getElementById('doctorHospitalFilter');
+    const selectedHospital = new URLSearchParams(window.location.search).get('hospital')
+      || select.value;
+    const uniqueHospitals = new Map();
     hospitals.forEach(hospital => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'hospital-browse-card';
-      const name = document.createElement('strong');
-      name.textContent = hospital.name;
-      const location = document.createElement('span');
-      location.textContent = hospital.city || 'Location not listed';
-      button.append(name, location);
-      button.addEventListener('click', () => {
-        document.getElementById('doctorHospitalFilter').value = hospital.name;
-        page = 1;
-        navigate(true);
-        document.getElementById('doctorResultsSection').scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        });
-      });
-      container.appendChild(button);
+      if (hospital.name && !uniqueHospitals.has(hospital.name)) {
+        uniqueHospitals.set(hospital.name, hospital);
+      }
     });
+    select.replaceChildren(new Option('All hospitals', ''));
+    uniqueHospitals.forEach(hospital => {
+      select.add(new Option(
+        hospital.city ? `${hospital.name} · ${hospital.city}` : hospital.name,
+        hospital.name,
+        false,
+        hospital.name === selectedHospital
+      ));
+    });
+    select.value = uniqueHospitals.has(selectedHospital) ? selectedHospital : '';
   }
 
   async function loadDoctors() {

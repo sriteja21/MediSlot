@@ -19,7 +19,9 @@
     </label>
     <label class="patient-search-field">
       <span>Hospital</span>
-      <input class="form-control" id="doctorHospitalFilter" name="hospital" type="search" autocomplete="off" placeholder="Search hospitals">
+      <select class="form-control" id="doctorHospitalFilter" name="hospital">
+        <option value="">All hospitals</option>
+      </select>
     </label>
     <label class="patient-search-field">
       <span>Specialisation</span>
@@ -45,16 +47,6 @@
       <button class="btn btn-secondary" id="clearDoctorFilters" type="button">Clear filters</button>
     </div>
   </form>
-
-  <section class="patient-search-section hospital-browse" id="hospitalBrowse" aria-labelledby="hospitalBrowseTitle">
-    <div class="patient-section-heading">
-      <div>
-        <h2 id="hospitalBrowseTitle">Browse by hospital</h2>
-        <p>Choose a hospital to see its verified doctors and active consultation options.</p>
-      </div>
-    </div>
-    <div id="hospitalBrowseList" class="hospital-browse-list"></div>
-  </section>
 
   <section class="patient-search-section" aria-labelledby="doctorResultsTitle" id="doctorResultsSection">
     <div class="patient-section-heading">

@@ -530,6 +530,37 @@ a:hover {
   font-family: inherit;
 }
 
+.doctor-filter-form .form-control {
+  color: #f1f5f9;
+  background-color: #202633;
+  border-color: #3a4658;
+}
+
+.doctor-filter-form select.form-control {
+  color-scheme: dark;
+}
+
+.doctor-filter-form select.form-control option {
+  color: #f1f5f9;
+  background-color: #202633;
+}
+
+.doctor-filter-form select.form-control option:checked {
+  color: #062b27;
+  background-color: #64e0c3;
+}
+
+.doctor-filter-form .form-control:focus {
+  border-color: #64e0c3;
+  background-color: #252e3d;
+  box-shadow: 0 0 0 3px rgba(100, 224, 195, 0.2);
+}
+
+.doctor-filter-form .form-control::placeholder {
+  color: #a7b3c5;
+  opacity: 1;
+}
+
 .form-control:focus {
   border-color: var(--accent);
   background-color: rgba(255, 255, 255, 0.08);
@@ -2027,6 +2058,7 @@ select.form-control option {
 .patient-filter-chip { cursor: pointer; }
 .doctor-filter-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); }
 .doctor-filter-form label { display: grid; gap: 0.35rem; color: var(--text-muted); font-size: 0.82rem; }
+.doctor-filter-form label > span { color: #cbd5e1; }
 .doctor-filter-actions { display: flex; align-items: end; gap: 0.6rem; }
 .patient-search-section { margin-top: 1.4rem; }
 .patient-section-heading { margin-bottom: 0.7rem; }
@@ -2046,10 +2078,6 @@ select.form-control option {
 .doctor-card-consultations span { padding: 0.25rem 0.55rem; border: 1px solid rgba(100, 224, 195, 0.22); border-radius: 999px; color: #c9d5e5; background: rgba(100, 224, 195, 0.06); font-size: 0.75rem; }
 .doctor-card-fee { color: #fff; font-weight: 600; white-space: nowrap; }
 .doctor-card-action { grid-column: 2 / 4; color: #64e0c3; font-size: 0.82rem; }
-.hospital-browse-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.65rem; }
-.hospital-browse-card { display: grid; gap: 0.2rem; padding: 0.8rem 0.9rem; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.025); text-align: left; cursor: pointer; }
-.hospital-browse-card:hover { border-color: rgba(100, 224, 195, 0.55); background: rgba(100, 224, 195, 0.06); }
-.hospital-browse-card span { color: var(--text-muted); font-size: 0.8rem; }
 .patient-week-controls { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin: 0.75rem 0; }
 .patient-week-controls strong { color: #fff; font-size: 0.9rem; }
 .patient-slot-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.85rem; margin: 0.8rem 0; }
