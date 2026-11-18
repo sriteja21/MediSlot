@@ -33,7 +33,6 @@ from uuid import NAMESPACE_URL, uuid5
 import bcrypt
 import boto3
 import pymysql
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from pymysql.connections import Connection
 
@@ -41,7 +40,6 @@ from pymysql.connections import Connection
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from shared.logging_utils import (
-    current_correlation_id,
     get_correlation_id,
     get_logger,
     log_error,
@@ -74,9 +72,6 @@ DB_PASSWORD_PARAMETER_NAME = os.environ.get(
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev").strip().lower()
-SLOT_MATERIALISER_FUNCTION_NAME = os.environ.get(
-    "SLOT_MATERIALISER_FUNCTION_NAME", ""
-).strip()
 
 MAX_CONNECTION_ATTEMPTS = 12
 INITIAL_RETRY_DELAY_SECONDS = 5
@@ -129,15 +124,6 @@ SCHEMA_FILE = Path(__file__).resolve().parent / "schema.sql"
 ssm_client = boto3.client(
     "ssm",
     region_name=AWS_REGION,
-)
-lambda_client = boto3.client(
-    "lambda",
-    region_name=AWS_REGION,
-    config=Config(
-        connect_timeout=CONNECTION_TIMEOUT_SECONDS,
-        read_timeout=900,
-        retries={"max_attempts": 1},
-    ),
 )
 
 SAMPLE_HOSPITAL_IDS = (
@@ -675,43 +661,6 @@ def _new_sample_license(cursor: Any, doctor_id: str) -> str:
     raise RuntimeError("Could not allocate a unique sample doctor license.")
 
 
-def invoke_slot_materialiser() -> dict[str, Any]:
-    """Generate DynamoDB slots from the seeded availability patterns."""
-    if not SLOT_MATERIALISER_FUNCTION_NAME:
-        raise ValueError(
-            "SLOT_MATERIALISER_FUNCTION_NAME is not configured."
-        )
-
-    correlation_id = current_correlation_id()
-    payload: dict[str, Any] = {}
-    if correlation_id:
-        payload["headers"] = {"X-Correlation-ID": correlation_id}
-
-    response = lambda_client.invoke(
-        FunctionName=SLOT_MATERIALISER_FUNCTION_NAME,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(payload).encode("utf-8"),
-    )
-    result_payload = response["Payload"].read()
-    result = json.loads(result_payload or b"{}")
-    if (
-        response.get("FunctionError")
-        or not isinstance(result, dict)
-        or result.get("statusCode") != 200
-    ):
-        raise RuntimeError("Slot materialisation did not complete successfully.")
-
-    materialisation = result.get("body")
-    if not isinstance(materialisation, dict):
-        materialisation = {}
-    log_info(
-        "sample_doctor_slots_materialised",
-        "Sample doctor availability was materialised into slots",
-        result_count=materialisation.get("total_generated"),
-    )
-    return materialisation
-
-
 # ============================================================
 # SCHEMA VERIFICATION
 # ============================================================
@@ -940,7 +889,6 @@ def initialize_database() -> dict[str, Any]:
 
         if ENVIRONMENT in {"dev", "test"}:
             seed_sample_doctors(connection)
-            invoke_slot_materialiser()
         else:
             log_info(
                 "sample_doctors_seed_skipped",

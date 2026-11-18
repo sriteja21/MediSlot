@@ -615,8 +615,24 @@ jobs:
 
           if [[ "$(jq -r '.status' "$RESULT_FILE")" != "SUCCESS" ]]; then
             jq . "$RESULT_FILE"
-            echo "::error::MediSlot database initialization or sample slot materialisation failed."
+            echo "::error::MediSlot database initialization or sample doctor seeding failed."
             exit 1
+          fi
+
+          if [[ "$ENVIRONMENT" == "dev" || "$ENVIRONMENT" == "test" ]]; then
+            SLOT_RESULT_FILE="$RUNNER_TEMP/medislot-slot-materialiser-result.json"
+            aws lambda invoke \
+              --function-name "MediSlot-SlotMaterialiser-${ENVIRONMENT}" \
+              --region "$AWS_REGION" \
+              --cli-binary-format raw-in-base64-out \
+              --payload '{}' \
+              "$SLOT_RESULT_FILE" > /dev/null
+
+            if ! jq -e '.statusCode == 200' "$SLOT_RESULT_FILE" > /dev/null; then
+              jq . "$SLOT_RESULT_FILE"
+              echo "::error::MediSlot sample slot materialisation failed."
+              exit 1
+            fi
           fi
 
 # ============================================================
