@@ -1,0 +1,156 @@
+{% extends "patient/_layout.html" %}
+
+{% block title %}My Profile | MediSlot{% endblock %}
+
+{% block page_content %}
+<section class="patient-screen" data-patient-page="profile">
+  <header class="patient-page-heading">
+    <div>
+      <p class="patient-eyebrow">YOUR ACCOUNT</p>
+      <h1>My profile</h1>
+      <p class="patient-subtitle">Manage your personal and contact information.</p>
+    </div>
+    <button class="btn btn-secondary" type="button" id="editProfileButton" hidden>Edit profile</button>
+  </header>
+
+  <div id="profileLoading" class="patient-loading"><span class="spinner" aria-hidden="true"></span><span>Loading your profile...</span></div>
+  <div id="profileError" class="patient-state-error" role="alert" hidden></div>
+
+  <section id="profileView" class="patient-profile-view" hidden aria-live="polite">
+    <div class="patient-profile-section">
+      <h2>Personal details</h2>
+      <dl class="patient-profile-grid">
+        <div><dt>Name</dt><dd id="viewName"></dd></div>
+        <div><dt>Date of birth</dt><dd id="viewDob"></dd></div>
+        <div><dt>Gender</dt><dd id="viewGender"></dd></div>
+        <div><dt>Phone</dt><dd id="viewPhone"></dd></div>
+      </dl>
+    </div>
+    <div class="patient-profile-section">
+      <h2>Login and location</h2>
+      <dl class="patient-profile-grid">
+        <div><dt>Email</dt><dd id="viewEmail"></dd><small>Your email is your login and cannot be changed here.</small></div>
+        <div><dt>City</dt><dd id="viewCity"></dd></div>
+      </dl>
+    </div>
+    <div class="patient-profile-section">
+      <h2>Emergency contact</h2>
+      <dl class="patient-profile-grid">
+        <div><dt>Name</dt><dd id="viewEmergencyName"></dd></div>
+        <div><dt>Phone</dt><dd id="viewEmergencyPhone"></dd></div>
+      </dl>
+    </div>
+    <div class="patient-profile-section">
+      <h2>Notes</h2>
+      <p id="viewNotes" class="patient-profile-notes"></p>
+    </div>
+  </section>
+
+  <form id="profileForm" class="patient-profile-form" hidden novalidate>
+    <section class="patient-profile-section">
+      <h2>Personal details</h2>
+      <div class="patient-form-grid">
+        <div class="form-group">
+          <label for="profileName">Full name <span class="required-mark">*</span></label>
+          <input class="form-control" id="profileName" name="name" type="text" maxlength="150" required autocomplete="name" aria-describedby="nameError">
+          <small class="field-error" id="nameError" hidden></small>
+        </div>
+        <div class="form-group">
+          <label for="profileDob">Date of birth <span class="required-mark">*</span></label>
+          <input class="form-control" id="profileDob" name="date_of_birth" type="date" required aria-describedby="date_of_birthError">
+          <small class="field-error" id="date_of_birthError" hidden></small>
+        </div>
+        <div class="form-group">
+          <label for="profileGender">Gender</label>
+          <select class="form-control" id="profileGender" name="gender" aria-describedby="genderError">
+            <option value="">Prefer not to say</option>
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+            <option value="other">Other</option>
+          </select>
+          <small class="field-error" id="genderError" hidden></small>
+        </div>
+        <div class="form-group">
+          <label for="profilePhone">Phone</label>
+          <input class="form-control" id="profilePhone" name="phone" type="tel" autocomplete="tel" aria-describedby="phoneError">
+          <small class="field-error" id="phoneError" hidden></small>
+        </div>
+      </div>
+    </section>
+
+    <section class="patient-profile-section">
+      <h2>Login and location</h2>
+      <div class="patient-form-grid">
+        <div class="form-group">
+          <label for="profileEmail">Email</label>
+          <input class="form-control" id="profileEmail" name="email" type="email" readonly aria-describedby="emailNote">
+          <small id="emailNote" class="form-hint">Your email is your login and cannot be changed here.</small>
+        </div>
+        <div class="form-group">
+          <label for="profileCity">City</label>
+          <input class="form-control" id="profileCity" name="city" type="text" maxlength="100" aria-describedby="cityError">
+          <small class="field-error" id="cityError" hidden></small>
+        </div>
+      </div>
+    </section>
+
+    <section class="patient-profile-section">
+      <h2>Emergency contact</h2>
+      <div class="patient-form-grid">
+        <div class="form-group">
+          <label for="profileEmergencyName">Contact name</label>
+          <input class="form-control" id="profileEmergencyName" name="emergency_contact_name" type="text" maxlength="150" aria-describedby="emergency_contact_nameError">
+          <small class="field-error" id="emergency_contact_nameError" hidden></small>
+        </div>
+        <div class="form-group">
+          <label for="profileEmergencyPhone">Contact phone</label>
+          <input class="form-control" id="profileEmergencyPhone" name="emergency_contact_phone" type="tel" autocomplete="tel" aria-describedby="emergency_contact_phoneError">
+          <small class="field-error" id="emergency_contact_phoneError" hidden></small>
+        </div>
+      </div>
+    </section>
+
+    <section class="patient-profile-section">
+      <div class="patient-section-title-row">
+        <div><h2>Notes</h2><p>Private notes for your care profile.</p></div>
+        <span id="notesCounter" class="patient-character-count">0 / 2000</span>
+      </div>
+      <div class="form-group">
+        <label class="visually-hidden" for="profileNotes">Notes</label>
+        <textarea class="form-control" id="profileNotes" name="notes" rows="5" maxlength="2000" aria-describedby="notesError notesCounter"></textarea>
+        <small class="field-error" id="notesError" hidden></small>
+      </div>
+    </section>
+
+    <div class="patient-form-actions">
+      <button class="btn btn-secondary" type="button" id="cancelProfileEdit">Cancel</button>
+      <button class="btn btn-primary" type="submit" id="saveProfileButton">Save profile</button>
+    </div>
+  </form>
+
+  <section class="patient-danger-zone" aria-labelledby="deleteAccountTitle">
+    <div><p class="patient-eyebrow">DANGER ZONE</p><h2 id="deleteAccountTitle">Delete account</h2><p>This permanently removes your account and profile. There are no appointments in this milestone. In Milestone 5, deletion must not erase upcoming appointments; the account will be anonymised and those appointments retained under the appointment policy.</p></div>
+    <button class="btn btn-outline-danger" type="button" id="openDeleteDialog">Delete account</button>
+  </section>
+
+  <dialog class="patient-dialog" id="deleteDialog" aria-labelledby="deleteDialogTitle">
+    <form method="dialog" id="deleteDialogForm">
+      <p class="patient-eyebrow">PERMANENT ACTION</p>
+      <h2 id="deleteDialogTitle">Delete your account?</h2>
+      <p>This cannot be undone. There are no appointments in this milestone. In Milestone 5, upcoming appointments must be retained and the patient account anonymised rather than deleting those records.</p>
+      <label class="form-group" for="deleteConfirmation">Type DELETE to confirm
+        <input class="form-control" id="deleteConfirmation" type="text" autocomplete="off">
+      </label>
+      <div id="deleteError" class="patient-state-error" role="alert" hidden></div>
+      <div class="patient-form-actions">
+        <button class="btn btn-secondary" type="button" id="cancelDelete">Keep account</button>
+        <button class="btn btn-danger" type="button" id="confirmDelete" disabled>Delete permanently</button>
+      </div>
+    </form>
+  </dialog>
+</section>
+{% endblock %}
+
+{% block patient_scripts %}
+<script src="{{ url_for('static', filename='js/patient/profile.js') }}" defer></script>
+{% endblock %}

@@ -7,33 +7,25 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 - `src/auth` handles registration, login, refresh, and logout.
 - `src/authorizer` validates access tokens and enforces patient/doctor routes.
 - `src/doctor` provides the doctor profile, consultation type, availability, blackout, schedule, and dashboard API.
-- `src/patient` provides the patient appointment dashboard API.
+- `src/patient` provides patient profile management, public doctor discovery, doctor profiles, and slot availability. Booking and appointment-list workflows are out of scope for Milestone 4.
 - `src/slot_materialiser` reconciles the next 30 local calendar days in `MediSlot-Slots-*` after schedule changes and from a daily EC2 systemd timer; it does not use EventBridge. Blackout and obsolete availability slots remain visible with `is_active=false`, and reconciliation never modifies slots with booked seats.
 - `src/ec2_app` is the Flask portal served directly by EC2 Nginx over HTTPS, with Gunicorn bound to localhost. A stable Elastic IP is assigned by the EC2 portal stack.
-- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table uses `slot_id` as its key and `gsi_doctor_time` (`doctor_id`, `start_time`) for doctor schedules.
+- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table primary key is `(doctor_id, slot_sk)`, where `slot_sk` is `<start_epoch>#<consultation_type_id>`; doctor time-range reads query this primary key.
 
 ## Deployment
 
-The GitHub Actions workflow deploys Network, Data, IAM, initializes the database schema and sample registration catalogs, then deploys the SAM application and EC2 portal. A push deploys to `dev`; `workflow_dispatch` can select `dev`, `test`, or `prod`. The sample hospitals are fictional; replace them with the real provider catalog before production use.
+The GitHub Actions workflow deploys Network, Data, IAM, and the database initializer, then deploys the SAM application before initializing the database. In `dev` and `test`, the initializer idempotently adds 15 fictional, verified demo doctors, their consultation types, and weekly availability. After initialization, the workflow invokes the slot materialiser from the runner so the generated slots are available immediately; the VPC-attached initializer does not need network access to the Lambda API. Every demo account uses the shared demo password `Demo@12345`; this is intentionally a public development credential and must never be used for real accounts. Each initializer run resets the demo accounts to this password. Sample doctors use fictional `MCI-` plus five-digit identifiers; this format check does not verify a real medical license. Sample doctor seeding is skipped in `prod`; sample hospitals are fictional and should be replaced with the real provider catalog before production use. A push deploys to `dev`; `workflow_dispatch` can select `dev`, `test`, or `prod`.
 
 Configure these GitHub environment secrets:
 
-- `AWS_DEPLOYMENT_ROLE_ARN`: role assumed by the workflow. It needs CloudFormation deployment permissions, permission to write/delete the database SecureString parameter, and permission to upload SAM Lambda and EC2 artifacts to the environment's reports bucket.
+- `AWS_DEPLOYMENT_ROLE_ARN`: role assumed by the workflow. It needs CloudFormation deployment permissions, permission to invoke the database initializer and slot materialiser Lambdas, permission to write/delete the database SecureString parameter, and permission to upload SAM Lambda and EC2 artifacts to the environment's reports bucket.
 - `MEDISLOT_DB_MASTER_PASSWORD`: password for the RDS master account.
-- `AWS_REGION`: optional; defaults to `ap-south-1`.
+
+CloudFormation parameter values for every stack are maintained in `infrastructure/cloudformation/parameters/`. The deployment workflow resolves the selected environment in these files; the RDS master password remains a GitHub secret and is never stored in the repository. The AWS region is configured as `ap-south-1` in the workflow and stack parameter files. Doctor-search index rationale and the SQL needed to capture plans against the deployed RDS schema are in [docs/doctor-search-indexes.md](./docs/doctor-search-indexes.md). Patient deletion behavior, including the Milestone 5 appointment-preservation rule, is documented in [docs/patient-account-deletion.md](./docs/patient-account-deletion.md).
 
 Before deploying the application, provision SecureString parameters `/MediSlot/{environment}/auth/jwt-secret` and `/MediSlot/{environment}/database/application-credentials` in Systems Manager Parameter Store. The database credentials value must be JSON with `username` and `password`; CI writes the RDS master password to `/MediSlot/{environment}/database/master-password-secure` as a SecureString and removes the legacy plaintext parameter. The EC2 website does not require app-specific SSM parameters: bootstrap generates its Flask session key and a self-signed TLS certificate locally.
 
 For a first deployment, deploy the Network stack first and read its `PortalElasticIp` output:
-
-```powershell
-aws cloudformation deploy --template-file infrastructure/cloudformation/network-stack.yml --stack-name MediSlot-Network-dev --parameter-overrides Environment=dev
-$portalIp = aws cloudformation describe-stacks --stack-name MediSlot-Network-dev --query "Stacks[0].Outputs[?OutputKey=='PortalElasticIp'].OutputValue | [0]" --output text
-```
-
-No additional SSM setup is needed for the portal. Bootstrap creates a self-signed certificate containing `$portalIp` as an IP SAN and a random Flask secret stored locally with mode `0600`. Browsers will show a certificate trust warning; use the browser's advanced option to continue for development. For a trusted, warning-free public site, later replace this with a certificate from a trusted issuer.
-
-The portal accepts public HTTPS on TCP 443 only. It does not expose SSH or the Gunicorn port. Manage the instance with AWS Systems Manager Session Manager (`aws ssm start-session --target INSTANCE_ID --region AWS_REGION`); the instance role includes `AmazonSSMManagedInstanceCore`. The stack does not create Route 53 records.
 
 The EC2 stack downloads a versioned ZIP from the private reports bucket during instance bootstrap. CloudFormation waits up to 30 minutes for Nginx, Gunicorn, and `/healthz` to pass before marking the instance created; bootstrap output is written to `/var/log/medislot-bootstrap.log` and the EC2 console. Its health endpoint is `/healthz`; the stack output and deployment log include the HTTPS portal URL.
 

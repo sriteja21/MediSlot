@@ -16,6 +16,12 @@ Parameters:
       - prod
     Description: Deployment environment.
 
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [INFO, WARN, ERROR]
+    Description: Application log level for the database initializer Lambda.
+
 Resources:
   # ==========================================================
   # DATABASE INITIALIZER SECURITY GROUP
@@ -127,9 +133,13 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: Allow
+              - Sid: CreateInitializerLogGroup
+                Effect: Allow
+                Action: logs:CreateLogGroup
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-db-initializer-${Environment}"
+              - Sid: WriteInitializerLogs
+                Effect: Allow
                 Action:
-                  - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-db-initializer-${Environment}:*"
@@ -140,6 +150,8 @@ Resources:
 
   DatabaseInitializerFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: python3.12
     DependsOn:
       - DatabaseInitializerToRDSIngress
 
@@ -147,12 +159,11 @@ Resources:
       FunctionName: !Sub "medislot-db-initializer-${Environment}"
       Description: Initialize and verify MediSlot MySQL schema
       Runtime: python3.12
-      Handler: handler.lambda_handler
-      CodeUri: ../../src/init_lambda/
+      Handler: init_lambda.handler.lambda_handler
+      CodeUri: ../../src/
       MemorySize: 512
       Timeout: 900
       Role: !GetAtt DatabaseInitializerRole.Arn
-
       VpcConfig:
         SecurityGroupIds:
           - !Ref DatabaseInitializerSecurityGroup
@@ -170,6 +181,8 @@ Resources:
             Fn::ImportValue: !Sub "MediSlot-DatabaseName-${Environment}"
           DB_USERNAME: medislot_admin
           DB_PASSWORD_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/database/master-password-secure"
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: !Ref LogLevel
 
       Tags:
         Application: MediSlot

@@ -1,0 +1,10 @@
+[
+  { "ParameterKey": "Environment", "ParameterValue": "__ENVIRONMENT__" },
+  { "ParameterKey": "JWTSecretParameterName", "ParameterValue": "/MediSlot/__ENVIRONMENT__/auth/jwt-secret" },
+  { "ParameterKey": "DatabaseCredentialsParameterName", "ParameterValue": "/MediSlot/__ENVIRONMENT__/database/application-credentials" },
+  { "ParameterKey": "MaxDoctorPageSize", "ParameterValue": "50" },
+  { "ParameterKey": "MaxSlotRangeDays", "ParameterValue": "30" },
+  { "ParameterKey": "SlotWindowDays", "ParameterValue": "30" },
+  { "ParameterKey": "ProfilePhotoUrlTtlSeconds", "ParameterValue": "900" },
+  { "ParameterKey": "LogLevel", "ParameterValue": "INFO" }
+]

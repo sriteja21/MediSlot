@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION || 'ap-south-1' }}
+  AWS_REGION: ap-south-1
   PROJECT_NAME: MediSlot
 
   NETWORK_TEMPLATE: infrastructure/cloudformation/network-stack.yml
@@ -104,6 +104,28 @@ jobs:
             echo "Found: $template"
           done
 
+      - name: Validate CloudFormation parameter files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for parameters in \
+            infrastructure/cloudformation/parameters/network.json \
+            infrastructure/cloudformation/parameters/data.json \
+            infrastructure/cloudformation/parameters/iam.json \
+            infrastructure/cloudformation/parameters/initializer.json \
+            infrastructure/cloudformation/parameters/application.json \
+            infrastructure/cloudformation/parameters/ec2-portal.json
+          do
+            jq -e '
+              type == "array" and length > 0 and
+              all(.[]; (.ParameterKey | type == "string") and
+                        (.ParameterValue | type == "string")) and
+              ([.[].ParameterKey] | length == (unique | length))
+            ' "$parameters" > /dev/null
+            echo "Validated: $parameters"
+          done
+
       - name: Validate CloudFormation templates
         shell: bash
         run: |
@@ -168,14 +190,17 @@ jobs:
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-Network-${ENVIRONMENT}"
+          source infrastructure/scripts/cloudformation-parameters.sh
+          resolve_cfn_parameters \
+            infrastructure/cloudformation/parameters/network.json \
+            "$ENVIRONMENT"
 
           aws cloudformation deploy \
             --template-file "$NETWORK_TEMPLATE" \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT"
+            --parameter-overrides "${CFN_PARAMETER_OVERRIDES[@]}"
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -217,6 +242,11 @@ jobs:
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-Data-${ENVIRONMENT}"
+          source infrastructure/scripts/cloudformation-parameters.sh
+          resolve_cfn_parameters \
+            infrastructure/cloudformation/parameters/data.json \
+            "$ENVIRONMENT" \
+            "$DB_MASTER_PASSWORD"
 
           aws cloudformation deploy \
             --template-file "$DATA_TEMPLATE" \
@@ -224,9 +254,7 @@ jobs:
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              DBMasterPassword="$DB_MASTER_PASSWORD"
+            --parameter-overrides "${CFN_PARAMETER_OVERRIDES[@]}"
 
           aws ssm put-parameter \
             --name "/MediSlot/${ENVIRONMENT}/database/master-password-secure" \
@@ -277,20 +305,17 @@ jobs:
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-IAM-${ENVIRONMENT}"
-
-          JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
-          DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
+          source infrastructure/scripts/cloudformation-parameters.sh
+          resolve_cfn_parameters \
+            infrastructure/cloudformation/parameters/iam.json \
+            "$ENVIRONMENT"
 
           aws cloudformation deploy \
             --template-file "$IAM_TEMPLATE" \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              Region="$AWS_REGION" \
-              JWTSecretParameterName="$JWT_SECRET_PARAMETER_NAME" \
-              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME"
+            --parameter-overrides "${CFN_PARAMETER_OVERRIDES[@]}"
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -338,7 +363,9 @@ jobs:
 
           test -f .aws-sam/build/template.yaml
           test -d .aws-sam/build/DatabaseInitializerFunction
-          echo "Database initializer build output is ready for deployment."
+          test -d .aws-sam/build/DatabaseInitializerFunction/pymysql
+          test -d .aws-sam/build/DatabaseInitializerFunction/bcrypt
+          echo "Database initializer build output includes PyMySQL and bcrypt."
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -353,6 +380,10 @@ jobs:
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-DatabaseInitializer-${ENVIRONMENT}"
+          source infrastructure/scripts/cloudformation-parameters.sh
+          resolve_cfn_parameters \
+            infrastructure/cloudformation/parameters/initializer.json \
+            "$ENVIRONMENT"
           REPORTS_BUCKET="$(aws cloudformation describe-stacks \
             --stack-name "MediSlot-Data-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
@@ -373,22 +404,7 @@ jobs:
             --s3-prefix "lambda/${STACK_NAME}" \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT"
-
-          RESULT_FILE="$RUNNER_TEMP/medislot-db-initializer-result.json"
-          aws lambda invoke \
-            --function-name "medislot-db-initializer-${ENVIRONMENT}" \
-            --region "$AWS_REGION" \
-            --cli-binary-format raw-in-base64-out \
-            --payload '{}' \
-            "$RESULT_FILE" > /dev/null
-
-          if [[ "$(jq -r '.status' "$RESULT_FILE")" != "SUCCESS" ]]; then
-            jq . "$RESULT_FILE"
-            echo "::error::MediSlot database initialization failed."
-            exit 1
-          fi
+            --parameter-overrides "${CFN_PARAMETER_OVERRIDES[@]}"
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -527,9 +543,10 @@ jobs:
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-Application-${ENVIRONMENT}"
-
-          JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
-          DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
+          source infrastructure/scripts/cloudformation-parameters.sh
+          resolve_cfn_parameters \
+            infrastructure/cloudformation/parameters/application.json \
+            "$ENVIRONMENT"
           REPORTS_BUCKET="$(aws cloudformation describe-stacks \
             --stack-name "MediSlot-Data-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
@@ -550,10 +567,7 @@ jobs:
             --s3-prefix "lambda/${STACK_NAME}" \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              JWTSecretParameterName="$JWT_SECRET_PARAMETER_NAME" \
-              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME"
+            --parameter-overrides "${CFN_PARAMETER_OVERRIDES[@]}"
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -562,13 +576,73 @@ jobs:
             --output text
 
 # ============================================================
+# INITIALIZE DATABASE AFTER THE SLOT MATERIALISER IS DEPLOYED
+# ============================================================
+
+  initialize-database:
+    name: Initialize Database and Seed Demo Doctors
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-database-initializer
+      - deploy-application
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Initialize database and materialize sample slots
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          RESULT_FILE="$RUNNER_TEMP/medislot-db-initializer-result.json"
+          aws lambda invoke \
+            --function-name "medislot-db-initializer-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            "$RESULT_FILE" > /dev/null
+
+          if [[ "$(jq -r '.status' "$RESULT_FILE")" != "SUCCESS" ]]; then
+            jq . "$RESULT_FILE"
+            echo "::error::MediSlot database initialization or sample doctor seeding failed."
+            exit 1
+          fi
+
+          if [[ "$ENVIRONMENT" == "dev" || "$ENVIRONMENT" == "test" ]]; then
+            SLOT_RESULT_FILE="$RUNNER_TEMP/medislot-slot-materialiser-result.json"
+            aws lambda invoke \
+              --function-name "MediSlot-SlotMaterialiser-${ENVIRONMENT}" \
+              --region "$AWS_REGION" \
+              --cli-binary-format raw-in-base64-out \
+              --payload '{}' \
+              "$SLOT_RESULT_FILE" > /dev/null
+
+            if ! jq -e '.statusCode == 200' "$SLOT_RESULT_FILE" > /dev/null; then
+              jq . "$SLOT_RESULT_FILE"
+              echo "::error::MediSlot sample slot materialisation failed."
+              exit 1
+            fi
+          fi
+
+# ============================================================
 # DEPLOY EC2 FLASK PORTAL
 # ============================================================
 
   deploy-ec2-app:
     name: Deploy EC2 Flask Portal
     runs-on: ubuntu-latest
-    needs: deploy-application
+    needs: initialize-database
 
     if: >
       github.event_name == 'workflow_dispatch' ||
@@ -605,10 +679,12 @@ jobs:
           aws s3 cp "$ARTIFACT_PATH" "s3://${REPORTS_BUCKET}/${ARTIFACT_KEY}" \
             --region "$AWS_REGION"
 
-          PARAMETERS=(
-            Environment="$ENVIRONMENT"
-            AppArtifactKey="$ARTIFACT_KEY"
-          )
+          source infrastructure/scripts/cloudformation-parameters.sh
+          resolve_cfn_parameters \
+            infrastructure/cloudformation/parameters/ec2-portal.json \
+            "$ENVIRONMENT" \
+            "" \
+            "$ARTIFACT_KEY"
 
           aws cloudformation deploy \
             --template-file "$EC2_TEMPLATE" \
@@ -616,7 +692,7 @@ jobs:
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
-            --parameter-overrides "${PARAMETERS[@]}"
+            --parameter-overrides "${CFN_PARAMETER_OVERRIDES[@]}"
 
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
