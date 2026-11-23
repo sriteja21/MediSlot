@@ -149,7 +149,7 @@ function createDoctorCard(doctor) {
       <p>${escapeHtml(doctor.hospital_name || 'Hospital')} · ${Number(doctor.experience_years || 0)} years experience</p>
     </div>
     <div class="doctor-result-action">
-      <span>${doctor.starting_fee == null ? 'Fees vary' : `From ₹${Number(doctor.starting_fee).toFixed(2)}`}</span>
+      <span>${doctor.starting_fee == null ? 'Fees vary' : `From ${MediSlotMoney.formatINR(doctor.starting_fee)}`}</span>
       <a class="btn btn-secondary btn-sm" href="/patient/doctors/${encodeURIComponent(doctor.doctor_id)}">View &amp; book</a>
     </div>`;
   return card;
@@ -186,7 +186,7 @@ async function loadDoctorProfile(doctorId) {
     (selectedDoctor.consultations || []).forEach(consultation => {
       const option = document.createElement('option');
       option.value = consultation.consultation_type_id;
-      option.textContent = `${consultation.name} · ${consultation.duration_minutes} min · ₹${Number(consultation.fee).toFixed(2)}`;
+      option.textContent = `${consultation.name} · ${consultation.duration_minutes} min · ${MediSlotMoney.formatINR(consultation.fee)}`;
       selector.appendChild(option);
     });
     if (!selector.options.length || selector.options.length === 1) {
@@ -232,13 +232,12 @@ async function loadDoctorSlots() {
 
   loading.hidden = false;
   const params = new URLSearchParams({
+    doctor_id: selectedDoctor.doctor_id,
     date: document.getElementById('bookingDate').value,
     consultation_type_id: selectedConsultation,
   });
   try {
-    const data = await fetchJson(
-      `/api/patient/doctors/${encodeURIComponent(selectedDoctor.doctor_id)}/slots?${params}`
-    );
+    const data = await fetchJson(`/api/slots?${params}`);
     const slots = data.slots || [];
     document.getElementById('slotTimezone').textContent = data.timezone
       ? `Times shown in ${data.timezone}` : '';
@@ -348,7 +347,7 @@ function createAppointmentRow(appointment) {
     <td data-label="Hospital">${escapeHtml([appointment.hospital_name, appointment.hospital_city].filter(Boolean).join(', ') || '—')}</td>
     <td data-label="Consultation">${escapeHtml(appointment.consultation_type || 'Consultation')}</td>
     <td data-label="Status"><span class="badge ${statusClass}">${escapeHtml(status.replaceAll('_', ' '))}</span></td>
-    <td data-label="Fee">₹${Number(appointment.fee_amount || 0).toFixed(2)}</td>`;
+    <td data-label="Fee">${MediSlotMoney.formatINR(appointment.fee_amount || 0)}</td>`;
   return row;
 }
 
@@ -399,24 +398,15 @@ function toDateInputValue(value) {
 }
 
 function normalizeDateTime(value) {
-  const text = String(value || '').replace(' ', 'T');
-  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text) ? text : `${text}Z`;
+  return MediSlotTime.normalize(value);
 }
 
 function formatDateTime(value) {
-  if (!value) return 'Time unavailable';
-  const date = new Date(normalizeDateTime(value));
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return MediSlotTime.formatDateTime(value);
 }
 
 function formatSlotTime(value, timezone) {
-  if (!value) return 'Time unavailable';
-  const date = new Date(normalizeDateTime(value));
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleTimeString(undefined, {
-    timeZone: timezone || undefined,
-    hour: 'numeric', minute: '2-digit',
-  });
+  return MediSlotTime.formatTime(value, timezone);
 }
 
 function escapeHtml(value) {

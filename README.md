@@ -6,15 +6,18 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 
 - `src/auth` handles registration, login, refresh, and logout.
 - `src/authorizer` validates access tokens and enforces patient/doctor routes.
-- `src/doctor` provides the doctor profile, consultation type, availability, blackout, schedule, and dashboard API.
+- `src/doctor` provides doctor profile, consultation type mutation, availability, blackout, and dashboard APIs.
 - `src/patient` provides the patient appointment dashboard API.
+- `src/read_api` provides the shared authenticated `GET /slots` endpoint for doctor schedule (`date`) and patient availability (`doctor_id`, `date`, optional `consultation_type_id`) requests, plus the doctor consultation-type list and patient doctor-profile reads. The dedicated Lambda selects role-specific responses using authorizer context; reusable slot storage and seat rules live in `src/read_api/service.py`.
 - `src/slot_materialiser` reconciles the next 30 local calendar days in `MediSlot-Slots-*` after schedule changes and from a daily EC2 systemd timer; it does not use EventBridge. Blackout and obsolete availability slots remain visible with `is_active=false`, and reconciliation never modifies slots with booked seats.
-- `src/ec2_app` is the Flask portal served directly by EC2 Nginx over HTTPS, with Gunicorn bound to localhost. A stable Elastic IP is assigned by the EC2 portal stack.
-- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table uses `slot_id` as its key and `gsi_doctor_time` (`doctor_id`, `start_time`) for doctor schedules.
+- `src/ec2_app` is the Flask portal served directly by EC2 Nginx over HTTPS, with Gunicorn bound to localhost. Shared browser time and INR formatting helpers are in `src/ec2_app/static/js/shared.js`. A stable Elastic IP is assigned by the EC2 portal stack.
+- RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table uses `doctor_id` and `slot_sk` (`<start_epoch>#<consultation_type_id>`) as its primary key, `gsi_type_time` for single-slot lookup, and `gsi_doctor_time` (`doctor_id`, `start_time`) for schedule queries.
 
 ## Deployment
 
 The GitHub Actions workflow deploys Network, Data, IAM, initializes the database schema and sample registration catalogs, then deploys the SAM application and EC2 portal. A push deploys to `dev`; `workflow_dispatch` can select `dev`, `test`, or `prod`. The sample hospitals are fictional; replace them with the real provider catalog before production use.
+
+The parameter JSON bundles and `infrastructure/scripts/cloudformation-parameters.sh` are restored under `infrastructure/cloudformation/parameters/` and `infrastructure/scripts/`. They are not wired into the current deployment workflow, which uses inline overrides; reconcile their parameter keys with the current templates before using them for deployment.
 
 Configure these GitHub environment secrets:
 

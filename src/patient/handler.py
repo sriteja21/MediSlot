@@ -3,40 +3,22 @@
 import base64
 import json
 import logging
-import os
 import uuid
-from datetime import date, datetime, time as time_type, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
-from zoneinfo import ZoneInfo
-
-import boto3
-from boto3.dynamodb.conditions import Key
 
 from shared.database import database_transaction, execute_query
+from read_api.service import (
+    get_slot_by_id,
+    release_slot_seat,
+    reserve_slot_seat,
+    slot_availability_state,
+    slot_id_for_datetime,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
-ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
-SLOTS_TABLE_NAME = (
-    os.environ.get("SLOTS_TABLE_NAME")
-    or os.environ.get("SLOTS_TABLE")
-    or f"MediSlot-Slots-{ENVIRONMENT}"
-)
-
-_dynamodb_resource = None
-_slots_table = None
-
-
-def get_slots_table():
-    global _dynamodb_resource, _slots_table
-    if _slots_table is None:
-        _dynamodb_resource = boto3.resource("dynamodb", region_name=AWS_REGION)
-        _slots_table = _dynamodb_resource.Table(SLOTS_TABLE_NAME)
-    return _slots_table
 
 
 def _json_value(value: Any) -> Any:
@@ -96,10 +78,6 @@ def _coerce_utc_datetime(raw_value: Any) -> datetime | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
-
-
-def _slot_id_for_datetime(consultation_type_id: str, appointment_dt_utc: datetime) -> str:
-    return f"{consultation_type_id}#{int(appointment_dt_utc.timestamp())}"
 
 
 def _list_doctors(query_params: dict[str, str]) -> dict[str, Any]:
@@ -164,125 +142,8 @@ def _list_doctors(query_params: dict[str, str]) -> dict[str, Any]:
     return {"doctors": doctors, "total": total, "page": page, "limit": limit}
 
 
-def _get_doctor_profile(doctor_id: str) -> dict[str, Any] | None:
-    rows = execute_query(
-        """
-        SELECT d.doctor_id,
-               CONCAT_WS(' ', d.first_name, d.last_name) AS doctor_name,
-               d.experience_years,
-               d.qualification,
-               d.languages,
-               d.timezone,
-               d.profile_image_key,
-               h.name AS hospital_name,
-               h.address AS hospital_address,
-               h.phone_number AS hospital_phone,
-               GROUP_CONCAT(DISTINCT s.name ORDER BY s.name SEPARATOR ', ') AS specializations
-        FROM doctors d
-        JOIN hospitals h ON h.hospital_id = d.hospital_id
-        LEFT JOIN doctor_specializations ds ON ds.doctor_id = d.doctor_id
-        LEFT JOIN specializations s ON s.specialization_id = ds.specialization_id
-        WHERE d.doctor_id = %s AND d.is_verified = TRUE
-        GROUP BY d.doctor_id, d.first_name, d.last_name, d.experience_years,
-                 d.qualification, d.languages, d.timezone, d.profile_image_key,
-                 h.name, h.address, h.phone_number
-        LIMIT 1
-        """,
-        (doctor_id,),
-    )
-    if not rows:
-        return None
-
-    doctor = dict(rows[0])
-    offerings = execute_query(
-        """
-        SELECT ct.consultation_type_id, ct.catalog_type_id, catalog.name,
-               catalog.mode, catalog.duration_minutes, ct.fee, ct.capacity
-        FROM consultation_types ct
-        JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
-        WHERE ct.doctor_id = %s AND ct.is_active = TRUE
-        ORDER BY catalog.duration_minutes, catalog.name
-        """,
-        (doctor_id,),
-    )
-    doctor["consultations"] = offerings
-    return doctor
-
-
-def _get_doctor_slots(doctor_id: str, query_params: dict[str, str]) -> tuple[int, dict[str, Any]]:
-    raw_day = (query_params.get("date") or "").strip()
-    consultation_type_id = (query_params.get("consultation_type_id") or "").strip()
-    try:
-        selected_day = date.fromisoformat(raw_day)
-    except ValueError:
-        return 400, {"message": "A valid date in YYYY-MM-DD format is required."}
-
-    doctor_rows = execute_query(
-        "SELECT timezone FROM doctors WHERE doctor_id = %s AND is_verified = TRUE",
-        (doctor_id,),
-    )
-    if not doctor_rows:
-        return 404, {"message": "Doctor profile not found."}
-
-    timezone_name = doctor_rows[0].get("timezone") or "UTC"
-    try:
-        local_timezone = ZoneInfo(timezone_name)
-    except Exception:
-        local_timezone = timezone.utc
-        timezone_name = "UTC"
-
-    local_start = datetime.combine(selected_day, time_type.min, tzinfo=local_timezone)
-    local_end = datetime.combine(selected_day + timedelta(days=1), time_type.min, tzinfo=local_timezone)
-    start_utc = local_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_utc = local_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    table = get_slots_table()
-    slots: list[dict[str, Any]] = []
-    query_args: dict[str, Any] = {
-        "IndexName": "gsi_doctor_time",
-        "KeyConditionExpression": Key("doctor_id").eq(doctor_id)
-        & Key("start_time").between(start_utc, end_utc),
-    }
-    while True:
-        result = table.query(**query_args)
-        for item in result.get("Items", []):
-            if consultation_type_id and item.get("consultation_type_id") != consultation_type_id:
-                continue
-            capacity = int(item.get("capacity") or 0)
-            booked = int(item.get("booked_count") or 0)
-            if item.get("is_active") is not False and not item.get("is_blocked") and booked < capacity:
-                slots.append(item)
-        last_key = result.get("LastEvaluatedKey")
-        if not last_key:
-            break
-        query_args["ExclusiveStartKey"] = last_key
-
-    slots.sort(key=lambda slot: slot.get("start_time", ""))
-    return 200, {"date": selected_day.isoformat(), "timezone": timezone_name, "slots": slots}
-
-
 def _get_patient_id(authorizer: dict[str, Any]) -> str | None:
     return str(authorizer.get("userId") or authorizer.get("sub") or "").strip() or None
-
-
-def _get_slot_availability(consultation_type_id: str, appointment_datetime_utc: datetime) -> tuple[bool, str, dict[str, Any] | None]:
-    slot_id = _slot_id_for_datetime(consultation_type_id, appointment_datetime_utc)
-    slot = get_slots_table().get_item(Key={"slot_id": slot_id}).get("Item")
-    if not slot:
-        return False, "Selected consultation slot is not available yet.", None
-
-    if slot.get("is_active") is False:
-        return False, "This slot is inactive and cannot be booked.", slot
-
-    capacity = int(slot.get("capacity") or 0)
-    booked_count = int(slot.get("booked_count") or 0)
-    if capacity <= 0:
-        return False, "This consultation type has no available seats.", slot
-
-    if booked_count >= capacity:
-        return False, "This slot is already full. Please choose another time.", slot
-
-    return True, "ok", slot
 
 
 def _patient_booking_response(appointment_id: str, consultation_type_id: str, appointment_datetime_utc: datetime) -> dict[str, Any]:
@@ -392,18 +253,6 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
     if method == "GET" and path in {"/patients/doctors/search", "/patients/search/doctors"}:
         return _response(200, _list_doctors(event.get("queryStringParameters") or {}))
 
-    if method == "GET" and len(path_parts) == 3 and path_parts[:2] == ["patients", "doctors"]:
-        doctor = _get_doctor_profile(path_parts[2])
-        if not doctor:
-            return _response(404, {"message": "Doctor profile not found."})
-        return _response(200, {"doctor": doctor})
-
-    if method == "GET" and len(path_parts) == 4 and path_parts[:2] == ["patients", "doctors"] and path_parts[3] == "slots":
-        status, payload = _get_doctor_slots(
-            path_parts[2], event.get("queryStringParameters") or {}
-        )
-        return _response(status, payload)
-
     if method == "POST" and path == "/patients/me/appointments":
         payload = _get_request_body(event)
         consultation_type_id = str(payload.get("consultation_type_id") or "").strip()
@@ -456,26 +305,24 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
         if not consultation.get("is_verified"):
             return _response(409, {"message": "Doctor profile is not verified."})
 
-        valid_slot, message, slot = _get_slot_availability(consultation_type_id, appointment_dt_utc)
-        if not valid_slot:
+        slot_id = slot_id_for_datetime(consultation_type_id, appointment_dt_utc)
+        slot = get_slot_by_id(slot_id)
+        slot_state = slot_availability_state(slot)
+        if slot_state != "available":
+            message = {
+                "missing": "Selected consultation slot is not available yet.",
+                "inactive": "This slot is inactive and cannot be booked.",
+                "past": "Appointments must be scheduled in the future.",
+                "full": "This slot is already full. Please choose another time.",
+                "no_capacity": "This consultation type has no available seats.",
+            }[slot_state]
             return _response(409, {"message": message})
 
         appointment_id = str(uuid.uuid4())
         try:
-            get_slots_table().update_item(
-                Key={"slot_id": _slot_id_for_datetime(consultation_type_id, appointment_dt_utc)},
-                UpdateExpression="SET booked_count = if_not_exists(booked_count, :zero) + :inc",
-                ConditionExpression=(
-                    "is_active = :active AND "
-                    "(attribute_not_exists(booked_count) OR booked_count < :capacity)"
-                ),
-                ExpressionAttributeValues={
-                    ":inc": 1,
-                    ":zero": 0,
-                    ":capacity": int(consultation.get("capacity") or 1),
-                    ":active": True,
-                },
-                ReturnValues="UPDATED_NEW",
+            reserve_slot_seat(
+                slot,
+                int(consultation.get("capacity") or 1),
             )
         except Exception:
             return _response(409, {"message": "This slot has just been filled. Please select another time."})
@@ -493,12 +340,7 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
                     )
         except Exception:
             try:
-                get_slots_table().update_item(
-                    Key={"slot_id": _slot_id_for_datetime(consultation_type_id, appointment_dt_utc)},
-                    UpdateExpression="SET booked_count = booked_count - :one",
-                    ConditionExpression="booked_count > :zero",
-                    ExpressionAttributeValues={":one": 1, ":zero": 0},
-                )
+                release_slot_seat(slot)
             except Exception:
                 logger.exception("Could not release a reserved slot after appointment creation failed.")
             return _response(409, {"message": "Unable to confirm this appointment. Please refresh availability and try again."})

@@ -209,7 +209,7 @@
             <td>${escapeHtml(appt.patient_name || appt.patient_id || 'Registered Patient')}</td>
             <td><span class="badge badge-primary">${escapeHtml(appt.consultation_type_name || 'Standard')}</span></td>
             <td><span class="badge ${statusClass}">${escapeHtml(appt.status || 'CONFIRMED')}</span></td>
-            <td>₹${parseFloat(appt.fee_amount || 0).toFixed(2)}</td>
+            <td>${MediSlotMoney.formatINR(appt.fee_amount || 0)}</td>
           `;
           tbody.appendChild(tr);
         });
@@ -242,23 +242,7 @@
   }
 
   function formatAppointmentTime(value, timeZone) {
-    if (!value) return 'TBD';
-    const isoValue = String(value).includes('T')
-      ? String(value)
-      : String(value).replace(' ', 'T');
-    const utcValue = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(isoValue)
-      ? isoValue
-      : `${isoValue}Z`;
-    const date = new Date(utcValue);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleString(undefined, {
-      timeZone,
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    return MediSlotTime.formatAppointmentTime(value, timeZone);
   }
 </script>
 {% endblock %}

@@ -120,7 +120,7 @@ Resources:
   # ==========================================================
   # SHARED PYTHON LAMBDA LAYER
   #
-  # Source of truth: src/shared/
+  # Sources of truth: src/shared/ and src/read_api/service.py
   # The GitHub Actions workflow generates the layer package at
   # <repo-root>/.build/lambda-layers/shared-python/python/shared/
   # before sam validate / sam build / sam deploy run.
@@ -361,6 +361,51 @@ Resources:
               !Sub "MediSlot-RefreshTokensTableName-${Environment}"
 
   # ==========================================================
+  # SHARED READ API
+  # ==========================================================
+
+  MediSlotReadApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-ReadApiFunction-${Environment}"
+      Description: !Sub "Shared doctor and patient read API (${Environment})."
+      CodeUri: ../../src/read_api/
+      Handler: handler.lambda_handler
+      Timeout: 30
+      MemorySize: 512
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Events:
+        SlotsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /slots
+            Method: GET
+        DoctorConsultationTypesGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/consultation-types
+            Method: GET
+        PatientDoctorProfileGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/doctors/{doctor_id}
+            Method: GET
+
+  # ==========================================================
   # DOCTOR BUSINESS API
   # ==========================================================
 
@@ -368,7 +413,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "MediSlot-DoctorFunction-${Environment}"
-      Description: !Sub "MediSlot doctor profile and schedule API (${Environment})."
+      Description: !Sub "MediSlot doctor profile and configuration API (${Environment})."
       CodeUri: ../../src/doctor/
       Handler: handler.lambda_handler
       Timeout: 30
@@ -412,12 +457,6 @@ Resources:
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /doctors/me/photo-upload-url
-            Method: GET
-        ConsultationTypesGet:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /doctors/me/consultation-types
             Method: GET
         ConsultationTypesPost:
           Type: Api
@@ -479,12 +518,6 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /doctors/me/blackouts/{id}
             Method: DELETE
-        DoctorScheduleGet:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /doctors/me/schedule
-            Method: GET
         DoctorDashboardGet:
           Type: Api
           Properties:
@@ -525,18 +558,6 @@ Resources:
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /patients/doctors/search
-            Method: GET
-        PatientDoctorProfileGet:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /patients/doctors/{doctor_id}
-            Method: GET
-        PatientDoctorSlotsGet:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /patients/doctors/{doctor_id}/slots
             Method: GET
         PatientAppointmentCreate:
           Type: Api

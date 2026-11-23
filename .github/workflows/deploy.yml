@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Keep src/shared as the source of truth. Generate the layer package
+          # Keep src/shared and src/read_api as the source of truth. Generate the layer package
           # at the repository root, matching ContentUri in application-stack.yml.
           LAYER_ROOT="${GITHUB_WORKSPACE}/.build/lambda-layers/shared-python"
           LAYER_PYTHON_DIR="${LAYER_ROOT}/python"
@@ -64,14 +64,19 @@ jobs:
           test -f src/shared/config.py
           test -f src/shared/database.py
           test -f src/shared/logging_utils.py
+          test -f src/read_api/__init__.py
+          test -f src/read_api/service.py
 
           rm -rf "${LAYER_ROOT}"
           mkdir -p "${LAYER_PYTHON_DIR}"
           cp -R src/shared "${LAYER_PYTHON_DIR}/shared"
+          mkdir -p "${LAYER_PYTHON_DIR}/read_api"
+          cp src/read_api/__init__.py src/read_api/service.py "${LAYER_PYTHON_DIR}/read_api/"
 
           echo "Prepared shared layer package: ${LAYER_ROOT}"
           find "${LAYER_PYTHON_DIR}/shared" -maxdepth 1 -type f -print
           test -f "${LAYER_PYTHON_DIR}/shared/__init__.py"
+          test -f "${LAYER_PYTHON_DIR}/read_api/service.py"
 
       - name: Configure Python
         uses: actions/setup-python@v5
@@ -428,14 +433,19 @@ jobs:
           test -f src/shared/config.py
           test -f src/shared/database.py
           test -f src/shared/logging_utils.py
+          test -f src/read_api/__init__.py
+          test -f src/read_api/service.py
 
           rm -rf "${LAYER_ROOT}"
           mkdir -p "${LAYER_PYTHON_DIR}"
           cp -R src/shared "${LAYER_PYTHON_DIR}/shared"
+          mkdir -p "${LAYER_PYTHON_DIR}/read_api"
+          cp src/read_api/__init__.py src/read_api/service.py "${LAYER_PYTHON_DIR}/read_api/"
 
           echo "Prepared shared layer package: ${LAYER_ROOT}"
           find "${LAYER_PYTHON_DIR}/shared" -maxdepth 1 -type f -print
           test -f "${LAYER_PYTHON_DIR}/shared/__init__.py"
+          test -f "${LAYER_PYTHON_DIR}/read_api/service.py"
 
       - name: Configure Python
         uses: actions/setup-python@v5
@@ -453,14 +463,17 @@ jobs:
           set -euo pipefail
 
           test -f src/patient/requirements.txt
+          test -f src/read_api/requirements.txt
           grep -Fxq 'PyMySQL==1.1.1' src/patient/requirements.txt
+          grep -Fxq 'PyMySQL==1.1.1' src/read_api/requirements.txt
 
           sam build \
             --template-file "$APPLICATION_TEMPLATE" \
             --region "$AWS_REGION"
 
           test -d .aws-sam/build/MediSlotPatientFunction/pymysql
-          echo "Patient Lambda build includes PyMySQL."
+          test -d .aws-sam/build/MediSlotReadApiFunction/pymysql
+          echo "Patient and shared read API Lambdas include PyMySQL."
 
       - name: Upload built application artifact
         uses: actions/upload-artifact@v4

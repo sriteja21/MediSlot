@@ -236,7 +236,7 @@
       consultationTypes.forEach(ct => {
         const opt = document.createElement('option');
         opt.value = ct.id;
-        opt.textContent = `${ct.kind} (${ct.duration_minutes}m, ₹${parseFloat(ct.fee_amount || 0).toFixed(0)})`;
+        opt.textContent = `${ct.kind} (${ct.duration_minutes}m, ${MediSlotMoney.formatINR(ct.fee_amount || 0, 0)})`;
         select.appendChild(opt);
       });
     } catch (err) {

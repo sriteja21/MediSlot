@@ -3,7 +3,7 @@ MediSlot Slot Materialiser Lambda
 
 Generates appointment slots for the rolling 30-day window [tomorrow, today + 30 days]
 based on active availability patterns and consultation types, excluding blackout dates.
-Slots are written idempotently into DynamoDB with ConditionExpression=Attr('slot_id').not_exists().
+Slots are written idempotently into DynamoDB with a conditional slot-key write.
 """
 
 import logging
@@ -17,10 +17,11 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import boto3
-from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
 from shared.database import execute_query
+from read_api.service import query_doctor_slots, slot_sort_key, to_utc_datetime
 
 # ============================================================
 # LOGGING & CONFIGURATION
@@ -78,42 +79,8 @@ def time_ranges_overlap(start_a: time, end_a: time, start_b: time, end_b: time) 
     return start_a < end_b and start_b < end_a
 
 
-def to_utc_datetime(value: Any) -> datetime:
-    """Normalize a DynamoDB ISO timestamp to an aware UTC datetime."""
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
-
-
-def query_doctor_slots(
-    doctor_id: str,
-    utc_start: datetime,
-    utc_end: datetime,
-) -> list[dict[str, Any]]:
-    """Return every slot for a doctor in a UTC time range."""
-    query_args: dict[str, Any] = {
-        "IndexName": "gsi_doctor_time",
-        "KeyConditionExpression": (
-            Key("doctor_id").eq(doctor_id)
-            & Key("start_time").between(
-                utc_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                (utc_end - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            )
-        ),
-    }
-    slots: list[dict[str, Any]] = []
-    while True:
-        result = slots_table.query(**query_args)
-        slots.extend(result.get("Items", []))
-        last_key = result.get("LastEvaluatedKey")
-        if not last_key:
-            return slots
-        query_args["ExclusiveStartKey"] = last_key
-
-
 def update_unbooked_slot(
-    slot_id: str,
+    slot: dict[str, Any],
     *,
     is_active: bool,
     is_blocked: bool,
@@ -143,7 +110,10 @@ def update_unbooked_slot(
         values[":end_time"] = end_time
 
     update_args: dict[str, Any] = {
-        "Key": {"slot_id": slot_id},
+        "Key": {
+            "doctor_id": str(slot["doctor_id"]),
+            "slot_sk": str(slot.get("slot_sk") or slot_sort_key(str(slot["slot_id"]))),
+        },
         "UpdateExpression": "SET " + ", ".join(expressions),
         "ConditionExpression": (
             "attribute_not_exists(booked_count) OR booked_count = :zero"
@@ -330,7 +300,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     existing_by_doctor: dict[str, dict[str, dict[str, Any]]] = {}
     booked_ranges_by_doctor: dict[str, list[tuple[str, datetime, datetime]]] = {}
     for doc_id, (_, _, utc_start, utc_end) in doctor_windows.items():
-        existing_slots = query_doctor_slots(doc_id, utc_start, utc_end)
+        existing_slots = query_doctor_slots(
+            doc_id,
+            utc_start,
+            utc_end,
+            table=slots_table,
+        )
         existing_by_doctor[doc_id] = {
             str(item["slot_id"]): item for item in existing_slots
         }
@@ -461,6 +436,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         item = {
                             "slot_id": slot_id,
                             "doctor_id": doc_id,
+                            "slot_sk": f"{start_epoch}#{consultation_type_id}",
                             "consultation_type_id": consultation_type_id,
                             "start_time": start_iso,
                             "end_time": end_iso,
@@ -491,7 +467,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 try:
                     slots_table.put_item(
                         Item=item,
-                        ConditionExpression=Attr("slot_id").not_exists(),
+                        ConditionExpression=Attr("slot_sk").not_exists(),
                     )
                     total_generated += 1
                 except ClientError as exc:
@@ -507,7 +483,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 continue
 
             if update_unbooked_slot(
-                slot_id,
+                existing,
                 is_active=bool(item["is_active"]),
                 is_blocked=bool(item["is_blocked"]),
                 inactive_reason=str(item["inactive_reason"]),
@@ -525,7 +501,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 total_skipped += 1
                 continue
             if update_unbooked_slot(
-                slot_id,
+                existing,
                 is_active=False,
                 is_blocked=False,
                 inactive_reason="AVAILABILITY_CHANGED",

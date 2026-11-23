@@ -234,7 +234,7 @@
           const month = String(iter.getMonth() + 1).padStart(2, '0');
           const day = String(iter.getDate()).padStart(2, '0');
           const dateKey = `${year}-${month}-${day}`;
-          const resp = await fetch(`/api/doctor/schedule?date=${encodeURIComponent(dateKey)}`);
+          const resp = await fetch(`/api/slots?date=${encodeURIComponent(dateKey)}`);
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           const data = await resp.json();
           const slots = Array.isArray(data) ? data : (data.slots || []);
@@ -243,7 +243,7 @@
           allAppointments.push(...appointments);
         }
       } else {
-        const resp = await fetch(`/api/doctor/schedule?date=${encodeURIComponent(dateStr)}`);
+        const resp = await fetch(`/api/slots?date=${encodeURIComponent(dateStr)}`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         allSlots = Array.isArray(data) ? data : (data.slots || []);
@@ -294,7 +294,7 @@
             AVAILABILITY_CHANGED: 'Inactive',
           }[slot.inactive_reason] || (isBlocked ? 'Blocked' : 'Inactive');
           inactiveCount++;
-        } else if (booked >= capacity) {
+        } else if (Number(slot.free_seats) <= 0) {
           statusClass = 'full';
           statusBadgeClass = 'badge-full';
           statusLabel = 'Full';
@@ -321,10 +321,10 @@
               <article class="slot-appointment">
                 <strong>${escapeHtml(appointment.patient_name || `Patient ${appointment.patient_id || ''}`)}</strong>
                 <span>${escapeHtml(appointment.status || 'Booked')} · ${escapeHtml(appointment.id || '')}</span>
-                <span>Fee: ₹${parseFloat(appointment.fee_amount || 0).toFixed(2)}</span>
+                <span>Fee: ${MediSlotMoney.formatINR(appointment.fee_amount || 0)}</span>
               </article>
             `).join('')
-          : `<p class="slot-vacancy">No bookings. ${Math.max(0, capacity - booked)} seat${capacity - booked === 1 ? '' : 's'} available.</p>`;
+          : `<p class="slot-vacancy">No bookings. ${slot.free_seats ?? 0} seat${slot.free_seats === 1 ? '' : 's'} available.</p>`;
 
         const card = document.createElement('div');
         card.className = `slot-card status-${statusClass}`;
@@ -375,13 +375,7 @@
   }
 
   function formatIsoTime(isoStr) {
-    if (!isoStr) return '--:--';
-    try {
-      const d = new Date(isoStr);
-      return d.toLocaleTimeString([], { timeZone: DOCTOR_TIMEZONE, hour: '2-digit', minute: '2-digit', hour12: false });
-    } catch (e) {
-      return isoStr.substring(11, 16);
-    }
+    return MediSlotTime.formatScheduleTime(isoStr, DOCTOR_TIMEZONE);
   }
 
   function escapeHtml(str) {

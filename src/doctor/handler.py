@@ -3,10 +3,9 @@ MediSlot Doctor Business Lambda Handler.
 
 Responsibilities:
 - Profile management (view, update, photo upload presigned URL)
-- Consultation types (list, create, update, soft-delete)
+- Consultation types (create, update, soft-delete)
 - Availability patterns (list active, create, delete)
 - Blackout dates (list with date range, add with duplicate check, delete)
-- Schedule day-view (DynamoDB GSI1-DoctorStart query enriched with RDS appointment counts)
 - Doctor dashboard (aggregated profile, upcoming appointments, today's slots, patients served)
 
 Security & Auth:
@@ -29,7 +28,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import boto3
-from boto3.dynamodb.conditions import Key
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -43,6 +41,7 @@ from shared.database import (
     execute_query,
     execute_write,
 )
+from read_api.service import local_day_utc_bounds, query_doctor_slots
 
 # ============================================================
 # LOGGING SETUP
@@ -58,11 +57,6 @@ logger.setLevel(logging.INFO)
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 
-SLOTS_TABLE_NAME = (
-    os.environ.get("SLOTS_TABLE_NAME")
-    or os.environ.get("SLOTS_TABLE")
-    or f"MediSlot-Slots-{ENVIRONMENT}"
-)
 SLOT_MATERIALISER_FUNCTION_NAME = os.environ.get(
     "SLOT_MATERIALISER_FUNCTION_NAME",
     "",
@@ -85,20 +79,17 @@ CORS_HEADERS = {
 ROUTE_METHODS = {
     "/doctors/me": {"GET", "PATCH"},
     "/doctors/me/photo-upload-url": {"GET"},
-    "/doctors/me/consultation-types": {"GET", "POST"},
+    "/doctors/me/consultation-types": {"POST"},
     "/doctors/me/consultation-types/{id}": {"PATCH", "DELETE"},
     "/doctors/me/availability": {"GET", "POST"},
     "/doctors/me/availability/{id}": {"PATCH", "DELETE"},
     "/doctors/me/blackouts": {"GET", "POST"},
     "/doctors/me/blackouts/{id}": {"DELETE"},
-    "/doctors/me/schedule": {"GET"},
     "/doctors/me/dashboard": {"GET"},
 }
 
 # AWS resource singletons
 _s3_client = None
-_dynamodb_resource = None
-_slots_table = None
 _lambda_client = None
 _doctor_columns_cache = None
 
@@ -109,15 +100,6 @@ def get_s3_client():
     if _s3_client is None:
         _s3_client = boto3.client("s3", region_name=AWS_REGION)
     return _s3_client
-
-
-def get_slots_table():
-    """Return cached DynamoDB Table resource for SLOTS."""
-    global _dynamodb_resource, _slots_table
-    if _slots_table is None:
-        _dynamodb_resource = boto3.resource("dynamodb", region_name=AWS_REGION)
-        _slots_table = _dynamodb_resource.Table(SLOTS_TABLE_NAME)
-    return _slots_table
 
 
 def trigger_slot_materialisation() -> None:
@@ -145,44 +127,6 @@ def trigger_slot_materialisation() -> None:
         )
     except Exception:
         logger.exception("Could not trigger slot materialization.")
-
-
-def get_local_day_utc_bounds(day: date, timezone_name: str) -> tuple[datetime, datetime]:
-    local_timezone = ZoneInfo(timezone_name or "UTC")
-    local_start = datetime.combine(day, time_type.min, tzinfo=local_timezone)
-    local_end = datetime.combine(day + timedelta(days=1), time_type.min, tzinfo=local_timezone)
-    return (
-        local_start.astimezone(timezone.utc),
-        local_end.astimezone(timezone.utc),
-    )
-
-
-def query_doctor_slots(
-    doctor_id: str,
-    utc_start: datetime,
-    utc_end: datetime,
-) -> list[dict[str, Any]]:
-    start_key = utc_start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_key = (utc_end - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    table = get_slots_table()
-    slots: list[dict[str, Any]] = []
-    query_args = {
-        "IndexName": "gsi_doctor_time",
-        "KeyConditionExpression": (
-            Key("doctor_id").eq(doctor_id)
-            & Key("start_time").between(start_key, end_key)
-        ),
-    }
-
-    while True:
-        result = table.query(**query_args)
-        slots.extend(result.get("Items", []))
-        last_key = result.get("LastEvaluatedKey")
-        if not last_key:
-            break
-        query_args["ExclusiveStartKey"] = last_key
-
-    return slots
 
 
 # ============================================================
@@ -287,8 +231,6 @@ def parse_route(raw_path: str) -> tuple[str, str | None]:
                 return ("/doctors/me/availability", None)
             if third == "blackouts":
                 return ("/doctors/me/blackouts", None)
-            if third == "schedule":
-                return ("/doctors/me/schedule", None)
             if third == "dashboard":
                 return ("/doctors/me/dashboard", None)
 
@@ -568,38 +510,6 @@ def get_photo_upload_url(
             "expires_in": 300,
         },
     )
-
-
-def list_consultation_types(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]:
-    """
-    GET /doctors/me/consultation-types
-    List doctor's consultation types. Active only unless ?all=true is passed.
-    """
-    include_all = (query_params.get("all") or "").lower() == "true"
-
-    query = """
-        SELECT ct.consultation_type_id AS id, ct.doctor_id,
-               catalog.consultation_type_id AS catalog_type_id,
-               catalog.name AS kind, catalog.duration_minutes,
-               ct.fee AS fee_amount, ct.capacity, ct.is_active
-        FROM consultation_types ct
-        JOIN consultation_catalog catalog
-          ON catalog.consultation_type_id = ct.catalog_type_id
-        WHERE ct.doctor_id = %s
-    """
-    params: list[Any] = [doctor_id]
-    if not include_all:
-        query += " AND ct.is_active = TRUE"
-    query += " ORDER BY catalog.name ASC"
-    rows = execute_query(query, tuple(params))
-
-    for r in rows:
-        r["fee_amount"] = float(r["fee_amount"])
-        r["is_active"] = bool(r["is_active"])
-        r["capacity"] = int(r["capacity"])
-        r["duration_minutes"] = int(r["duration_minutes"])
-
-    return format_response(200, rows)
 
 
 def create_consultation_type(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1256,147 +1166,6 @@ def delete_blackout(doctor_id: str, blackout_id: str) -> dict[str, Any]:
     )
 
 
-def get_schedule(doctor_id: str, query_params: dict[str, str]) -> dict[str, Any]:
-    """
-    GET /doctors/me/schedule?date=YYYY-MM-DD
-    Day-view: query GSI1-DoctorStart over the doctor's local day and enrich
-    the slots with appointment counts from RDS.
-    """
-    date_str = query_params.get("date")
-    if not date_str or not date_str.strip():
-        raise ValueError("Query parameter 'date' (YYYY-MM-DD) is required.")
-
-    try:
-        parsed_date = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
-        clean_date_str = parsed_date.isoformat()
-    except ValueError:
-        raise ValueError("Query parameter 'date' must be in YYYY-MM-DD format.")
-
-    doctor_rows = execute_query(
-        "SELECT timezone FROM doctors WHERE doctor_id = %s",
-        (doctor_id,),
-    )
-    if not doctor_rows:
-        return format_response(404, {"error": "Doctor not found."})
-
-    timezone_name = str(doctor_rows[0].get("timezone") or "UTC")
-    try:
-        utc_start, utc_end = get_local_day_utc_bounds(parsed_date, timezone_name)
-    except Exception as exc:
-        raise ValueError("Doctor timezone is invalid.") from exc
-
-    slots = query_doctor_slots(doctor_id, utc_start, utc_end)
-    utc_start_db = utc_start.replace(tzinfo=None)
-    utc_end_db = utc_end.replace(tzinfo=None)
-
-    # Enrich with appointment counts from RDS appointments table
-    rds_counts_query = """
-        SELECT
-            a.consultation_type_id,
-            a.appointment_datetime,
-            COUNT(*) AS total_count,
-            SUM(CASE WHEN a.appointment_status = 'CONFIRMED' THEN 1 ELSE 0 END) AS confirmed_count,
-            SUM(CASE WHEN a.appointment_status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
-            SUM(CASE WHEN a.appointment_status IN ('CONFIRMED', 'COMPLETED') THEN 1 ELSE 0 END) AS active_count
-        FROM appointments a
-        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
-        WHERE ct.doctor_id = %s
-          AND a.appointment_datetime >= %s
-          AND a.appointment_datetime < %s
-        GROUP BY a.consultation_type_id, a.appointment_datetime
-    """
-    count_rows = execute_query(
-        rds_counts_query,
-        (doctor_id, utc_start_db, utc_end_db),
-    )
-
-    counts_by_slot: dict[str, dict[str, int]] = {}
-    for cr in count_rows:
-        appointment_datetime = cr["appointment_datetime"]
-        if appointment_datetime.tzinfo is None:
-            appointment_datetime = appointment_datetime.replace(tzinfo=timezone.utc)
-        slot_key = (
-            f"{cr['consultation_type_id']}#{int(appointment_datetime.timestamp())}"
-        )
-        counts_by_slot[slot_key] = {
-            "total": int(cr["total_count"] or 0),
-            "confirmed": int(cr["confirmed_count"] or 0),
-            "completed": int(cr["completed_count"] or 0),
-            "active": int(cr["active_count"] or 0),
-        }
-
-    for slot in slots:
-        s_id = slot.get("slot_id")
-        slot_counts = counts_by_slot.get(
-            s_id,
-            {"total": 0, "confirmed": 0, "completed": 0, "active": 0},
-        )
-        slot["appointment_count"] = slot_counts["active"]
-        slot["confirmed_count"] = slot_counts["confirmed"]
-        slot["total_appointments"] = slot_counts["total"]
-        if "booked_count" not in slot:
-            slot["booked_count"] = slot_counts["active"]
-
-    # Retrieve appointments on this date from RDS
-    appointments_query = """
-        SELECT
-                        a.appointment_id AS id,
-                        a.patient_id,
-                        CONCAT_WS(' ', p.first_name, p.last_name) AS patient_name,
-                        ct.doctor_id,
-                        a.consultation_type_id,
-                        a.appointment_datetime AS slot_start_utc,
-                        a.appointment_status AS status,
-                        COALESCE(
-                                (SELECT pay.amount FROM payments pay
-                                 WHERE pay.appointment_id = a.appointment_id
-                                     AND pay.payment_status = 'SUCCESS'
-                                 ORDER BY pay.created_at DESC LIMIT 1),
-                                ct.fee
-                        ) AS fee_amount,
-                        catalog.duration_minutes,
-                        a.created_at AS booked_at
-                FROM appointments a
-                JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
-                    JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
-                LEFT JOIN patients p ON p.patient_id = a.patient_id
-                WHERE ct.doctor_id = %s
-                    AND a.appointment_datetime >= %s
-                    AND a.appointment_datetime < %s
-                ORDER BY a.appointment_datetime ASC
-    """
-    appointments = execute_query(
-        appointments_query,
-        (doctor_id, utc_start_db, utc_end_db),
-    )
-    for appt in appointments:
-        appt["fee_amount"] = float(appt["fee_amount"])
-        appointment_datetime = appt["slot_start_utc"]
-        if appointment_datetime.tzinfo is None:
-            appointment_datetime = appointment_datetime.replace(tzinfo=timezone.utc)
-        appt["slot_start_utc"] = appointment_datetime.isoformat()
-        appt["slot_id"] = (
-            f"{appt['consultation_type_id']}#{int(appointment_datetime.timestamp())}"
-        )
-        appt["slot_end_utc"] = (
-            appointment_datetime + timedelta(minutes=int(appt.pop("duration_minutes")))
-        ).isoformat()
-
-    # Sort slots chronologically
-    slots.sort(key=lambda s: str(s.get("start_time", "")))
-
-    return format_response(
-        200,
-        {
-            "date": clean_date_str,
-            "slots": slots,
-            "appointments": appointments,
-            "total_slots": len(slots),
-            "total_appointments": len(appointments),
-        },
-    )
-
-
 def get_dashboard(doctor_id: str) -> dict[str, Any]:
     """
     GET /doctors/me/dashboard
@@ -1456,7 +1225,7 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     today_slots_count = 0
     timezone_name = str(profile.get("timezone") or "UTC")
     local_today = datetime.now(ZoneInfo(timezone_name)).date()
-    utc_start, utc_end = get_local_day_utc_bounds(local_today, timezone_name)
+    utc_start, utc_end = local_day_utc_bounds(local_today, timezone_name)
 
     today_appointments_rows = execute_query(
         """
@@ -1626,9 +1395,7 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
             )
 
         elif route_pattern == "/doctors/me/consultation-types":
-            if method == "GET":
-                return list_consultation_types(doctor_id, query_params)
-            elif method == "POST":
+            if method == "POST":
                 return create_consultation_type(doctor_id, body)
 
         elif route_pattern == "/doctors/me/consultation-types/{id}":
@@ -1662,9 +1429,6 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
             if not resource_id:
                 return format_response(400, {"error": "Blackout date ID is required in URL path."})
             return delete_blackout(doctor_id, resource_id)
-
-        elif route_pattern == "/doctors/me/schedule":
-            return get_schedule(doctor_id, query_params)
 
         elif route_pattern == "/doctors/me/dashboard":
             return get_dashboard(doctor_id)

@@ -576,13 +576,6 @@ def api_doctor_blackouts():
     return jsonify(res), status
 
 
-@app.route("/api/doctor/schedule", methods=["GET"])
-def api_doctor_schedule():
-    """Proxy to GET /doctors/me/schedule?date=..."""
-    status, res = api_call("GET", "/doctors/me/schedule", params=request.args)
-    return jsonify(res), status
-
-
 @app.route("/api/doctor/dashboard", methods=["GET"])
 def api_doctor_dashboard():
     """Proxy to GET /doctors/me/dashboard."""
@@ -614,13 +607,11 @@ def api_patient_doctor_profile(doctor_id: str):
     return jsonify(res), status
 
 
-@app.route("/api/patient/doctors/<doctor_id>/slots", methods=["GET"])
-def api_patient_doctor_slots(doctor_id: str):
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-    status, res = api_call(
-        "GET", f"/patients/doctors/{doctor_id}/slots", params=request.args
-    )
+@app.route("/api/slots", methods=["GET"])
+def api_slots():
+    if session.get("role") not in {"doctor", "patient"}:
+        return jsonify({"message": "Sign-in required."}), 403
+    status, res = api_call("GET", "/slots", params=request.args)
     return jsonify(res), status
 
 
