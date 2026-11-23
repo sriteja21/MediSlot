@@ -583,6 +583,17 @@ def api_doctor_dashboard():
     return jsonify(res), status
 
 
+@app.route("/api/doctor/appointments/<appointment_id>/cancel", methods=["POST"])
+def api_doctor_cancel_appointment(appointment_id: str):
+    if session.get("role") != "doctor":
+        return jsonify({"message": "Doctor sign-in required."}), 403
+    status, res = api_call(
+        "POST",
+        f"/doctors/me/appointments/{appointment_id}/cancel",
+    )
+    return jsonify(res), status
+
+
 @app.route("/api/patient/dashboard", methods=["GET"])
 def api_patient_dashboard():
     if session.get("role") != "patient":
@@ -596,6 +607,14 @@ def api_patient_search_doctors():
     if session.get("role") != "patient":
         return jsonify({"message": "Patient sign-in required."}), 403
     status, res = api_call("GET", "/patients/doctors/search", params=request.args)
+    return jsonify(res), status
+
+
+@app.route("/api/patient/doctors/search-options", methods=["GET"])
+def api_patient_doctor_search_options():
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call("GET", "/patients/doctors/search-options")
     return jsonify(res), status
 
 
@@ -622,6 +641,52 @@ def api_patient_book_appointment():
 
     data = request.get_json(silent=True) or request.form.to_dict()
     status, res = api_call("POST", "/patients/me/appointments", json_body=data)
+    return jsonify(res), status
+
+
+@app.route("/api/patient/appointments/<appointment_id>/refund-preview", methods=["GET"])
+def api_patient_refund_preview(appointment_id: str):
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call(
+        "GET",
+        f"/patients/me/appointments/{appointment_id}/refund-preview",
+    )
+    return jsonify(res), status
+
+
+@app.route("/api/patient/appointments/<appointment_id>/cancel", methods=["POST"])
+def api_patient_cancel_appointment(appointment_id: str):
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call(
+        "POST",
+        f"/patients/me/appointments/{appointment_id}/cancel",
+    )
+    return jsonify(res), status
+
+
+@app.route("/api/patient/waitlists", methods=["GET", "POST", "DELETE"])
+def api_patient_waitlists():
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    data = request.get_json(silent=True) or {}
+    status, res = api_call(
+        request.method,
+        "/patients/me/waitlists",
+        json_body=data if request.method in {"POST", "DELETE"} else None,
+    )
+    return jsonify(res), status
+
+
+@app.route("/api/patient/waitlist-offers/<offer_id>/accept", methods=["POST"])
+def api_patient_accept_waitlist_offer(offer_id: str):
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call(
+        "POST",
+        f"/patients/me/waitlist-offers/{offer_id}/accept",
+    )
     return jsonify(res), status
 
 

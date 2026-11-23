@@ -1,9 +1,15 @@
 const DOCTORS_PER_PAGE = 8;
+const AVAILABILITY_WINDOW_DAYS = 30;
 let doctorPage = 1;
 let doctorTotal = 0;
 let selectedDoctor = null;
 let selectedConsultation = null;
 let selectedSlot = null;
+let availabilityWeek = 0;
+let availabilityStart = null;
+let currentWeekSlots = [];
+let currentWeekFrom = null;
+let currentWeekDayCount = 0;
 
 document.addEventListener('DOMContentLoaded', () => {
   const screen = document.querySelector('[data-patient-page]');
@@ -88,7 +94,31 @@ function initializeDoctorSearch() {
       loadDoctors();
     }
   });
-  loadDoctors();
+  loadDoctorSearchOptions()
+    .catch(error => {
+      const optionsError = document.getElementById('doctorSearchOptionsError');
+      optionsError.textContent = error.message || 'Could not load search filters.';
+      optionsError.hidden = false;
+    })
+    .finally(loadDoctors);
+}
+
+async function loadDoctorSearchOptions() {
+  const data = await fetchJson('/api/patient/doctors/search-options');
+  const specialization = document.getElementById('specializationInput');
+  const hospital = document.getElementById('hospitalInput');
+  const city = document.getElementById('cityInput');
+
+  (data.specializations || []).forEach(name => {
+    specialization.add(new Option(name, name));
+  });
+  (data.hospitals || []).forEach(item => {
+    hospital.add(new Option(
+      item.city ? `${item.name} · ${item.city}` : item.name,
+      item.hospital_id,
+    ));
+  });
+  (data.cities || []).forEach(name => city.add(new Option(name, name)));
 }
 
 async function loadDoctors() {
@@ -106,6 +136,7 @@ async function loadDoctors() {
     search: document.getElementById('doctorSearchInput').value.trim(),
     specialization: document.getElementById('specializationInput').value.trim(),
     hospital: document.getElementById('hospitalInput').value.trim(),
+    city: document.getElementById('cityInput').value.trim(),
     page: String(doctorPage),
     limit: String(DOCTORS_PER_PAGE),
   });
@@ -156,16 +187,24 @@ function createDoctorCard(doctor) {
 }
 
 function initializeDoctorProfile(doctorId) {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const dateInput = document.getElementById('bookingDate');
-  dateInput.min = toDateInputValue(new Date());
-  dateInput.value = toDateInputValue(tomorrow);
+  availabilityStart = toDateInputValue(new Date());
   document.getElementById('consultationSelect').addEventListener('change', event => {
     selectedConsultation = event.target.value || null;
     loadDoctorSlots();
   });
-  dateInput.addEventListener('change', loadDoctorSlots);
+  document.getElementById('onlyFreeSeats').addEventListener('change', renderDoctorSlots);
+  document.getElementById('previousAvailabilityWeek').addEventListener('click', () => {
+    if (availabilityWeek > 0) {
+      availabilityWeek--;
+      loadDoctorSlots();
+    }
+  });
+  document.getElementById('nextAvailabilityWeek').addEventListener('click', () => {
+    if ((availabilityWeek + 1) * 7 < AVAILABILITY_WINDOW_DAYS) {
+      availabilityWeek++;
+      loadDoctorSlots();
+    }
+  });
   document.getElementById('bookAppointmentButton').addEventListener('click', bookAppointment);
   loadDoctorProfile(doctorId);
 }
@@ -180,16 +219,23 @@ async function loadDoctorProfile(doctorId) {
   try {
     const data = await fetchJson(`/api/patient/doctors/${encodeURIComponent(doctorId)}`);
     selectedDoctor = data.doctor;
+    availabilityStart = dateKeyInTimezone(
+      new Date().toISOString(),
+      selectedDoctor.timezone || 'UTC',
+    );
     document.getElementById('doctorProfileTitle').textContent = selectedDoctor.doctor_name || 'Doctor details';
     renderDoctorProfile(selectedDoctor);
     const selector = document.getElementById('consultationSelect');
     (selectedDoctor.consultations || []).forEach(consultation => {
-      const option = document.createElement('option');
-      option.value = consultation.consultation_type_id;
-      option.textContent = `${consultation.name} · ${consultation.duration_minutes} min · ${MediSlotMoney.formatINR(consultation.fee)}`;
-      selector.appendChild(option);
+      selector.add(new Option(
+        `${consultation.name} · ${consultation.duration_minutes} min · ${MediSlotMoney.formatINR(consultation.fee)}`,
+        consultation.consultation_type_id,
+      ));
     });
-    if (!selector.options.length || selector.options.length === 1) {
+    if (selector.options.length > 1) {
+      selectedConsultation = selector.value || null;
+      await loadDoctorSlots();
+    } else {
       error.textContent = 'This doctor has no active consultation types available.';
       error.hidden = false;
     }
@@ -219,50 +265,44 @@ function renderDoctorProfile(doctor) {
 }
 
 async function loadDoctorSlots() {
-  const results = document.getElementById('slotResults');
   const loading = document.getElementById('slotLoading');
   const empty = document.getElementById('slotEmptyState');
   const error = document.getElementById('slotError');
-  results.innerHTML = '';
   error.hidden = true;
   empty.hidden = true;
   selectedSlot = null;
   updateBookingButton();
-  if (!selectedDoctor || !selectedConsultation || !document.getElementById('bookingDate').value) return;
+  if (!selectedDoctor) return;
 
   loading.hidden = false;
+  const firstOffset = availabilityWeek * 7;
+  const dayCount = Math.min(7, AVAILABILITY_WINDOW_DAYS - firstOffset);
+  const from = addCalendarDays(availabilityStart, firstOffset);
+  const to = addCalendarDays(from, dayCount - 1);
+  const weekStartDate = new Date(`${from}T12:00:00`);
+  const weekEndDate = new Date(`${to}T12:00:00`);
+  document.getElementById('availabilityWeekLabel').textContent =
+    new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
+      .formatRange(weekStartDate, weekEndDate);
+  document.getElementById('previousAvailabilityWeek').disabled = availabilityWeek === 0;
+  document.getElementById('nextAvailabilityWeek').disabled =
+    firstOffset + dayCount >= AVAILABILITY_WINDOW_DAYS;
   const params = new URLSearchParams({
     doctor_id: selectedDoctor.doctor_id,
-    date: document.getElementById('bookingDate').value,
-    consultation_type_id: selectedConsultation,
+    from,
+    to,
+    include_full: 'true',
   });
+  if (selectedConsultation) params.set('consultation_type_id', selectedConsultation);
   try {
     const data = await fetchJson(`/api/slots?${params}`);
-    const slots = data.slots || [];
     document.getElementById('slotTimezone').textContent = data.timezone
       ? `Times shown in ${data.timezone}` : '';
-    if (!slots.length) {
-      empty.hidden = false;
-      return;
-    }
-    slots.forEach(slot => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'patient-slot';
-      button.textContent = formatSlotTime(slot.start_time, data.timezone);
-      button.setAttribute('aria-pressed', 'false');
-      button.addEventListener('click', () => {
-        selectedSlot = slot;
-        results.querySelectorAll('.patient-slot').forEach(item => {
-          item.classList.remove('selected');
-          item.setAttribute('aria-pressed', 'false');
-        });
-        button.classList.add('selected');
-        button.setAttribute('aria-pressed', 'true');
-        updateBookingButton();
-      });
-      results.appendChild(button);
-    });
+    selectedDoctor.timezone = data.timezone || selectedDoctor.timezone;
+    currentWeekSlots = data.slots || [];
+    currentWeekFrom = from;
+    currentWeekDayCount = dayCount;
+    renderDoctorSlots();
   } catch (errorValue) {
     error.textContent = errorValue.message || 'Could not load available times.';
     error.hidden = false;
@@ -271,17 +311,125 @@ async function loadDoctorSlots() {
   }
 }
 
+function renderDoctorSlots() {
+  const results = document.getElementById('slotResults');
+  const empty = document.getElementById('slotEmptyState');
+  const slots = currentWeekSlots;
+  const from = currentWeekFrom;
+  const dayCount = currentWeekDayCount;
+  if (!from) return;
+  const onlyFreeSeats = document.getElementById('onlyFreeSeats').checked;
+  const visibleSlots = slots.filter(slot =>
+    !selectedConsultation || slot.consultation_type_id === selectedConsultation
+  ).filter(slot => !onlyFreeSeats || Number(slot.free_seats) > 0);
+  results.replaceChildren();
+
+  const openSlots = slots.filter(slot => Number(slot.free_seats) > 0);
+  document.getElementById('openSlotCount').textContent =
+    `${openSlots.length} open ${openSlots.length === 1 ? 'slot' : 'slots'}`;
+  document.getElementById('freeSeatCount').textContent =
+    `${openSlots.reduce((total, slot) => total + Number(slot.free_seats || 0), 0)} free seats`;
+  empty.hidden = visibleSlots.length > 0;
+  if (!visibleSlots.length) return;
+
+  for (let dayOffset = 0; dayOffset < dayCount; dayOffset++) {
+    const dateKey = addCalendarDays(from, dayOffset);
+    const daySlots = visibleSlots.filter(slot =>
+      dateKeyInTimezone(slot.start_time, selectedDoctor.timezone || 'UTC') === dateKey
+    ).sort((left, right) => left.start_time.localeCompare(right.start_time));
+    if (!daySlots.length) continue;
+
+    const group = document.createElement('section');
+    group.className = 'patient-slot-day';
+    const heading = document.createElement('div');
+    heading.className = 'patient-slot-day-heading';
+    const title = document.createElement('h3');
+    title.textContent = new Intl.DateTimeFormat(undefined, {
+      weekday: 'long', month: 'short', day: 'numeric',
+    }).format(new Date(`${dateKey}T12:00:00`));
+    const seats = document.createElement('span');
+    const totalFree = daySlots.reduce((total, slot) => total + Number(slot.free_seats || 0), 0);
+    seats.textContent = `${totalFree} free ${totalFree === 1 ? 'seat' : 'seats'}`;
+    heading.append(title, seats);
+
+    const cards = document.createElement('div');
+    cards.className = 'patient-slot-cards';
+    daySlots.forEach(slot => cards.appendChild(createPatientSlotCard(slot)));
+    group.append(heading, cards);
+    results.appendChild(group);
+  }
+}
+
+function createPatientSlotCard(slot) {
+  const wrapper = document.createElement('article');
+  wrapper.className = 'patient-slot-card';
+  const select = document.createElement('button');
+  select.type = 'button';
+  select.className = `patient-slot-select${Number(slot.free_seats) > 0 ? '' : ' full'}`;
+  select.disabled = Number(slot.free_seats) <= 0;
+  select.setAttribute('aria-pressed', 'false');
+  const consultation = (selectedDoctor.consultations || []).find(item =>
+    item.consultation_type_id === slot.consultation_type_id
+  );
+  const name = document.createElement('strong');
+  name.textContent = formatSlotTime(slot.start_time, selectedDoctor.timezone);
+  const details = document.createElement('span');
+  details.textContent = `${consultation?.name || 'Consultation'} · ${MediSlotMoney.formatINR(consultation?.fee || 0)}`;
+  const free = document.createElement('small');
+  free.textContent = Number(slot.free_seats) > 0
+    ? `${slot.free_seats} ${Number(slot.free_seats) === 1 ? 'seat' : 'seats'} free`
+    : 'Full';
+  select.append(name, details, free);
+  select.addEventListener('click', () => {
+    selectedSlot = slot;
+    document.querySelectorAll('.patient-slot-select').forEach(button => {
+      const selected = button === select;
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-pressed', String(selected));
+    });
+    updateBookingButton();
+  });
+  wrapper.appendChild(select);
+
+  if (Number(slot.free_seats) <= 0) {
+    const waitlistButton = document.createElement('button');
+    waitlistButton.type = 'button';
+    waitlistButton.className = 'btn btn-secondary btn-sm';
+    waitlistButton.textContent = 'Join waitlist';
+    waitlistButton.addEventListener('click', () => joinSlotWaitlist(slot));
+    wrapper.appendChild(waitlistButton);
+  }
+  return wrapper;
+}
+
+async function joinSlotWaitlist(slot) {
+  try {
+    await fetchJson('/api/patient/waitlists', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slot_id: slot.slot_id }),
+    });
+    showNotice('You joined the waitlist. We will notify you if this time opens.', 'success');
+    await loadWaitlists();
+  } catch (error) {
+    showNotice(error.message || 'Could not join this waitlist.', 'danger');
+  }
+}
+
 async function bookAppointment() {
-  if (!selectedDoctor || !selectedConsultation || !selectedSlot) return;
+  if (!selectedDoctor || !selectedSlot) return;
   const button = document.getElementById('bookAppointmentButton');
   button.disabled = true;
   button.textContent = 'Booking...';
   try {
     const data = await fetchJson('/api/patient/book-appointment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': crypto.randomUUID(),
+      },
       body: JSON.stringify({
-        consultation_type_id: selectedConsultation,
+        consultation_type_id: selectedSlot.consultation_type_id,
         appointment_datetime: selectedSlot.start_time,
       }),
     });
@@ -308,6 +456,23 @@ function updateBookingButton() {
     : 'Select an available time to continue.';
 }
 
+function addCalendarDays(dateKey, days) {
+  const date = new Date(`${dateKey}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function dateKeyInTimezone(value, timezone) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(normalizeDateTime(value)));
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 async function loadAppointments() {
   const loading = document.getElementById('patientAppointmentsLoading');
   const error = document.getElementById('patientAppointmentsError');
@@ -322,6 +487,7 @@ async function loadAppointments() {
   try {
     const data = await fetchJson('/api/patient/dashboard');
     setPatientName(data.patient?.full_name);
+    await loadWaitlists();
     if (!(data.appointments || []).length) {
       empty.hidden = false;
       return;
@@ -341,14 +507,156 @@ function createAppointmentRow(appointment) {
   const status = String(appointment.status || 'UNKNOWN');
   const statusClass = status === 'CONFIRMED' ? 'badge-open'
     : status === 'COMPLETED' ? 'badge-primary' : 'badge-secondary';
-  row.innerHTML = `
-    <td data-label="Date and time">${escapeHtml(formatDateTime(appointment.slot_start_utc))}</td>
-    <td data-label="Doctor">${escapeHtml(appointment.doctor_name || 'Doctor')}</td>
-    <td data-label="Hospital">${escapeHtml([appointment.hospital_name, appointment.hospital_city].filter(Boolean).join(', ') || '—')}</td>
-    <td data-label="Consultation">${escapeHtml(appointment.consultation_type || 'Consultation')}</td>
-    <td data-label="Status"><span class="badge ${statusClass}">${escapeHtml(status.replaceAll('_', ' '))}</span></td>
-    <td data-label="Fee">${MediSlotMoney.formatINR(appointment.fee_amount || 0)}</td>`;
+  const cells = [
+    ['Date and time', formatDateTime(appointment.slot_start_utc)],
+    ['Doctor', appointment.doctor_name || 'Doctor'],
+    ['Hospital', [appointment.hospital_name, appointment.hospital_city].filter(Boolean).join(', ') || '—'],
+    ['Consultation', appointment.consultation_type || 'Consultation'],
+  ];
+  cells.forEach(([label, value]) => {
+    const cell = document.createElement('td');
+    cell.dataset.label = label;
+    cell.textContent = value;
+    row.appendChild(cell);
+  });
+  const statusCell = document.createElement('td');
+  statusCell.dataset.label = 'Status';
+  const badge = document.createElement('span');
+  badge.className = `badge ${statusClass}`;
+  badge.textContent = status.replaceAll('_', ' ');
+  statusCell.appendChild(badge);
+  row.appendChild(statusCell);
+
+  const paymentCell = document.createElement('td');
+  paymentCell.dataset.label = 'Fee / payment';
+  paymentCell.textContent = `${MediSlotMoney.formatINR(appointment.fee_amount || 0)} · ${appointment.payment_status || 'NOT RECORDED'} (${String(appointment.payment_method || 'PAY_AT_CLINIC').replaceAll('_', ' ').toLowerCase()})`;
+  row.appendChild(paymentCell);
+
+  const refundCell = document.createElement('td');
+  refundCell.dataset.label = 'Refund';
+  refundCell.textContent = MediSlotMoney.formatINR(appointment.refund_amount || 0);
+  row.appendChild(refundCell);
+
+  const actionsCell = document.createElement('td');
+  actionsCell.dataset.label = 'Actions';
+  if (status === 'CONFIRMED') {
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'btn btn-secondary btn-sm';
+    cancelButton.textContent = 'Refund preview & cancel';
+    cancelButton.addEventListener('click', () => cancelAppointment(appointment));
+    actionsCell.appendChild(cancelButton);
+  } else {
+    actionsCell.textContent = '—';
+  }
+  row.appendChild(actionsCell);
   return row;
+}
+
+async function cancelAppointment(appointment) {
+  try {
+    const quote = await fetchJson(
+      `/api/patient/appointments/${encodeURIComponent(appointment.id)}/refund-preview`,
+    );
+    const confirmed = window.confirm(
+      `Cancel this appointment?\n\nEstimated refund ledger: ${MediSlotMoney.formatINR(quote.refund_amount)} (${quote.refund_percent}% — ${String(quote.refund_tier).replaceAll('_', ' ')}).\n\nMediSlot does not process payments; any refund is recorded for clinic processing.`,
+    );
+    if (!confirmed) return;
+    const result = await fetchJson(
+      `/api/patient/appointments/${encodeURIComponent(appointment.id)}/cancel`,
+      { method: 'POST' },
+    );
+    showNotice(
+      `Appointment cancelled. Refund ledger: ${MediSlotMoney.formatINR(result.refund_amount)}.`,
+      'success',
+    );
+    await loadAppointments();
+  } catch (error) {
+    showNotice(error.message || 'Could not cancel this appointment.', 'danger');
+  }
+}
+
+async function loadWaitlists() {
+  const error = document.getElementById('patientWaitlistError');
+  const list = document.getElementById('patientWaitlists');
+  const empty = document.getElementById('patientWaitlistsEmpty');
+  if (!list || !empty) return;
+  error.hidden = true;
+  list.replaceChildren();
+  empty.hidden = true;
+  try {
+    const data = await fetchJson('/api/patient/waitlists');
+    const waitlists = data.waitlists || [];
+    const offers = data.offers || [];
+    waitlists.forEach(item => list.appendChild(createWaitlistItem(item)));
+    offers.filter(item => item.status === 'OPEN').forEach(item => list.appendChild(createOfferItem(item)));
+    empty.hidden = waitlists.length + offers.filter(item => item.status === 'OPEN').length > 0;
+  } catch (errorValue) {
+    error.textContent = errorValue.message || 'Could not load waitlists and offers.';
+    error.hidden = false;
+  }
+}
+
+function createWaitlistItem(entry) {
+  const item = document.createElement('article');
+  item.className = 'patient-appointment-item';
+  const details = document.createElement('div');
+  details.className = 'patient-appointment-details';
+  const title = document.createElement('strong');
+  title.textContent = 'Waitlist';
+  const time = document.createElement('span');
+  time.textContent = formatDateTime(entry.slot_start);
+  details.append(title, time);
+  const leaveButton = document.createElement('button');
+  leaveButton.type = 'button';
+  leaveButton.className = 'btn btn-secondary btn-sm';
+  leaveButton.textContent = 'Leave waitlist';
+  leaveButton.addEventListener('click', async () => {
+    try {
+      await fetchJson('/api/patient/waitlists', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot_id: entry.slot_ref }),
+      });
+      await loadWaitlists();
+    } catch (error) {
+      showNotice(error.message || 'Could not leave this waitlist.', 'danger');
+    }
+  });
+  item.append(details, leaveButton);
+  return item;
+}
+
+function createOfferItem(offer) {
+  const item = document.createElement('article');
+  item.className = 'patient-appointment-item';
+  const details = document.createElement('div');
+  details.className = 'patient-appointment-details';
+  const title = document.createElement('strong');
+  title.textContent = 'A slot is available for you';
+  const time = document.createElement('span');
+  time.textContent = `${formatDateTime(offer.slot_start)} · expires ${new Date(Number(offer.expires_at) * 1000).toLocaleTimeString()}`;
+  details.append(title, time);
+  const acceptButton = document.createElement('button');
+  acceptButton.type = 'button';
+  acceptButton.className = 'btn btn-teal btn-sm';
+  acceptButton.textContent = 'Accept offer';
+  acceptButton.addEventListener('click', async () => {
+    acceptButton.disabled = true;
+    try {
+      const booking = await fetchJson(
+        `/api/patient/waitlist-offers/${encodeURIComponent(offer.offer_id)}/accept`,
+        { method: 'POST' },
+      );
+      showNotice(`Appointment booked for ${formatDateTime(booking.appointment_datetime)}.`, 'success');
+      await loadAppointments();
+    } catch (error) {
+      showNotice(error.message || 'Could not accept this offer.', 'danger');
+      acceptButton.disabled = false;
+    }
+  });
+  item.append(details, acceptButton);
+  return item;
 }
 
 function createAppointmentItem(appointment) {

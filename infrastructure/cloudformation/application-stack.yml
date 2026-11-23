@@ -33,6 +33,22 @@ Parameters:
       Name of the SSM parameter containing the database credentials.
     Default: /MediSlot/dev/database/application-credentials
 
+  SESFromEmail:
+    Type: String
+    Description: Verified SES sender address used for patient and doctor email.
+    Default: ""
+
+  RefundPolicyJson:
+    Type: String
+    Description: JSON refund policy shared by patient and doctor cancellation flows.
+    Default: '{"tiers":[{"minimum_hours":48,"refund_percent":100,"inclusive":false,"name":"more_than_48_hours"},{"minimum_hours":24,"refund_percent":75,"inclusive":false,"name":"24_to_48_hours"},{"minimum_hours":6,"refund_percent":50,"inclusive":false,"name":"6_to_24_hours"},{"minimum_hours":0,"refund_percent":0,"inclusive":true,"name":"less_than_6_hours"}],"doctor_refund_percent":100,"no_show_refund_percent":0}'
+
+  WaitlistHoldDurationSeconds:
+    Type: String
+    Description: Number of seconds a patient has to accept a waitlist offer.
+    Default: "900"
+    AllowedPattern: "^[1-9][0-9]*$"
+
 # ============================================================
 # GLOBAL LAMBDA CONFIGURATION
 # ============================================================
@@ -58,6 +74,9 @@ Globals:
         JWT_SECRET_PARAMETER_NAME: !Ref JWTSecretParameterName
 
         DATABASE_CREDENTIALS_PARAMETER_NAME: !Ref DatabaseCredentialsParameterName
+        REFUND_POLICY_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/booking/refund-policy"
+        WAITLIST_HOLD_DURATION_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/booking/waitlist-hold-seconds"
+        SES_FROM_EMAIL: !Ref SESFromEmail
 
         # ----------------------------------------------------
         # RDS CONFIGURATION
@@ -116,6 +135,28 @@ Globals:
 # ============================================================
 
 Resources:
+
+  RefundPolicyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/MediSlot/${Environment}/booking/refund-policy"
+      Type: String
+      Value: !Ref RefundPolicyJson
+      Description: Shared MediSlot cancellation refund tiers.
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+
+  WaitlistHoldDurationParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/MediSlot/${Environment}/booking/waitlist-hold-seconds"
+      Type: String
+      Value: !Ref WaitlistHoldDurationSeconds
+      Description: MediSlot waitlist offer duration in seconds.
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
 
   # ==========================================================
   # SHARED PYTHON LAMBDA LAYER
@@ -524,6 +565,12 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /doctors/me/dashboard
             Method: GET
+        DoctorAppointmentCancel:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/appointments/{appointment_id}/cancel
+            Method: POST
 
   MediSlotPatientFunction:
     Type: AWS::Serverless::Function
@@ -559,12 +606,59 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /patients/doctors/search
             Method: GET
+        PatientDoctorSearchOptionsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/doctors/search-options
+            Method: GET
         PatientAppointmentCreate:
           Type: Api
           Properties:
             RestApiId: !Ref MediSlotApi
             Path: /patients/me/appointments
             Method: POST
+        PatientAppointmentCancel:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/appointments/{appointment_id}/cancel
+            Method: POST
+        PatientRefundPreview:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/appointments/{appointment_id}/refund-preview
+            Method: GET
+        PatientWaitlistsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/waitlists
+            Method: GET
+        PatientWaitlistsPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/waitlists
+            Method: POST
+        PatientWaitlistsDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/waitlists
+            Method: DELETE
+        PatientWaitlistOfferAccept:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/waitlist-offers/{offer_id}/accept
+            Method: POST
+        WaitlistOfferExpiry:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: true
 
   # ==========================================================
   # DAILY SLOT MATERIALISER

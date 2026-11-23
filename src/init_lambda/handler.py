@@ -387,6 +387,57 @@ def execute_schema(
         raise
 
 
+def migrate_appointment_cancellation_status(connection: Connection) -> None:
+    """Add cancellation initiators while keeping cancelled slots reusable."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COLUMN_TYPE
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'appointments'
+              AND COLUMN_NAME = 'appointment_status'
+            """,
+            (DB_NAME,),
+        )
+        row = cursor.fetchone()
+        column_type = (
+            row.get("COLUMN_TYPE")
+            if isinstance(row, dict)
+            else row[0] if row else None
+        )
+        if not column_type:
+            raise RuntimeError("Could not inspect appointments.appointment_status.")
+        if "CANCELLED_BY_PATIENT" in column_type and "CANCELLED_BY_DOCTOR" in column_type:
+            logger.info("Appointment cancellation statuses already exist.")
+            return
+
+        cursor.execute(
+            """
+            ALTER TABLE appointments
+                MODIFY COLUMN appointment_status ENUM(
+                    'PENDING', 'CONFIRMED', 'CANCELLED', 'CANCELLED_BY_PATIENT',
+                    'CANCELLED_BY_DOCTOR', 'COMPLETED', 'NO_SHOW'
+                ) NOT NULL DEFAULT 'PENDING',
+                MODIFY COLUMN active_patient_slot VARCHAR(150)
+                    GENERATED ALWAYS AS (
+                        IF(
+                            appointment_status NOT IN (
+                                'CANCELLED', 'CANCELLED_BY_PATIENT', 'CANCELLED_BY_DOCTOR'
+                            ),
+                            CONCAT(
+                                patient_id, '#', consultation_type_id, '#',
+                                DATE_FORMAT(appointment_datetime, '%Y-%m-%d %H:%i:%s.%f')
+                            ),
+                            NULL
+                        )
+                    ) STORED
+            """
+        )
+    connection.commit()
+    logger.info("Migrated appointment cancellation statuses.")
+
+
 # ============================================================
 # SCHEMA VERIFICATION
 # ============================================================
@@ -518,6 +569,8 @@ def initialize_database() -> dict[str, Any]:
             connection=connection,
             statements=statements,
         )
+
+        migrate_appointment_cancellation_status(connection)
 
         verified_tables = verify_schema(connection)
 

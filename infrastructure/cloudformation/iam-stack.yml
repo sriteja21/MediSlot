@@ -290,12 +290,14 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ReadDatabaseCredentials
+              - Sid: ReadApplicationParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                 Resource:
                   - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/refund-policy"
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/waitlist-hold-seconds"
 
               - Sid: DecryptDatabaseCredentials
                 Effect: Allow
@@ -453,6 +455,16 @@ Resources:
                       - TableArn:
                           Fn::ImportValue:
                             !Sub "MediSlot-NotificationsTableArn-${Environment}"
+
+        - PolicyName: !Sub "MediSlot-ApiSendEmail-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SendAppointmentNotifications
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                Resource: "*"
 
         # ----------------------------------------------------
         # S3 PROFILE PHOTOS

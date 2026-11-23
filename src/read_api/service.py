@@ -6,6 +6,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import boto3
+from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
 
 
@@ -245,12 +246,116 @@ def reserve_slot_seat(slot: dict[str, Any], capacity: int, *, table: Any = None)
     )
 
 
-def release_slot_seat(slot: dict[str, Any], *, table: Any = None) -> None:
-    """Release one previously reserved booked seat."""
+def release_slot_seat(
+    slot: dict[str, Any],
+    *,
+    held: bool = False,
+    table: Any = None,
+) -> None:
+    """Release one previously booked or held seat reservation."""
     slot_table = table if table is not None else get_slots_table()
+    if held:
+        slot_table.update_item(
+            Key=slot_table_key(slot),
+            UpdateExpression="SET held_count = held_count - :one",
+            ConditionExpression="held_count > :zero",
+            ExpressionAttributeValues={":one": 1, ":zero": 0},
+        )
+        return
     slot_table.update_item(
         Key=slot_table_key(slot),
         UpdateExpression="SET booked_count = booked_count - :one",
         ConditionExpression="booked_count > :zero",
         ExpressionAttributeValues={":one": 1, ":zero": 0},
+    )
+
+
+def hold_slot_seat(slot: dict[str, Any], *, table: Any = None) -> bool:
+    """Reserve one free seat for an exclusive waitlist offer."""
+    if slot_free_seats(slot) <= 0 or slot.get("is_active") is False:
+        return False
+    slot_table = table if table is not None else get_slots_table()
+    booked_count = int(slot.get("booked_count") or 0)
+    held_count = int(slot.get("held_count") or 0)
+    condition = (
+        "is_active = :active AND "
+        "(attribute_not_exists(booked_count) OR booked_count = :booked) AND "
+        "(attribute_not_exists(held_count) OR held_count = :held)"
+    )
+    try:
+        slot_table.update_item(
+            Key=slot_table_key(slot),
+            UpdateExpression="SET held_count = if_not_exists(held_count, :zero) + :one",
+            ConditionExpression=condition,
+            ExpressionAttributeValues={
+                ":active": True,
+                ":booked": booked_count,
+                ":held": held_count,
+                ":zero": 0,
+                ":one": 1,
+            },
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+def convert_booked_seat_to_hold(slot: dict[str, Any], *, table: Any = None) -> None:
+    """Keep a cancelled booking's seat unavailable while its cancellation commits."""
+    slot_table = table if table is not None else get_slots_table()
+    slot_table.update_item(
+        Key=slot_table_key(slot),
+        UpdateExpression=(
+            "SET booked_count = booked_count - :one, "
+            "held_count = if_not_exists(held_count, :zero) + :one"
+        ),
+        ConditionExpression="booked_count > :zero",
+        ExpressionAttributeValues={":one": 1, ":zero": 0},
+    )
+
+
+def convert_held_seat_to_booked(slot: dict[str, Any], *, table: Any = None) -> None:
+    """Compensate a failed cancellation by restoring its seat reservation."""
+    slot_table = table if table is not None else get_slots_table()
+    slot_table.update_item(
+        Key=slot_table_key(slot),
+        UpdateExpression=(
+            "SET booked_count = if_not_exists(booked_count, :zero) + :one "
+            "ADD held_count :negative_one"
+        ),
+        ConditionExpression="held_count > :zero",
+        ExpressionAttributeValues={
+            ":zero": 0,
+            ":one": 1,
+            ":negative_one": -1,
+        },
+    )
+
+
+def convert_held_seat_to_booking(
+    slot: dict[str, Any],
+    capacity: int,
+    *,
+    table: Any = None,
+) -> None:
+    """Atomically convert a waitlist hold into a booked seat."""
+    slot_table = table if table is not None else get_slots_table()
+    slot_table.update_item(
+        Key=slot_table_key(slot),
+        UpdateExpression=(
+            "SET booked_count = if_not_exists(booked_count, :zero) + :one "
+            "ADD held_count :negative_one"
+        ),
+        ConditionExpression=(
+            "held_count > :zero AND "
+            "(attribute_not_exists(booked_count) OR booked_count < :capacity)"
+        ),
+        ExpressionAttributeValues={
+            ":zero": 0,
+            ":one": 1,
+            ":negative_one": -1,
+            ":capacity": capacity,
+        },
     )

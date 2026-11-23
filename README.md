@@ -6,9 +6,11 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 
 - `src/auth` handles registration, login, refresh, and logout.
 - `src/authorizer` validates access tokens and enforces patient/doctor routes.
-- `src/doctor` provides doctor profile, consultation type mutation, availability, blackout, and dashboard APIs.
-- `src/patient` provides the patient appointment dashboard API.
+- `src/doctor` provides doctor profile, consultation type mutation, availability, blackout, dashboard, and appointment cancellation APIs.
+- `src/patient` provides doctor search, weekly slot booking, appointment/payment/refund-ledger views, patient cancellation, and waitlist management APIs.
 - `src/read_api` provides the shared authenticated `GET /slots` endpoint for doctor schedule (`date`) and patient availability (`doctor_id`, `date`, optional `consultation_type_id`) requests, plus the doctor consultation-type list and patient doctor-profile reads. The dedicated Lambda selects role-specific responses using authorizer context; reusable slot storage and seat rules live in `src/read_api/service.py`.
+- Patient and doctor cancellations share the refund-tier calculator and slot seat transitions. Refunds are ledger entries only; payments are marked `INITIATED` with `PAY_AT_CLINIC` because MediSlot does not integrate a payment gateway. Cancellation of a booked seat can issue an exclusive waitlist offer for 15 minutes; an EventBridge schedule expires offers and promotes the next waiter.
+- `src/shared/notifications.py` persists notification records and sends email through SES. Configure the application stack's `SESFromEmail` parameter with a verified SES sender address; without it, notification records are retained and email delivery is marked blocked.
 - `src/slot_materialiser` reconciles the next 30 local calendar days in `MediSlot-Slots-*` after schedule changes and from a daily EC2 systemd timer; it does not use EventBridge. Blackout and obsolete availability slots remain visible with `is_active=false`, and reconciliation never modifies slots with booked seats.
 - `src/ec2_app` is the Flask portal served directly by EC2 Nginx over HTTPS, with Gunicorn bound to localhost. Shared browser time and INR formatting helpers are in `src/ec2_app/static/js/shared.js`. A stable Elastic IP is assigned by the EC2 portal stack.
 - RDS and DynamoDB key/index definitions are in `infrastructure/cloudformation/data-stack.yml`. Slot IDs are deterministic `<consultation_type_id>#<start_epoch>` values. The Slots table uses `doctor_id` and `slot_sk` (`<start_epoch>#<consultation_type_id>`) as its primary key, `gsi_type_time` for single-slot lookup, and `gsi_doctor_time` (`doctor_id`, `start_time`) for schedule queries.
@@ -25,7 +27,7 @@ Configure these GitHub environment secrets:
 - `MEDISLOT_DB_MASTER_PASSWORD`: password for the RDS master account.
 - `AWS_REGION`: optional; defaults to `ap-south-1`.
 
-Before deploying the application, provision SecureString parameters `/MediSlot/{environment}/auth/jwt-secret` and `/MediSlot/{environment}/database/application-credentials` in Systems Manager Parameter Store. The database credentials value must be JSON with `username` and `password`; CI writes the RDS master password to `/MediSlot/{environment}/database/master-password-secure` as a SecureString and removes the legacy plaintext parameter. The EC2 website does not require app-specific SSM parameters: bootstrap generates its Flask session key and a self-signed TLS certificate locally.
+Before deploying the application, provision SecureString parameters `/MediSlot/{environment}/auth/jwt-secret` and `/MediSlot/{environment}/database/application-credentials` in Systems Manager Parameter Store. The application stack creates the environment-specific refund policy and waitlist hold-duration parameters. The database credentials value must be JSON with `username` and `password`; CI writes the RDS master password to `/MediSlot/{environment}/database/master-password-secure` as a SecureString and removes the legacy plaintext parameter. The EC2 website does not require app-specific SSM parameters: bootstrap generates its Flask session key and a self-signed TLS certificate locally.
 
 For a first deployment, deploy the Network stack first and read its `PortalElasticIp` output:
 

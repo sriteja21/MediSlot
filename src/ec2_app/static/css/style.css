@@ -1554,7 +1554,7 @@ select.form-control option {
 
 .patient-search-form {
   display: grid;
-  grid-template-columns: minmax(190px, 1.5fr) minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  grid-template-columns: minmax(190px, 1.5fr) repeat(3, minmax(145px, 1fr)) auto;
   align-items: end;
   gap: 0.8rem;
   padding: 1rem;
@@ -1726,6 +1726,124 @@ select.form-control option {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 0.55rem;
+}
+
+.patient-week-controls,
+.patient-slot-summary,
+.patient-slot-day-heading,
+.patient-slot-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.patient-week-controls {
+  margin: 0.8rem 0;
+  color: #fff;
+}
+
+.patient-slot-filters {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin: 0.8rem 0;
+}
+
+.patient-slot-type {
+  min-width: min(100%, 300px);
+}
+
+.patient-free-seats-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.patient-slot-summary {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.patient-slot-days {
+  display: grid;
+  gap: 1rem;
+}
+
+.patient-slot-day {
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.patient-slot-day-heading {
+  margin-bottom: 0.75rem;
+}
+
+.patient-slot-day-heading h3 {
+  color: #fff;
+  font-size: 0.92rem;
+}
+
+.patient-slot-day-heading span,
+.patient-slot-select small {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.patient-slot-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 0.55rem;
+}
+
+.patient-slot-card {
+  display: grid;
+  gap: 0.4rem;
+  align-content: start;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.patient-slot-select {
+  display: grid;
+  width: 100%;
+  min-height: 74px;
+  gap: 0.25rem;
+  padding: 0.65rem;
+  color: var(--text);
+  text-align: left;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.patient-slot-select:hover:not(:disabled),
+.patient-slot-select.selected {
+  color: #062b27;
+  background: #64e0c3;
+}
+
+.patient-slot-select.selected small,
+.patient-slot-select:hover:not(:disabled) small {
+  color: #164b42;
+}
+
+.patient-slot-select:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.patient-slot-card .btn {
+  width: 100%;
 }
 
 .patient-slot {
@@ -1975,6 +2093,25 @@ select.form-control option {
 
   .patient-slot-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .patient-week-controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .patient-week-controls strong {
+    order: -1;
+    width: 100%;
+    text-align: center;
+  }
+
+  .patient-week-controls .btn {
+    flex: 1;
+  }
+
+  .patient-slot-cards {
+    grid-template-columns: 1fr;
   }
 
   .patient-booking-footer {

@@ -208,12 +208,17 @@ CREATE TABLE IF NOT EXISTS appointments (
     patient_id CHAR(36) NOT NULL,
     consultation_type_id CHAR(36) NOT NULL,
     appointment_datetime DATETIME(3) NOT NULL,
-    appointment_status ENUM('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'NO_SHOW')
+    appointment_status ENUM(
+        'PENDING', 'CONFIRMED', 'CANCELLED', 'CANCELLED_BY_PATIENT',
+        'CANCELLED_BY_DOCTOR', 'COMPLETED', 'NO_SHOW'
+    )
         NOT NULL DEFAULT 'PENDING',
     active_patient_slot VARCHAR(150)
         GENERATED ALWAYS AS (
             IF(
-                appointment_status <> 'CANCELLED',
+                appointment_status NOT IN (
+                    'CANCELLED', 'CANCELLED_BY_PATIENT', 'CANCELLED_BY_DOCTOR'
+                ),
                 CONCAT(patient_id, '#', consultation_type_id, '#',
                     DATE_FORMAT(appointment_datetime, '%Y-%m-%d %H:%i:%s.%f')),
                 NULL

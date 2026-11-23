@@ -41,7 +41,18 @@ from shared.database import (
     execute_query,
     execute_write,
 )
-from read_api.service import local_day_utc_bounds, query_doctor_slots
+from shared.booking import calculate_refund, format_money, load_refund_policy
+from shared.notifications import publish_appointment_notification
+from shared.waitlist import promote_waitlist
+from read_api.service import (
+    convert_booked_seat_to_hold,
+    convert_held_seat_to_booked,
+    get_slot_by_id,
+    local_day_utc_bounds,
+    query_doctor_slots,
+    slot_belongs_to_doctor,
+    slot_id_for_datetime,
+)
 
 # ============================================================
 # LOGGING SETUP
@@ -86,6 +97,7 @@ ROUTE_METHODS = {
     "/doctors/me/blackouts": {"GET", "POST"},
     "/doctors/me/blackouts/{id}": {"DELETE"},
     "/doctors/me/dashboard": {"GET"},
+    "/doctors/me/appointments/{id}/cancel": {"POST"},
 }
 
 # AWS resource singletons
@@ -242,6 +254,13 @@ def parse_route(raw_path: str) -> tuple[str, str | None]:
                 return ("/doctors/me/availability/{id}", resource_id)
             if third == "blackouts":
                 return ("/doctors/me/blackouts/{id}", resource_id)
+
+        elif len(segments) == 5:
+            if (
+                third == "appointments"
+                and segments[4].lower() == "cancel"
+            ):
+                return ("/doctors/me/appointments/{id}/cancel", segments[3])
 
     return (path, None)
 
@@ -1329,6 +1348,122 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     return format_response(200, dashboard_data)
 
 
+def cancel_doctor_appointment(doctor_id: str, appointment_id: str) -> dict[str, Any]:
+    rows = execute_query(
+        """
+        SELECT a.appointment_id, a.patient_id, a.consultation_type_id,
+               a.appointment_datetime, a.appointment_status,
+               COALESCE(pay.amount, ct.fee) AS fee_amount, pay.payment_id
+        FROM appointments a
+        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        LEFT JOIN payments pay ON pay.payment_id = (
+            SELECT p.payment_id FROM payments p
+            WHERE p.appointment_id = a.appointment_id
+            ORDER BY p.created_at DESC LIMIT 1
+        )
+        WHERE a.appointment_id = %s AND ct.doctor_id = %s
+        LIMIT 1
+        """,
+        (appointment_id, doctor_id),
+    )
+    if not rows:
+        return format_response(404, {"error": "Appointment not found."})
+    appointment = rows[0]
+    if appointment["appointment_status"] != "CONFIRMED":
+        return format_response(409, {"error": "Only confirmed appointments can be cancelled."})
+
+    refund = calculate_refund(
+        appointment["fee_amount"],
+        appointment["appointment_datetime"],
+        datetime.now(timezone.utc),
+        cancellation_by="doctor",
+        policy=load_refund_policy(),
+    )
+    appointment_datetime = appointment["appointment_datetime"].replace(tzinfo=timezone.utc)
+    slot_id = slot_id_for_datetime(
+        str(appointment["consultation_type_id"]),
+        appointment_datetime,
+    )
+    slot = get_slot_by_id(slot_id)
+    if not slot_belongs_to_doctor(slot, doctor_id):
+        logger.error(
+            "Doctor cancellation cannot find an owned slot. appointment_id=%s doctor_id=%s",
+            appointment_id,
+            doctor_id,
+        )
+        return format_response(409, {"error": "Appointment slot is unavailable for cancellation."})
+
+    convert_booked_seat_to_hold(slot)
+    try:
+        with database_transaction() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE appointments
+                    SET appointment_status = 'CANCELLED_BY_DOCTOR'
+                    WHERE appointment_id = %s
+                      AND appointment_status = 'CONFIRMED'
+                    """,
+                    (appointment_id,),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("Appointment was changed by another request.")
+                if appointment.get("payment_id"):
+                    cursor.execute(
+                        """
+                        INSERT INTO refunds (
+                            refund_id, payment_id, refund_amount, refund_status
+                        ) VALUES (%s, %s, %s, 'PENDING')
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            appointment["payment_id"],
+                            refund["refund_amount"],
+                        ),
+                    )
+    except Exception:
+        logger.exception("Doctor cancellation failed. appointment_id=%s", appointment_id)
+        try:
+            convert_held_seat_to_booked(slot)
+        except Exception:
+            logger.exception("Doctor cancellation compensation failed. appointment_id=%s", appointment_id)
+        return format_response(
+            500,
+            {"error": "Cancellation could not be completed. Please retry or contact support."},
+        )
+
+    try:
+        offer = promote_waitlist(slot, seat_already_held=True)
+    except Exception:
+        logger.exception("Appointment %s was cancelled but waitlist promotion failed.", appointment_id)
+        offer = None
+    try:
+        publish_appointment_notification(
+            appointment_id=appointment_id,
+            event_type="APPOINTMENT_CANCELLED_BY_DOCTOR",
+            patient_id=str(appointment["patient_id"]),
+            consultation_type_id=str(appointment["consultation_type_id"]),
+            appointment_datetime=appointment_datetime,
+            message=(
+                f"Your doctor cancelled appointment {appointment_id}. "
+                f"Refund ledger amount: INR {format_money(refund['refund_amount'])}."
+            ),
+        )
+    except Exception:
+        logger.exception("Appointment %s was cancelled but notification failed.", appointment_id)
+    return format_response(
+        200,
+        {
+            "appointment_id": appointment_id,
+            "status": "CANCELLED_BY_DOCTOR",
+            "refund_amount": refund["refund_amount"],
+            "refund_percent": refund["refund_percent"],
+            "refund_tier": refund["tier"],
+            "waitlist_offer_issued": bool(offer),
+        },
+    )
+
+
 # ============================================================
 # MAIN ENTRY POINT
 # ============================================================
@@ -1432,6 +1567,11 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
 
         elif route_pattern == "/doctors/me/dashboard":
             return get_dashboard(doctor_id)
+
+        elif route_pattern == "/doctors/me/appointments/{id}/cancel":
+            if not resource_id:
+                return format_response(400, {"error": "Appointment ID is required in URL path."})
+            return cancel_doctor_appointment(doctor_id, resource_id)
 
         return format_response(404, {"error": f"Route not found: {raw_path}"})
 

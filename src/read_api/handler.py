@@ -13,14 +13,14 @@ if __package__:
     from .service import (
         local_day_utc_bounds,
         query_doctor_slots,
-        slot_is_available,
+        slot_availability_state,
         slot_response,
     )
 else:
     from service import (
         local_day_utc_bounds,
         query_doctor_slots,
-        slot_is_available,
+        slot_availability_state,
         slot_response,
     )
 
@@ -161,8 +161,10 @@ def _doctor_schedule(
 
 def _patient_slots(
     doctor_id: str,
-    selected_date: date,
+    start_date: date,
+    end_date: date,
     consultation_type_id: str,
+    include_full: bool,
 ) -> tuple[int, dict[str, Any]]:
     doctor_rows = execute_query(
         "SELECT timezone FROM doctors WHERE doctor_id = %s AND is_verified = TRUE",
@@ -173,11 +175,13 @@ def _patient_slots(
 
     timezone_name = str(doctor_rows[0].get("timezone") or "UTC")
     try:
-        utc_start, utc_end = local_day_utc_bounds(selected_date, timezone_name)
+        utc_start, _ = local_day_utc_bounds(start_date, timezone_name)
+        _, utc_end = local_day_utc_bounds(end_date, timezone_name)
     except Exception:
         logger.exception("Invalid timezone configured for doctor %s.", doctor_id)
         timezone_name = "UTC"
-        utc_start, utc_end = local_day_utc_bounds(selected_date, timezone_name)
+        utc_start, _ = local_day_utc_bounds(start_date, timezone_name)
+        _, utc_end = local_day_utc_bounds(end_date, timezone_name)
 
     slots = []
     for slot in query_doctor_slots(
@@ -186,15 +190,19 @@ def _patient_slots(
         utc_end,
         include_end=True,
     ):
-        if (
-            (not consultation_type_id or slot.get("consultation_type_id") == consultation_type_id)
-            and slot_is_available(slot)
-        ):
-            slots.append(slot_response(slot))
+        if consultation_type_id and slot.get("consultation_type_id") != consultation_type_id:
+            continue
+        state = slot_availability_state(slot)
+        if state == "available" or (include_full and state == "full"):
+            response = slot_response(slot)
+            response["available"] = state == "available"
+            slots.append(response)
 
     slots.sort(key=lambda slot: slot.get("start_time", ""))
     return 200, {
-        "date": selected_date.isoformat(),
+        "date": start_date.isoformat() if start_date == end_date else None,
+        "from": start_date.isoformat(),
+        "to": end_date.isoformat(),
         "timezone": timezone_name,
         "slots": slots,
     }
@@ -356,6 +364,35 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
 
     query_params = event.get("queryStringParameters") or {}
     raw_date = str(query_params.get("date") or "").strip()
+    raw_from = str(query_params.get("from") or "").strip()
+    raw_to = str(query_params.get("to") or "").strip()
+    if raw_from or raw_to:
+        if role != "patient":
+            return _response(400, {"error": "Doctor schedule reads require a single date."})
+        if not raw_from or not raw_to:
+            return _response(400, {"message": "Both from and to dates are required."})
+        try:
+            range_start = date.fromisoformat(raw_from)
+            range_end = date.fromisoformat(raw_to)
+        except ValueError:
+            return _response(400, {"message": "from and to must use YYYY-MM-DD format."})
+        if range_end < range_start:
+            return _response(400, {"message": "to must be on or after from."})
+        if (range_end - range_start).days >= 30:
+            return _response(400, {"message": "Slot ranges cannot exceed 30 days."})
+        if role == "patient":
+            doctor_id = str(query_params.get("doctor_id") or "").strip()
+            if not doctor_id:
+                return _response(400, {"message": "doctor_id is required."})
+            status_code, payload = _patient_slots(
+                doctor_id,
+                range_start,
+                range_end,
+                str(query_params.get("consultation_type_id") or "").strip(),
+                str(query_params.get("include_full") or "").lower() == "true",
+            )
+            return _response(status_code, payload)
+
     if not raw_date:
         if role == "doctor":
             return _response(
@@ -400,7 +437,9 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
         status_code, payload = _patient_slots(
             doctor_id,
             selected_date,
+            selected_date,
             str(query_params.get("consultation_type_id") or "").strip(),
+            False,
         )
         return _response(status_code, payload)
     except Exception:

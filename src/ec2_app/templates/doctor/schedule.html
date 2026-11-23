@@ -200,6 +200,24 @@
     loadSchedule(currentDate);
   }
 
+  async function cancelDoctorAppointment(appointmentId) {
+    if (!window.confirm('Cancel this appointment? Doctor cancellations receive a 100% refund ledger entry. No payment is processed by MediSlot.')) {
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/doctor/appointments/${encodeURIComponent(appointmentId)}/cancel`,
+        { method: 'POST' },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || result.message || `Request failed (${response.status})`);
+      showAlert(`Appointment cancelled. Refund ledger: ${MediSlotMoney.formatINR(result.refund_amount)}.`, 'success');
+      await loadSchedule(currentDate);
+    } catch (error) {
+      showAlert(error.message || 'Could not cancel this appointment.', 'danger');
+    }
+  }
+
   async function loadSchedule(dateStr) {
     const loading = document.getElementById('scheduleLoading');
     const grid = document.getElementById('scheduleGridContainer');
@@ -322,6 +340,9 @@
                 <strong>${escapeHtml(appointment.patient_name || `Patient ${appointment.patient_id || ''}`)}</strong>
                 <span>${escapeHtml(appointment.status || 'Booked')} · ${escapeHtml(appointment.id || '')}</span>
                 <span>Fee: ${MediSlotMoney.formatINR(appointment.fee_amount || 0)}</span>
+                ${appointment.status === 'CONFIRMED'
+                  ? `<button type="button" class="btn btn-secondary btn-sm" data-cancel-appointment="${escapeHtml(appointment.id)}">Cancel appointment</button>`
+                  : ''}
               </article>
             `).join('')
           : `<p class="slot-vacancy">No bookings. ${slot.free_seats ?? 0} seat${slot.free_seats === 1 ? '' : 's'} available.</p>`;
@@ -351,6 +372,13 @@
             </div>
           </details>
         `;
+        card.querySelectorAll('[data-cancel-appointment]').forEach(button => {
+          button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelDoctorAppointment(button.dataset.cancelAppointment);
+          });
+        });
         grid.appendChild(card);
       });
 
