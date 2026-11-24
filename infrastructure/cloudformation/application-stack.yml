@@ -865,6 +865,9 @@ Resources:
           SLOTS_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-SlotsTableName-${Environment}"
+          IDEMPOTENCY_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-IdempotencyTableName-${Environment}"
       Events:
         BookingQueue:
           Type: SQS

@@ -110,6 +110,10 @@ def _reserve_slot_once(request: dict[str, Any], slot: dict[str, Any]) -> None:
         raise RuntimeError("Booking tables are not configured.")
 
     condition, values, update = _slot_reservation_condition(slot)
+    canonical_doctor_id = str(slot.get("doctor_id") or request["doctor_id"]).strip()
+    canonical_slot_sk = str(slot.get("slot_sk") or request["slot_sk"]).strip()
+    if not canonical_doctor_id or not canonical_slot_sk:
+        raise RuntimeError("Slot reservation key fields are missing.")
     table_names = {
         "slots": SLOTS_TABLE_NAME,
         "idempotency": IDEMPOTENCY_TABLE_NAME,
@@ -120,8 +124,8 @@ def _reserve_slot_once(request: dict[str, Any], slot: dict[str, Any]) -> None:
                 "TableName": table_names["slots"],
                 "Key": _serialize_values(
                     {
-                        "doctor_id": str(request["doctor_id"]),
-                        "slot_sk": str(request["slot_sk"]),
+                        "doctor_id": canonical_doctor_id,
+                        "slot_sk": canonical_slot_sk,
                     }
                 ),
                 "UpdateExpression": update,
