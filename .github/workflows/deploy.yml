@@ -464,8 +464,10 @@ jobs:
 
           test -f src/patient/requirements.txt
           test -f src/read_api/requirements.txt
+          test -f src/booking_worker/requirements.txt
           grep -Fxq 'PyMySQL==1.1.1' src/patient/requirements.txt
           grep -Fxq 'PyMySQL==1.1.1' src/read_api/requirements.txt
+          grep -Fxq 'PyMySQL==1.1.1' src/booking_worker/requirements.txt
 
           sam build \
             --template-file "$APPLICATION_TEMPLATE" \
@@ -473,7 +475,8 @@ jobs:
 
           test -d .aws-sam/build/MediSlotPatientFunction/pymysql
           test -d .aws-sam/build/MediSlotReadApiFunction/pymysql
-          echo "Patient and shared read API Lambdas include PyMySQL."
+          test -d .aws-sam/build/MediSlotBookingWorker/pymysql
+          echo "Patient, read API, and booking worker Lambdas include PyMySQL."
 
       - name: Upload built application artifact
         uses: actions/upload-artifact@v4

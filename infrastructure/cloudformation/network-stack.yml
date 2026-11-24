@@ -414,6 +414,26 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  MediSlotSQSInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sqs"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref MediSlotPrivateSubnet1
+        - !Ref MediSlotPrivateSubnet2
+      SecurityGroupIds:
+        - !Ref MediSlotLambdaEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-SQS-Endpoint-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
   # ----------------------------------------------------------
   # LAMBDA SECURITY GROUP
   # ----------------------------------------------------------

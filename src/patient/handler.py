@@ -1,16 +1,20 @@
 """Patient dashboard and booking API."""
 
 import base64
+import hashlib
 import json
 import logging
+import os
+import re
 import time
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+import boto3
 from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from shared.booking import calculate_refund, format_money, load_refund_policy
 from shared.database import database_transaction, execute_query, execute_write
 from shared.notifications import publish_appointment_notification
@@ -23,17 +27,29 @@ from shared.waitlist import (
 )
 from read_api.service import (
     convert_booked_seat_to_hold,
-    convert_held_seat_to_booked,
     convert_held_seat_to_booking,
     get_slot_by_id,
     release_slot_seat,
-    reserve_slot_seat,
+    convert_held_seat_to_booked,
     slot_availability_state,
     slot_id_for_datetime,
 )
 
 
 logger = logging.getLogger(__name__)
+BOOKING_QUEUE_URL = os.environ.get("BOOKING_QUEUE_URL", "").strip()
+IDEMPOTENCY_TABLE_NAME = os.environ.get("IDEMPOTENCY_TABLE", "").strip()
+_dynamodb = boto3.resource(
+    "dynamodb",
+    region_name=os.environ.get("AWS_REGION", "ap-south-1"),
+)
+_idempotency_table = (
+    _dynamodb.Table(IDEMPOTENCY_TABLE_NAME) if IDEMPOTENCY_TABLE_NAME else None
+)
+BOOKING_QUEUE = boto3.client(
+    "sqs",
+    region_name=os.environ.get("AWS_REGION", "ap-south-1"),
+)
 
 
 def _json_value(value: Any) -> Any:
@@ -73,6 +89,173 @@ def _get_request_body(event: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _request_header(event: dict[str, Any], name: str) -> str:
+    headers = event.get("headers") or {}
+    target = name.lower()
+    return next(
+        (str(value).strip() for key, value in headers.items() if str(key).lower() == target),
+        "",
+    )
+
+
+def _submit_booking_request(
+    patient_id: str,
+    user_id: str,
+    consultation_type_id: str,
+    appointment_dt_utc: datetime,
+    idempotency_key: str,
+) -> tuple[int, dict[str, Any]]:
+    if not BOOKING_QUEUE_URL or not _idempotency_table:
+        logger.error("Booking queue or idempotency table is not configured.")
+        return 503, {"message": "Booking is temporarily unavailable."}
+
+    canonical_request = json.dumps(
+        {
+            "consultation_type_id": consultation_type_id,
+            "appointment_datetime": appointment_dt_utc.isoformat(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    request_hash = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
+    scope_key = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    now = int(time.time())
+    existing = _idempotency_table.get_item(
+        Key={"user_id": user_id, "scope_key": scope_key},
+        ConsistentRead=True,
+    ).get("Item")
+
+    if existing and int(existing.get("expires_at", 0)) > now:
+        if existing.get("request_hash") != request_hash:
+            return 409, {
+                "message": "This idempotency key was already used for a different booking request."
+            }
+    else:
+        consultation_rows = execute_query(
+            """
+            SELECT ct.consultation_type_id, ct.doctor_id, ct.is_active,
+                   d.is_verified
+            FROM consultation_types ct
+            JOIN doctors d ON d.doctor_id = ct.doctor_id
+            WHERE ct.consultation_type_id = %s
+            LIMIT 1
+            """,
+            (consultation_type_id,),
+        )
+        if not consultation_rows:
+            return 404, {"message": "Consultation type not found."}
+        consultation = consultation_rows[0]
+        if not consultation.get("is_active") or not consultation.get("is_verified"):
+            return 409, {"message": "This consultation type is not currently bookable."}
+
+        slot_id = slot_id_for_datetime(consultation_type_id, appointment_dt_utc)
+        slot = get_slot_by_id(slot_id)
+        if (
+            not slot
+            or str(slot.get("doctor_id")) != str(consultation["doctor_id"])
+            or slot_availability_state(slot) in {"missing", "inactive", "past", "no_capacity"}
+        ):
+            return 409, {"message": "Selected consultation slot is not currently available."}
+
+        request_item = {
+            "user_id": user_id,
+            "scope_key": scope_key,
+            "request_id": scope_key,
+            "booking_id": str(uuid.uuid4()),
+            "request_hash": request_hash,
+            "patient_id": patient_id,
+            "doctor_id": str(consultation["doctor_id"]),
+            "slot_id": slot_id,
+            "slot_sk": str(slot["slot_sk"]),
+            "consultation_type_id": consultation_type_id,
+            "appointment_datetime": appointment_dt_utc.isoformat().replace("+00:00", "Z"),
+            "status": "PENDING",
+            "slot_reserved": False,
+            "expires_at": now + 30 * 86400,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        try:
+            _idempotency_table.put_item(
+                Item=request_item,
+                ConditionExpression="attribute_not_exists(user_id) OR expires_at <= :now",
+                ExpressionAttributeValues={":now": now},
+            )
+            existing = request_item
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            existing = _idempotency_table.get_item(
+                Key={"user_id": user_id, "scope_key": scope_key},
+                ConsistentRead=True,
+            ).get("Item")
+            if not existing:
+                raise RuntimeError("Could not read the existing idempotency record.")
+            if int(existing.get("expires_at", 0)) <= now:
+                _idempotency_table.put_item(
+                    Item=request_item,
+                    ConditionExpression="expires_at <= :now",
+                    ExpressionAttributeValues={":now": now},
+                )
+                existing = request_item
+            elif existing.get("request_hash") != request_hash:
+                return 409, {
+                    "message": "This idempotency key was already used for a different booking request."
+                }
+
+    request_id = str(existing["request_id"])
+    status = str(existing.get("status", "PENDING"))
+    if status == "CONFIRMED":
+        return 200, {
+            "request_id": request_id,
+            "status": status,
+            "appointment_id": existing.get("appointment_id"),
+            "message": existing.get("result_message") or "Appointment confirmed.",
+        }
+    if status == "DECLINED":
+        return 409, {
+            "request_id": request_id,
+            "status": status,
+            "message": existing.get("result_message") or "Booking request was declined.",
+        }
+    if status == "FAILED":
+        _idempotency_table.update_item(
+            Key={"user_id": user_id, "scope_key": scope_key},
+            UpdateExpression="SET #status = :pending, updated_at = :now",
+            ConditionExpression="#status = :failed",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":pending": "PENDING",
+                ":failed": "FAILED",
+                ":now": now,
+            },
+        )
+
+    try:
+        BOOKING_QUEUE.send_message(
+            QueueUrl=BOOKING_QUEUE_URL,
+            MessageBody=json.dumps(
+                {"user_id": user_id, "scope_key": scope_key}
+            ),
+            MessageGroupId=f"{existing['doctor_id']}#{existing['slot_sk']}",
+            MessageDeduplicationId=str(existing["booking_id"]),
+        )
+    except BotoCoreError:
+        logger.exception("Could not enqueue booking request.")
+        return 503, {"message": "Booking is temporarily unavailable. Please retry."}
+
+    return (
+        202,
+        {
+            "request_id": request_id,
+            "status": "PENDING",
+            "message": "Booking request received and is being processed.",
+            "status_url": f"/patients/me/booking-requests/{request_id}",
+        },
+    )
 
 
 def _coerce_utc_datetime(raw_value: Any) -> datetime | None:
@@ -664,9 +847,11 @@ def _cancel_patient_appointment(
     if not slot:
         logger.error("Cannot cancel appointment %s because its slot is missing.", appointment_id)
         return 409, {"message": "Appointment slot is unavailable for cancellation."}
-    convert_booked_seat_to_hold(slot)
 
+    seat_held = False
     try:
+        convert_booked_seat_to_hold(slot)
+        seat_held = True
         with database_transaction() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -696,10 +881,11 @@ def _cancel_patient_appointment(
                     )
     except Exception:
         logger.exception("Patient cancellation failed for appointment %s.", appointment_id)
-        try:
-            convert_held_seat_to_booked(slot)
-        except Exception:
-            logger.exception("Cancellation compensation failed for appointment %s.", appointment_id)
+        if seat_held:
+            try:
+                convert_held_seat_to_booked(slot)
+            except Exception:
+                logger.exception("Patient cancellation seat compensation failed.")
         return 500, {"message": "Cancellation could not be completed. Please retry or contact support."}
 
     try:
@@ -911,6 +1097,37 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
     if method == "GET" and path == "/patients/doctors/search-options":
         return _response(200, _doctor_search_options())
 
+    if (
+        method == "GET"
+        and len(path_parts) == 4
+        and path_parts[:3] == ["patients", "me", "booking-requests"]
+    ):
+        if not _idempotency_table:
+            logger.error("Idempotency table is not configured.")
+            return _response(503, {"message": "Booking status is temporarily unavailable."})
+        request = _idempotency_table.get_item(
+            Key={
+                "user_id": str(authorizer.get("userId") or authorizer.get("sub") or patient_id),
+                "scope_key": path_parts[3],
+            },
+            ConsistentRead=True,
+        ).get("Item")
+        if not request:
+            return _response(404, {"message": "Booking request not found."})
+        return _response(
+            200,
+            {
+                "booking_request": {
+                    "request_id": request["request_id"],
+                    "status": request.get("status", "PENDING"),
+                    "appointment_id": request.get("appointment_id"),
+                    "result_message": request.get("result_message"),
+                    "created_at": request.get("created_at"),
+                    "updated_at": request.get("updated_at"),
+                }
+            },
+        )
+
     if method == "GET" and path == "/patients/me/waitlists":
         return _response(200, _patient_waitlists(patient_id))
 
@@ -972,114 +1189,17 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
         if appointment_dt_utc <= datetime.now(timezone.utc):
             return _response(400, {"message": "Appointments must be scheduled in the future."})
 
-        existing = execute_query(
-            """
-            SELECT appointment_id
-            FROM appointments
-            WHERE patient_id = %s
-              AND consultation_type_id = %s
-              AND appointment_datetime = %s
-              AND appointment_status NOT IN (
-                  'CANCELLED', 'CANCELLED_BY_PATIENT', 'CANCELLED_BY_DOCTOR'
-              )
-            LIMIT 1
-            """,
-            (patient_id, consultation_type_id, appointment_dt_utc.strftime("%Y-%m-%d %H:%M:%S")),
+        idempotency_key = _request_header(event, "Idempotency-Key")
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_key):
+            return _response(400, {"message": "A valid Idempotency-Key header is required."})
+
+        status_code, response = _submit_booking_request(
+            patient_id,
+            str(authorizer.get("userId") or authorizer.get("sub") or patient_id),
+            consultation_type_id,
+            appointment_dt_utc,
+            idempotency_key,
         )
-        if existing:
-            return _response(409, {"message": "You already have an appointment for this slot."})
-
-        consultation_row = execute_query(
-            """
-            SELECT ct.consultation_type_id, ct.doctor_id, ct.fee, ct.capacity, ct.is_active,
-                   catalog.duration_minutes,
-                   d.first_name, d.last_name, d.is_verified
-            FROM consultation_types ct
-            JOIN doctors d ON d.doctor_id = ct.doctor_id
-            JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
-            WHERE ct.consultation_type_id = %s
-            LIMIT 1
-            """,
-            (consultation_type_id,),
-        )
-        if not consultation_row:
-            return _response(404, {"message": "Consultation type not found."})
-
-        consultation = consultation_row[0]
-        if not consultation.get("is_active"):
-            return _response(409, {"message": "This consultation type is inactive."})
-        if not consultation.get("is_verified"):
-            return _response(409, {"message": "Doctor profile is not verified."})
-
-        slot_id = slot_id_for_datetime(consultation_type_id, appointment_dt_utc)
-        slot = get_slot_by_id(slot_id)
-        slot_state = slot_availability_state(slot)
-        if slot_state != "available":
-            message = {
-                "missing": "Selected consultation slot is not available yet.",
-                "inactive": "This slot is inactive and cannot be booked.",
-                "past": "Appointments must be scheduled in the future.",
-                "full": "This slot is already full. Please choose another time.",
-                "no_capacity": "This consultation type has no available seats.",
-            }[slot_state]
-            return _response(409, {"message": message})
-
-        appointment_id = str(uuid.uuid4())
-        try:
-            reserve_slot_seat(
-                slot,
-                int(consultation.get("capacity") or 1),
-            )
-        except Exception:
-            return _response(409, {"message": "This slot has just been filled. Please select another time."})
-
-        try:
-            with database_transaction() as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        INSERT INTO appointments (
-                            appointment_id, patient_id, consultation_type_id, appointment_datetime, appointment_status
-                        ) VALUES (%s, %s, %s, %s, 'CONFIRMED')
-                        """,
-                        (appointment_id, patient_id, consultation_type_id, appointment_dt_utc.strftime("%Y-%m-%d %H:%M:%S")),
-                    )
-                    cursor.execute(
-                        """
-                        INSERT INTO payments (
-                            payment_id, appointment_id, amount, payment_status, payment_method
-                        ) VALUES (%s, %s, %s, 'INITIATED', 'PAY_AT_CLINIC')
-                        """,
-                        (str(uuid.uuid4()), appointment_id, consultation["fee"]),
-                    )
-        except Exception:
-            logger.exception("Unable to create appointment %s.", appointment_id)
-            try:
-                release_slot_seat(slot)
-            except Exception:
-                logger.exception("Could not release a reserved slot after appointment creation failed.")
-            return _response(409, {"message": "Unable to confirm this appointment. Please refresh availability and try again."})
-
-        try:
-            publish_appointment_notification(
-                appointment_id=appointment_id,
-                event_type="APPOINTMENT_BOOKED",
-                patient_id=patient_id,
-                consultation_type_id=consultation_type_id,
-                appointment_datetime=appointment_dt_utc,
-                message="Your appointment is confirmed. Payment is due at the clinic.",
-            )
-        except Exception:
-            logger.exception("Appointment %s was booked but its notification could not be recorded.", appointment_id)
-
-        return _response(
-            201,
-            _patient_booking_response(
-                appointment_id,
-                consultation_type_id,
-                appointment_dt_utc,
-                fee_amount=consultation["fee"],
-            ),
-        )
+        return _response(status_code, response)
 
     return _response(404, {"message": "Patient route not found."})

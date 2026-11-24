@@ -59,6 +59,7 @@ def api_call(
     path: str,
     json_body: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """
     Proxy an HTTP call to the API Gateway using the Bearer token in cookies.
@@ -69,6 +70,7 @@ def api_call(
     """
     token = request.cookies.get("access_token")
     headers: dict[str, str] = {"Content-Type": "application/json"}
+    headers.update(extra_headers or {})
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -706,7 +708,24 @@ def api_patient_book_appointment():
         return jsonify({"message": "Patient sign-in required."}), 403
 
     data = request.get_json(silent=True) or request.form.to_dict()
-    status, res = api_call("POST", "/patients/me/appointments", json_body=data)
+    idempotency_key = request.headers.get("Idempotency-Key", "")
+    status, res = api_call(
+        "POST",
+        "/patients/me/appointments",
+        json_body=data,
+        extra_headers={"Idempotency-Key": idempotency_key} if idempotency_key else {},
+    )
+    return jsonify(res), status
+
+
+@app.route("/api/patient/booking-requests/<request_id>", methods=["GET"])
+def api_patient_booking_request_status(request_id: str):
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    status, res = api_call(
+        "GET",
+        f"/patients/me/booking-requests/{request_id}",
+    )
     return jsonify(res), status
 
 

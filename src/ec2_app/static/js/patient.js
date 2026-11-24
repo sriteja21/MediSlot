@@ -1,5 +1,6 @@
 const DOCTORS_PER_PAGE = 8;
 const AVAILABILITY_WINDOW_DAYS = 30;
+const PENDING_BOOKING_STORAGE_KEY = 'medislotPendingBooking';
 let doctorPage = 1;
 let doctorTotal = 0;
 let selectedDoctor = null;
@@ -12,6 +13,7 @@ let patientAppointments = [];
 let patientWaitlistEntries = [];
 let patientWaitlistOffers = [];
 let pendingRefundAppointment = null;
+let activeBookingRequestId = sessionStorage.getItem('medislotPendingBookingRequest');
 
 async function initializePatientProfile() {
     const form = document.getElementById('patientProfileForm');
@@ -123,7 +125,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (page === 'profile') initializePatientProfile();
   if (page === 'doctors') initializeDoctorSearch();
-  if (page === 'doctor-profile') initializeDoctorProfile(screen.dataset.doctorId);
+  if (page === 'doctor-profile') {
+    initializeDoctorProfile(screen.dataset.doctorId);
+    if (activeBookingRequestId || readPendingBooking()) resumePendingBooking();
+  }
   if (page === 'appointments') {
     document.getElementById('refreshAppointments').addEventListener('click', loadAppointments);
     initializeAppointmentFilters();
@@ -527,24 +532,65 @@ async function joinSlotWaitlist(slot) {
 async function bookAppointment() {
   if (!selectedDoctor || !selectedSlot) return;
   const button = document.getElementById('bookAppointmentButton');
+  if (activeBookingRequestId) return;
+  const bookingPayload = {
+    consultation_type_id: selectedSlot.consultation_type_id,
+    appointment_datetime: selectedSlot.start_time,
+  };
+  const previousRequest = readPendingBooking();
+  if (previousRequest && !sameBookingPayload(previousRequest, bookingPayload)) return;
+  const pendingRequest = {
+    ...(previousRequest || {}),
+    idempotencyKey: previousRequest?.idempotencyKey || crypto.randomUUID(),
+    ...bookingPayload,
+  };
+  savePendingBooking(pendingRequest);
   button.disabled = true;
-  button.textContent = 'Booking...';
+  button.textContent = 'Requesting...';
   try {
-    const data = await fetchJson('/api/patient/book-appointment', {
+    const request = await fetchJson('/api/patient/book-appointment', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Idempotency-Key': crypto.randomUUID(),
+        'Idempotency-Key': pendingRequest.idempotencyKey,
       },
-      body: JSON.stringify({
-        consultation_type_id: selectedSlot.consultation_type_id,
-        appointment_datetime: selectedSlot.start_time,
-      }),
+      body: JSON.stringify(bookingPayload),
     });
-    showNotice(`Appointment booked for ${formatSlotTime(data.appointment_datetime, selectedDoctor.timezone)}.`, 'success');
+    if (request.status === 'PENDING' && request.request_id) {
+      activeBookingRequestId = request.request_id;
+      savePendingBooking({ ...pendingRequest, requestId: activeBookingRequestId });
+    }
+    let booking = request;
+    if (request.status === 'PENDING' && request.request_id) {
+      showNotice('Your booking request is queued. Checking its status…', 'info');
+      booking = await waitForBookingResult(request.request_id);
+    }
+    if (booking.status === 'PENDING') {
+      showNotice(
+        `Booking request ${activeBookingRequestId} is still processing. Do not submit another request.`,
+        'info',
+      );
+      selectedSlot = null;
+      return;
+    }
+    clearPendingBooking();
+    if (booking.status === 'DECLINED') {
+      throw new Error(booking.message || 'The booking request was declined.');
+    }
+    if (booking.status !== 'CONFIRMED') {
+      showNotice('Your booking is still processing. You can check its status in a moment.', 'info');
+      return;
+    }
+    showNotice(
+      `Appointment confirmed for ${formatSlotTime(selectedSlot.start_time, selectedDoctor.timezone)}.`,
+      'success',
+    );
     selectedSlot = null;
     await loadDoctorSlots();
   } catch (error) {
+    if (error.data?.status === 'DECLINED') {
+      clearPendingBooking();
+    }
     showNotice(error.message || 'Could not book this appointment.', 'danger');
     await loadDoctorSlots();
   } finally {
@@ -553,12 +599,130 @@ async function bookAppointment() {
   }
 }
 
+async function waitForBookingResult(requestId) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const response = await fetchJson(
+      `/api/patient/booking-requests/${encodeURIComponent(requestId)}`,
+    );
+    const booking = response.booking_request || {};
+    if (booking.status === 'CONFIRMED' || booking.status === 'DECLINED') {
+      return {
+        ...booking,
+        message: booking.result_message || booking.message,
+      };
+    }
+  }
+  return { status: 'PENDING', request_id: requestId };
+}
+
+async function resumePendingBooking() {
+  try {
+    let requestId = activeBookingRequestId;
+    let result;
+    if (!requestId) {
+      const pendingRequest = readPendingBooking();
+      if (!pendingRequest) return;
+      const request = await fetchJson('/api/patient/book-appointment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': pendingRequest.idempotencyKey,
+        },
+        body: JSON.stringify({
+          consultation_type_id: pendingRequest.consultation_type_id,
+          appointment_datetime: pendingRequest.appointment_datetime,
+        }),
+      });
+      if (request.status === 'CONFIRMED' || request.status === 'DECLINED') {
+        requestId = request.request_id;
+        result = request;
+      } else if (request.request_id) {
+        requestId = request.request_id;
+        activeBookingRequestId = requestId;
+        savePendingBooking({ ...pendingRequest, requestId });
+        result = await waitForBookingResult(requestId);
+      } else {
+        result = { status: 'PENDING', request_id: requestId };
+      }
+    } else {
+      result = await waitForBookingResult(requestId);
+    }
+    if (result.status === 'PENDING') {
+      showNotice(
+        `Booking request ${requestId || 'with an uncertain response'} is still processing. Do not submit another request.`,
+        'info',
+      );
+      return;
+    }
+    clearPendingBooking();
+    if (result.status === 'CONFIRMED') {
+      showNotice(`Booking request ${requestId} is confirmed.`, 'success');
+    } else {
+      showNotice(result.message || 'The booking request was declined.', 'danger');
+    }
+  } catch (error) {
+    if (error.data?.status === 'DECLINED') {
+      clearPendingBooking();
+    }
+    showNotice(error.message || 'Could not check the booking request status.', 'danger');
+  }
+}
+
+function readPendingBooking() {
+  const stored = sessionStorage.getItem(PENDING_BOOKING_STORAGE_KEY);
+  if (!stored) return null;
+  let pending;
+  try {
+    pending = JSON.parse(stored);
+  } catch {
+    sessionStorage.removeItem(PENDING_BOOKING_STORAGE_KEY);
+    return null;
+  }
+  if (
+    pending
+    && typeof pending === 'object'
+    && typeof pending.idempotencyKey === 'string'
+    && typeof pending.consultation_type_id === 'string'
+    && typeof pending.appointment_datetime === 'string'
+  ) {
+    return pending;
+  }
+  sessionStorage.removeItem(PENDING_BOOKING_STORAGE_KEY);
+  return null;
+}
+
+function savePendingBooking(pending) {
+  sessionStorage.setItem(PENDING_BOOKING_STORAGE_KEY, JSON.stringify(pending));
+  if (pending.requestId) {
+    sessionStorage.setItem('medislotPendingBookingRequest', pending.requestId);
+  }
+}
+
+function clearPendingBooking() {
+  activeBookingRequestId = null;
+  sessionStorage.removeItem('medislotPendingBookingRequest');
+  sessionStorage.removeItem(PENDING_BOOKING_STORAGE_KEY);
+}
+
+function sameBookingPayload(pending, payload) {
+  return pending.consultation_type_id === payload.consultation_type_id
+    && pending.appointment_datetime === payload.appointment_datetime;
+}
+
 function updateBookingButton() {
   const button = document.getElementById('bookAppointmentButton');
   if (!button) return;
+  const pendingRequest = readPendingBooking();
+  const selectedPayload = selectedSlot && {
+    consultation_type_id: selectedSlot.consultation_type_id,
+    appointment_datetime: selectedSlot.start_time,
+  };
+  const differentPendingRequest = pendingRequest && selectedPayload
+    && !sameBookingPayload(pendingRequest, selectedPayload);
   const text = document.getElementById('bookingSelectionText');
   const title = document.getElementById('bookingSelectionTitle');
-  button.disabled = !selectedSlot;
+  button.disabled = !selectedSlot || Boolean(activeBookingRequestId) || Boolean(differentPendingRequest);
   if (title) {
     title.textContent = selectedSlot
       ? `${selectedDoctor.doctor_name} · ${formatSlotTime(selectedSlot.start_time, selectedDoctor.timezone)}`
@@ -1072,7 +1236,12 @@ async function fetchJson(url, options = {}) {
   } catch (error) {
     data = {};
   }
-  if (!response.ok) throw new Error(data.message || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(data.message || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
   return data;
 }
 

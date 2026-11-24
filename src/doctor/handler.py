@@ -1458,8 +1458,10 @@ def cancel_doctor_appointment(doctor_id: str, appointment_id: str) -> dict[str, 
         )
         return format_response(409, {"error": "Appointment slot is unavailable for cancellation."})
 
-    convert_booked_seat_to_hold(slot)
+    seat_held = False
     try:
+        convert_booked_seat_to_hold(slot)
+        seat_held = True
         with database_transaction() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -1488,10 +1490,11 @@ def cancel_doctor_appointment(doctor_id: str, appointment_id: str) -> dict[str, 
                     )
     except Exception:
         logger.exception("Doctor cancellation failed. appointment_id=%s", appointment_id)
-        try:
-            convert_held_seat_to_booked(slot)
-        except Exception:
-            logger.exception("Doctor cancellation compensation failed. appointment_id=%s", appointment_id)
+        if seat_held:
+            try:
+                convert_held_seat_to_booked(slot)
+            except Exception:
+                logger.exception("Doctor cancellation seat compensation failed. appointment_id=%s", appointment_id)
         return format_response(
             500,
             {"error": "Cancellation could not be completed. Please retry or contact support."},

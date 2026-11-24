@@ -547,12 +547,12 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: logs:CreateLogGroup
-                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientApi-${Environment}"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientFunction-${Environment}"
               - Effect: Allow
                 Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientApi-${Environment}:*"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-PatientFunction-${Environment}:*"
         - PolicyName: !Sub "MediSlot-PatientApiTracing-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -575,6 +575,18 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:ViaService: !Sub "ssm.${Region}.${AWS::URLSuffix}"
+        - PolicyName: !Sub "MediSlot-PatientBookingIdempotency-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  Fn::ImportValue:
+                    !Sub "MediSlot-IdempotencyTableArn-${Environment}"
         - PolicyName: !Sub "MediSlot-PatientRefreshTokens-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -595,11 +607,63 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: Allow
-                Action: dynamodb:Query
+              - Sid: ReadAndProjectSlots
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - Fn::ImportValue:
+                      !Sub "MediSlot-SlotsTableArn-${Environment}"
+                  - Fn::Sub:
+                      - "${TableArn}/index/*"
+                      - TableArn:
+                          Fn::ImportValue:
+                            !Sub "MediSlot-SlotsTableArn-${Environment}"
+        - PolicyName: !Sub "MediSlot-PatientWaitlists-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ManageWaitlistRows
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - Fn::ImportValue:
+                      !Sub "MediSlot-WaitlistTableArn-${Environment}"
+                  - Fn::Sub:
+                      - "${TableArn}/index/*"
+                      - TableArn:
+                          Fn::ImportValue:
+                            !Sub "MediSlot-WaitlistTableArn-${Environment}"
+              - Sid: ManageWaitlistOffers
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - Fn::ImportValue:
+                      !Sub "MediSlot-WaitlistOfferTableArn-${Environment}"
+                  - Fn::Sub:
+                      - "${TableArn}/index/*"
+                      - TableArn:
+                          Fn::ImportValue:
+                            !Sub "MediSlot-WaitlistOfferTableArn-${Environment}"
+              - Sid: PublishPatientNotifications
+                Effect: Allow
+                Action: dynamodb:PutItem
                 Resource:
                   Fn::ImportValue:
-                    !Sub "MediSlot-SlotsTableArn-${Environment}"
+                    !Sub "MediSlot-NotificationsTableArn-${Environment}"
         - PolicyName: !Sub "MediSlot-PatientDoctorPhotos-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"

@@ -6,9 +6,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import boto3
-from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
-
+from botocore.exceptions import ClientError
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
@@ -214,12 +213,13 @@ def reserve_slot_seat(slot: dict[str, Any], capacity: int, *, table: Any = None)
     held_count = int(slot.get("held_count") or 0)
     if held_count:
         condition = (
-            "is_active = :active AND "
+            "is_active = :active AND #capacity = :capacity AND "
             "(attribute_not_exists(booked_count) OR booked_count < :remaining_capacity) "
             "AND held_count = :held_count"
         )
         values = {
-            ":remaining_capacity": free_seats(capacity, 0, held_count),
+            ":remaining_capacity": capacity - held_count,
+            ":capacity": capacity,
             ":held_count": held_count,
             ":active": True,
             ":inc": 1,
@@ -227,7 +227,7 @@ def reserve_slot_seat(slot: dict[str, Any], capacity: int, *, table: Any = None)
         }
     else:
         condition = (
-            "is_active = :active AND "
+            "is_active = :active AND #capacity = :capacity AND "
             "(attribute_not_exists(booked_count) OR booked_count < :capacity) "
             "AND (attribute_not_exists(held_count) OR held_count = :zero)"
         )
@@ -241,8 +241,8 @@ def reserve_slot_seat(slot: dict[str, Any], capacity: int, *, table: Any = None)
         Key=slot_table_key(slot),
         UpdateExpression="SET booked_count = if_not_exists(booked_count, :zero) + :inc",
         ConditionExpression=condition,
+        ExpressionAttributeNames={"#capacity": "capacity"},
         ExpressionAttributeValues=values,
-        ReturnValues="UPDATED_NEW",
     )
 
 
@@ -261,13 +261,13 @@ def release_slot_seat(
             ConditionExpression="held_count > :zero",
             ExpressionAttributeValues={":one": 1, ":zero": 0},
         )
-        return
-    slot_table.update_item(
-        Key=slot_table_key(slot),
-        UpdateExpression="SET booked_count = booked_count - :one",
-        ConditionExpression="booked_count > :zero",
-        ExpressionAttributeValues={":one": 1, ":zero": 0},
-    )
+    else:
+        slot_table.update_item(
+            Key=slot_table_key(slot),
+            UpdateExpression="SET booked_count = booked_count - :one",
+            ConditionExpression="booked_count > :zero",
+            ExpressionAttributeValues={":one": 1, ":zero": 0},
+        )
 
 
 def hold_slot_seat(slot: dict[str, Any], *, table: Any = None) -> bool:
@@ -277,20 +277,23 @@ def hold_slot_seat(slot: dict[str, Any], *, table: Any = None) -> bool:
     slot_table = table if table is not None else get_slots_table()
     booked_count = int(slot.get("booked_count") or 0)
     held_count = int(slot.get("held_count") or 0)
-    condition = (
-        "is_active = :active AND "
-        "(attribute_not_exists(booked_count) OR booked_count = :booked) AND "
-        "(attribute_not_exists(held_count) OR held_count = :held)"
-    )
     try:
         slot_table.update_item(
             Key=slot_table_key(slot),
             UpdateExpression="SET held_count = if_not_exists(held_count, :zero) + :one",
-            ConditionExpression=condition,
+            ConditionExpression=(
+                "is_active = :active AND #capacity = :capacity "
+                "AND (attribute_not_exists(booked_count) OR "
+                "(booked_count = :booked AND booked_count < :remaining)) "
+                "AND (attribute_not_exists(held_count) OR held_count = :held) "
+            ),
+            ExpressionAttributeNames={"#capacity": "capacity"},
             ExpressionAttributeValues={
                 ":active": True,
+                ":capacity": int(slot["capacity"]),
                 ":booked": booked_count,
                 ":held": held_count,
+                ":remaining": int(slot["capacity"]) - held_count,
                 ":zero": 0,
                 ":one": 1,
             },
@@ -302,7 +305,11 @@ def hold_slot_seat(slot: dict[str, Any], *, table: Any = None) -> bool:
     return True
 
 
-def convert_booked_seat_to_hold(slot: dict[str, Any], *, table: Any = None) -> None:
+def convert_booked_seat_to_hold(
+    slot: dict[str, Any],
+    *,
+    table: Any = None,
+) -> None:
     """Keep a cancelled booking's seat unavailable while its cancellation commits."""
     slot_table = table if table is not None else get_slots_table()
     slot_table.update_item(
@@ -349,9 +356,10 @@ def convert_held_seat_to_booking(
             "ADD held_count :negative_one"
         ),
         ConditionExpression=(
-            "held_count > :zero AND "
+            "held_count > :zero AND #capacity = :capacity AND "
             "(attribute_not_exists(booked_count) OR booked_count < :capacity)"
         ),
+        ExpressionAttributeNames={"#capacity": "capacity"},
         ExpressionAttributeValues={
             ":zero": 0,
             ":one": 1,

@@ -584,6 +584,49 @@ Resources:
             Path: /doctors/me/appointments/{appointment_id}/cancel
             Method: POST
 
+  MediSlotBookingDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-Booking-${Environment}-dlq.fifo"
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+
+  MediSlotBookingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-Booking-${Environment}.fifo"
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MediSlotBookingDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  MediSlotBookingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref MediSlotBookingQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPatientApiToEnqueueBookings
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue:
+                  !Sub "MediSlot-PatientLambdaRoleArn-${Environment}"
+            Action: sqs:SendMessage
+            Resource: !GetAtt MediSlotBookingQueue.Arn
+
+  MediSlotBookingWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MediSlot-BookingWorker-${Environment}"
+      RetentionInDays: 14
+
   MediSlotPatientFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -595,7 +638,10 @@ Resources:
       MemorySize: 256
       Role:
         Fn::ImportValue:
-          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+          !Sub "MediSlot-PatientLambdaRoleArn-${Environment}"
+      Environment:
+        Variables:
+          BOOKING_QUEUE_URL: !Ref MediSlotBookingQueue
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue:
@@ -648,6 +694,12 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /patients/me/appointments
             Method: POST
+        PatientBookingRequestStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/booking-requests/{request_id}
+            Method: GET
         PatientAppointmentCancel:
           Type: Api
           Properties:
@@ -689,6 +741,140 @@ Resources:
           Properties:
             Schedule: rate(1 minute)
             Enabled: true
+
+  MediSlotBookingWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MediSlot-BookingWorkerRole-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+      Policies:
+        - PolicyName: !Sub "MediSlot-BookingWorkerLogs-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-BookingWorker-${Environment}"
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-BookingWorker-${Environment}:*"
+        - PolicyName: !Sub "MediSlot-BookingWorkerTracing-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+        - PolicyName: !Sub "MediSlot-BookingWorkerQueue-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt MediSlotBookingQueue.Arn
+        - PolicyName: !Sub "MediSlot-BookingWorkerDatabase-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${AWS::Region}.${AWS::URLSuffix}"
+        - PolicyName: !Sub "MediSlot-BookingWorkerSlots-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:TransactWriteItems
+                Resource:
+                  Fn::ImportValue:
+                    !Sub "MediSlot-SlotsTableArn-${Environment}"
+        - PolicyName: !Sub "MediSlot-BookingWorkerIdempotency-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:TransactWriteItems
+                Resource:
+                  Fn::ImportValue:
+                    !Sub "MediSlot-IdempotencyTableArn-${Environment}"
+        - PolicyName: !Sub "MediSlot-BookingWorkerNotifications-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource:
+                  Fn::ImportValue:
+                    !Sub "MediSlot-NotificationsTableArn-${Environment}"
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-BookingWorkerRole-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotBookingWorker:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-BookingWorker-${Environment}"
+      Description: !Sub "Processes booking requests from the FIFO queue (${Environment})."
+      CodeUri: ../../src/booking_worker/
+      Handler: handler.lambda_handler
+      Timeout: 60
+      MemorySize: 512
+      Role: !GetAtt MediSlotBookingWorkerRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsTableName-${Environment}"
+      Events:
+        BookingQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MediSlotBookingQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
 
   # ==========================================================
   # DAILY SLOT MATERIALISER

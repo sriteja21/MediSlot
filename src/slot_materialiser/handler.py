@@ -86,6 +86,7 @@ def update_unbooked_slot(
     is_blocked: bool,
     inactive_reason: str,
     capacity: int | None = None,
+    booked_count: int | None = None,
     end_time: str | None = None,
 ) -> bool:
     """Update a slot only if it has no booked seats."""
@@ -105,6 +106,9 @@ def update_unbooked_slot(
         expressions.append("#capacity = :capacity")
         attribute_names["#capacity"] = "capacity"
         values[":capacity"] = capacity
+    if booked_count is not None:
+        expressions.append("booked_count = :booked_count")
+        values[":booked_count"] = booked_count
     if end_time is not None:
         expressions.append("end_time = :end_time")
         values[":end_time"] = end_time
@@ -116,7 +120,8 @@ def update_unbooked_slot(
         },
         "UpdateExpression": "SET " + ", ".join(expressions),
         "ConditionExpression": (
-            "attribute_not_exists(booked_count) OR booked_count = :zero"
+            "(attribute_not_exists(booked_count) OR booked_count = :zero) "
+            "AND (attribute_not_exists(held_count) OR held_count = :zero)"
         ),
         "ExpressionAttributeValues": values,
     }
@@ -297,6 +302,53 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     logger.info("Retrieved %d blackout date entries for active doctors in window", len(blackout_rows))
 
+    booking_rows = execute_query(
+        f"""
+        SELECT ct.doctor_id, a.consultation_type_id, a.appointment_datetime,
+               catalog.duration_minutes
+        FROM appointments a
+        JOIN consultation_types ct
+          ON ct.consultation_type_id = a.consultation_type_id
+        JOIN consultation_catalog catalog
+          ON catalog.consultation_type_id = ct.catalog_type_id
+        WHERE ct.doctor_id IN ({format_strings})
+          AND a.appointment_datetime >= %s
+          AND a.appointment_datetime < %s
+          AND a.appointment_status IN ('PENDING', 'CONFIRMED')
+        """,
+        tuple(doctor_ids) + (
+            window_start_utc.replace(tzinfo=None),
+            window_end_utc.replace(tzinfo=None),
+        ),
+    )
+    booked_counts: dict[tuple[str, str], int] = {}
+    booked_ranges_from_rds: dict[str, list[tuple[str, datetime, datetime]]] = {
+        doctor_id: [] for doctor_id in doctor_ids
+    }
+    for row in booking_rows:
+        doctor_id = str(row["doctor_id"])
+        consultation_type_id = str(row["consultation_type_id"])
+        start = row["appointment_datetime"]
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        else:
+            start = start.astimezone(timezone.utc)
+        slot_id = f"{consultation_type_id}#{int(start.timestamp())}"
+        booked_counts[(doctor_id, slot_id)] = (
+            booked_counts.get((doctor_id, slot_id), 0) + 1
+        )
+        booked_ranges_from_rds[doctor_id].append(
+            (
+                slot_id,
+                start,
+                start + timedelta(minutes=int(row["duration_minutes"])),
+            )
+        )
+    logger.info(
+        "Retrieved %d active appointments for slot inventory reconciliation",
+        len(booking_rows),
+    )
+
     existing_by_doctor: dict[str, dict[str, dict[str, Any]]] = {}
     booked_ranges_by_doctor: dict[str, list[tuple[str, datetime, datetime]]] = {}
     for doc_id, (_, _, utc_start, utc_end) in doctor_windows.items():
@@ -320,6 +372,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     to_utc_datetime(item["end_time"]),
                 )
             )
+        booked_ranges_by_doctor[doc_id].extend(
+            booked_ranges_from_rds.get(doc_id, [])
+        )
 
     total_generated = 0
     total_updated = 0
@@ -441,7 +496,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                             "start_time": start_iso,
                             "end_time": end_iso,
                             "capacity": capacity,
-                            "booked_count": 0,
+                            "booked_count": booked_counts.get((doc_id, slot_id), 0),
                             "is_active": not is_blocked,
                             "is_blocked": is_blocked,
                             "inactive_reason": inactive_reason,
@@ -452,7 +507,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         day_ranges.append((slot_start_dt, slot_end_dt))
                         slot_start_dt = slot_end_dt
 
-    # 4. Reconcile generated slots against DynamoDB without modifying bookings.
+    # 4. Reconcile generated slots against DynamoDB without modifying active reservations.
     for doc_id, (_, _, utc_start, utc_end) in doctor_windows.items():
         existing_by_id = existing_by_doctor[doc_id]
         desired_for_doctor = {
@@ -488,6 +543,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 is_blocked=bool(item["is_blocked"]),
                 inactive_reason=str(item["inactive_reason"]),
                 capacity=int(item["capacity"]),
+                booked_count=int(item["booked_count"]),
                 end_time=str(item["end_time"]),
             ):
                 total_updated += 1
