@@ -168,8 +168,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, list[dict[s
             except (BotoCoreError, ClientError, RuntimeError) as exc:
                 _mark_failed(notification, int(time.time()))
                 logger.error(
-                    "Notification delivery failed; queue retry will be used (%s).",
+                    "Notification delivery failed; queue retry will be used (%s): %s",
                     type(exc).__name__,
+                    exc,
                 )
                 if message_id:
                     failures.append({"itemIdentifier": message_id})

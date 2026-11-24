@@ -544,6 +544,13 @@ jobs:
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
           STACK_NAME="MediSlot-Application-${ENVIRONMENT}"
 
+          SES_FROM_EMAIL="$(jq -r '.[] | select(.ParameterKey == "SESFromEmail") | .ParameterValue' \
+            infrastructure/cloudformation/parameters/application.json)"
+          if [[ -z "$SES_FROM_EMAIL" || "$SES_FROM_EMAIL" == "null" ]]; then
+            echo "::error::SESFromEmail is missing from infrastructure/cloudformation/parameters/application.json."
+            exit 1
+          fi
+
           JWT_SECRET_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/auth/jwt-secret"
           DATABASE_CREDENTIALS_PARAMETER_NAME="/MediSlot/${ENVIRONMENT}/database/application-credentials"
           REPORTS_BUCKET="$(aws cloudformation describe-stacks \
@@ -569,7 +576,8 @@ jobs:
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
               JWTSecretParameterName="$JWT_SECRET_PARAMETER_NAME" \
-              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME"
+              DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME" \
+              SESFromEmail="$SES_FROM_EMAIL"
 
           RESULT_FILE="$RUNNER_TEMP/medislot-slot-materialiser-result.json"
           aws lambda invoke \
