@@ -529,6 +529,7 @@ def _mark_confirmed(
             ":appointment": appointment_id,
             ":message": "Appointment confirmed.",
             ":reserved": owns_slot,
+            ":true": True,
             ":now": int(time.time()),
         },
     )
