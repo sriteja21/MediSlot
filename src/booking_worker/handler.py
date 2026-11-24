@@ -170,7 +170,7 @@ def _reserve_slot(request: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Reserved slot record is missing.")
         return slot
 
-    last_cancellation_codes: list[str] = []
+    last_cancellation_reasons: list[dict[str, str]] = []
     for attempt in range(MAX_RESERVATION_RETRIES):
         slot = _get_slot(str(request["doctor_id"]), str(request["slot_sk"]))
         if not slot:
@@ -185,9 +185,27 @@ def _reserve_slot(request: dict[str, Any]) -> dict[str, Any]:
             if error_code != "TransactionCanceledException":
                 raise
             cancellation_reasons = exc.response.get("CancellationReasons") or []
-            last_cancellation_codes = [
-                str(reason.get("Code", "Unknown")) for reason in cancellation_reasons
+            last_cancellation_reasons = [
+                {
+                    "code": str(reason.get("Code", "Unknown")),
+                    "message": str(reason.get("Message", ""))[:300],
+                }
+                for reason in cancellation_reasons
             ]
+            if any(reason["code"] == "ValidationError" for reason in last_cancellation_reasons):
+                logger.error(
+                    "Slot reservation transaction has a permanent validation error. "
+                    "cancellation_reasons=%s",
+                    last_cancellation_reasons,
+                )
+                raise RuntimeError(
+                    "Slot reservation transaction failed validation: "
+                    + "; ".join(
+                        reason["message"] or reason["code"]
+                        for reason in last_cancellation_reasons
+                        if reason["code"] == "ValidationError"
+                    )
+                ) from exc
             latest = _get_request(str(request["user_id"]), str(request["scope_key"]))
             if latest and latest.get("slot_reserved"):
                 request["slot_reserved"] = True
@@ -205,14 +223,14 @@ def _reserve_slot(request: dict[str, Any]) -> dict[str, Any]:
             if attempt < MAX_RESERVATION_RETRIES - 1:
                 time.sleep(min(0.05 * (2**attempt), 0.8) + random.uniform(0, 0.05))
     logger.error(
-        "Slot reservation transaction kept cancelling. cancellation_codes=%s retries=%d",
-        last_cancellation_codes,
+        "Slot reservation transaction kept cancelling. cancellation_reasons=%s retries=%d",
+        last_cancellation_reasons,
         MAX_RESERVATION_RETRIES,
     )
     raise RuntimeError(
         "Could not safely reserve the selected slot after "
         f"{MAX_RESERVATION_RETRIES} attempts "
-        f"(transaction cancellation codes: {', '.join(last_cancellation_codes) or 'unavailable'})."
+        f"(transaction cancellation reasons: {last_cancellation_reasons or 'unavailable'})."
     )
 
 
