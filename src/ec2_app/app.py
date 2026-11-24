@@ -8,6 +8,8 @@ HttpOnly cookies with automatic token refresh on 401 responses.
 
 import logging
 import os
+import re
+import secrets
 from functools import wraps
 from typing import Any
 
@@ -708,12 +710,17 @@ def api_patient_book_appointment():
         return jsonify({"message": "Patient sign-in required."}), 403
 
     data = request.get_json(silent=True) or request.form.to_dict()
-    idempotency_key = request.headers.get("Idempotency-Key", "")
+    idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_key):
+        logger.warning(
+            "Booking request arrived without a valid Idempotency-Key; generated a replacement."
+        )
+        idempotency_key = secrets.token_hex(16)
     status, res = api_call(
         "POST",
         "/patients/me/appointments",
         json_body=data,
-        extra_headers={"Idempotency-Key": idempotency_key} if idempotency_key else {},
+        extra_headers={"Idempotency-Key": idempotency_key},
     )
     return jsonify(res), status
 
