@@ -1,40 +1,26 @@
-"""Persist and deliver idempotent patient and doctor email notifications."""
+"""Queue notification events for the dedicated notification dispatcher."""
 
+import hashlib
+import json
 import logging
 import os
-import time
 from typing import Any
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
 
 
 logger = logging.getLogger(__name__)
-_dynamodb = None
-_ses = None
+_sqs = None
 
 
-def _notifications_table() -> Any:
-    global _dynamodb
-    table_name = os.environ.get("NOTIFICATIONS_TABLE", "").strip()
-    if not table_name:
-        raise RuntimeError("NOTIFICATIONS_TABLE is not configured.")
-    if _dynamodb is None:
-        _dynamodb = boto3.resource(
-            "dynamodb",
+def _queue_client() -> Any:
+    global _sqs
+    if _sqs is None:
+        _sqs = boto3.client(
+            "sqs",
             region_name=os.environ.get("AWS_REGION", "ap-south-1"),
         )
-    return _dynamodb.Table(table_name)
-
-
-def _ses_client() -> Any:
-    global _ses
-    if _ses is None:
-        _ses = boto3.client(
-            "ses",
-            region_name=os.environ.get("AWS_REGION", "ap-south-1"),
-        )
-    return _ses
+    return _sqs
 
 
 def publish_email_notification(
@@ -46,59 +32,39 @@ def publish_email_notification(
     subject: str,
     message: str,
 ) -> None:
-    """Write a deduplicated notification and send it through SES."""
+    """Enqueue an email event. This module never writes notification records or sends email."""
+    event_key = event_key.strip()
+    event_type = event_type.strip()
     user_id = recipient_user_id.strip()
     email = recipient_email.strip()
-    if not user_id or not email:
-        logger.error(
-            "Notification recipient is missing an account ID or email for event %s.",
-            event_key,
-        )
-        return
+    queue_url = os.environ.get("NOTIFICATION_QUEUE_URL", "").strip()
+    if (
+        not event_key
+        or not event_type
+        or not user_id
+        or not email
+        or not subject.strip()
+        or not message.strip()
+        or not queue_url
+    ):
+        raise RuntimeError("Notification queue or recipient configuration is missing.")
 
     notification_id = f"{event_key}#{user_id}"
-    now = int(time.time())
-    item = {
-        "recipient_user_id": user_id,
+    payload = {
         "notification_id": notification_id,
         "event_type": event_type,
+        "recipient_user_id": user_id,
+        "recipient_email": email,
         "subject": subject,
         "message": message,
-        "created_at": now,
-        "expires_at": now + 60 * 60 * 24 * 90,
-        "delivery_status": "PENDING",
     }
-    try:
-        _notifications_table().put_item(
-            Item=item,
-            ConditionExpression="attribute_not_exists(recipient_user_id)",
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            logger.info("Skipping duplicate notification event %s.", event_key)
-            return
-        raise
-
-    sender = os.environ.get("SES_FROM_EMAIL", "").strip()
-    if not sender:
-        _set_delivery_status(user_id, notification_id, "BLOCKED")
-        logger.error("SES_FROM_EMAIL is not configured; notification %s was persisted but not emailed.", notification_id)
-        return
-
-    try:
-        _ses_client().send_email(
-            Source=sender,
-            Destination={"ToAddresses": [email]},
-            Message={
-                "Subject": {"Data": subject, "Charset": "UTF-8"},
-                "Body": {"Text": {"Data": message, "Charset": "UTF-8"}},
-            },
-        )
-    except (BotoCoreError, ClientError):
-        _set_delivery_status(user_id, notification_id, "FAILED")
-        logger.exception("SES delivery failed for notification %s.", notification_id)
-        return
-    _set_delivery_status(user_id, notification_id, "SENT")
+    deduplication_id = hashlib.sha256(notification_id.encode("utf-8")).hexdigest()
+    _queue_client().send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+        MessageGroupId=user_id,
+        MessageDeduplicationId=deduplication_id,
+    )
 
 
 def publish_appointment_notification(
@@ -111,7 +77,7 @@ def publish_appointment_notification(
     message: str,
     patient_only: bool = False,
 ) -> None:
-    """Notify the appointment's patient and doctor through the shared SES publisher."""
+    """Resolve appointment recipients and enqueue an event for each recipient."""
     from shared.database import execute_query
 
     rows = execute_query(
@@ -130,8 +96,9 @@ def publish_appointment_notification(
         (consultation_type_id, patient_id),
     )
     if not rows:
-        logger.error("Could not resolve notification recipients for appointment %s.", appointment_id)
+        logger.warning("Notification recipient lookup returned no rows.")
         return
+
     contacts = rows[0]
     timestamp = appointment_datetime.isoformat()
     recipients = [
@@ -139,6 +106,7 @@ def publish_appointment_notification(
     ]
     if not patient_only:
         recipients.append((contacts["doctor_user_id"], contacts["doctor_email"], "doctor"))
+
     for user_id, email, recipient_role in recipients:
         publish_email_notification(
             event_key=f"{appointment_id}#{event_type}",
@@ -151,18 +119,3 @@ def publish_appointment_notification(
                 f"Appointment: {timestamp}\nRecipient: {recipient_role}"
             ),
         )
-
-
-def _set_delivery_status(
-    recipient_user_id: str,
-    notification_id: str,
-    status: str,
-) -> None:
-    _notifications_table().update_item(
-        Key={
-            "recipient_user_id": recipient_user_id,
-            "notification_id": notification_id,
-        },
-        UpdateExpression="SET delivery_status = :status",
-        ExpressionAttributeValues={":status": status},
-    )

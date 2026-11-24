@@ -543,6 +543,26 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  MediSlotNotificationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-Notifications-${Environment}-dlq.fifo"
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+
+  MediSlotNotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-Notifications-${Environment}.fifo"
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MediSlotNotificationDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
   # ==========================================================
   # S3 BUCKET 1: PROFILE PHOTOS
   # ==========================================================
@@ -711,6 +731,12 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-NotificationsTableName-${Environment}"
 
+  NotificationQueueUrl:
+    Description: FIFO queue URL used by application notification producers.
+    Value: !Ref MediSlotNotificationQueue
+    Export:
+      Name: !Sub "MediSlot-NotificationQueueUrl-${Environment}"
+
   ProfilePhotosBucketName:
     Description: Private S3 bucket for doctor profile photos.
     Value: !Ref MediSlotProfilePhotosBucket
@@ -758,6 +784,12 @@ Outputs:
     Value: !GetAtt MediSlotNotificationsTable.Arn
     Export:
       Name: !Sub "MediSlot-NotificationsTableArn-${Environment}"
+
+  NotificationQueueArn:
+    Description: FIFO notification queue ARN for producer and dispatcher IAM policies.
+    Value: !GetAtt MediSlotNotificationQueue.Arn
+    Export:
+      Name: !Sub "MediSlot-NotificationQueueArn-${Environment}"
 
   ProfilePhotosBucketArn:
     Description: Profile photos bucket ARN for IAM policies.

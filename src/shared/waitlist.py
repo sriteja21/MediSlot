@@ -84,7 +84,7 @@ def notify_waitlist_offer(
         (patient_id,),
     )
     if not contacts:
-        logger.error("Could not resolve waitlist notification recipient for patient %s.", patient_id)
+        logger.error("Could not resolve waitlist notification recipient.")
         return
     publish_email_notification(
         event_key=f"{offer_id}#{event_type}",

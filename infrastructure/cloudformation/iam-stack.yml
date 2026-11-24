@@ -431,40 +431,16 @@ Resources:
                           Fn::ImportValue:
                             !Sub "MediSlot-RefreshTokensTableArn-${Environment}"
 
-        # ----------------------------------------------------
-        # NOTIFICATIONS TABLE
-        # ----------------------------------------------------
-
-        - PolicyName: !Sub "MediSlot-ApiNotifications-${Environment}"
+        - PolicyName: !Sub "MediSlot-ApiPublishNotifications-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ManageNotifications
+              - Sid: PublishNotifications
                 Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
+                Action: sqs:SendMessage
                 Resource:
-                  - Fn::ImportValue:
-                      !Sub "MediSlot-NotificationsTableArn-${Environment}"
-                  - Fn::Sub:
-                      - "${TableArn}/index/*"
-                      - TableArn:
-                          Fn::ImportValue:
-                            !Sub "MediSlot-NotificationsTableArn-${Environment}"
-
-        - PolicyName: !Sub "MediSlot-ApiSendEmail-${Environment}"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: SendAppointmentNotifications
-                Effect: Allow
-                Action:
-                  - ses:SendEmail
-                Resource: "*"
+                  Fn::ImportValue:
+                    !Sub "MediSlot-NotificationQueueArn-${Environment}"
 
         # ----------------------------------------------------
         # S3 PROFILE PHOTOS
@@ -660,10 +636,10 @@ Resources:
                             !Sub "MediSlot-WaitlistOfferTableArn-${Environment}"
               - Sid: PublishPatientNotifications
                 Effect: Allow
-                Action: dynamodb:PutItem
+                Action: sqs:SendMessage
                 Resource:
                   Fn::ImportValue:
-                    !Sub "MediSlot-NotificationsTableArn-${Environment}"
+                    !Sub "MediSlot-NotificationQueueArn-${Environment}"
         - PolicyName: !Sub "MediSlot-PatientDoctorPhotos-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"

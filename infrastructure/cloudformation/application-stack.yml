@@ -76,8 +76,6 @@ Globals:
         DATABASE_CREDENTIALS_PARAMETER_NAME: !Ref DatabaseCredentialsParameterName
         REFUND_POLICY_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/booking/refund-policy"
         WAITLIST_HOLD_DURATION_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/booking/waitlist-hold-seconds"
-        SES_FROM_EMAIL: !Ref SESFromEmail
-
         # ----------------------------------------------------
         # RDS CONFIGURATION
         # Imported from the existing Data stack.
@@ -126,9 +124,9 @@ Globals:
           Fn::ImportValue:
             !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
 
-        NOTIFICATIONS_TABLE:
+        NOTIFICATION_QUEUE_URL:
           Fn::ImportValue:
-            !Sub "MediSlot-NotificationsTableName-${Environment}"
+            !Sub "MediSlot-NotificationQueueUrl-${Environment}"
 
 # ============================================================
 # RESOURCES
@@ -826,15 +824,15 @@ Resources:
                 Resource:
                   Fn::ImportValue:
                     !Sub "MediSlot-IdempotencyTableArn-${Environment}"
-        - PolicyName: !Sub "MediSlot-BookingWorkerNotifications-${Environment}"
+        - PolicyName: !Sub "MediSlot-BookingWorkerPublishNotifications-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: dynamodb:PutItem
+                Action: sqs:SendMessage
                 Resource:
                   Fn::ImportValue:
-                    !Sub "MediSlot-NotificationsTableArn-${Environment}"
+                    !Sub "MediSlot-NotificationQueueArn-${Environment}"
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-BookingWorkerRole-${Environment}"
@@ -872,6 +870,106 @@ Resources:
           Type: SQS
           Properties:
             Queue: !GetAtt MediSlotBookingQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  MediSlotNotificationDispatcherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MediSlot-NotificationDispatcher-${Environment}"
+      RetentionInDays: 14
+
+  MediSlotNotificationDispatcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MediSlot-NotificationDispatcherRole-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "MediSlot-NotificationDispatcherLogs-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-NotificationDispatcher-${Environment}"
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MediSlot-NotificationDispatcher-${Environment}:*"
+        - PolicyName: !Sub "MediSlot-NotificationDispatcherTracing-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+        - PolicyName: !Sub "MediSlot-NotificationDispatcherQueue-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource:
+                  Fn::ImportValue:
+                    !Sub "MediSlot-NotificationQueueArn-${Environment}"
+        - PolicyName: !Sub "MediSlot-NotificationDispatcherTable-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  Fn::ImportValue:
+                    !Sub "MediSlot-NotificationsTableArn-${Environment}"
+        - PolicyName: !Sub "MediSlot-NotificationDispatcherEmail-${Environment}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: "*"
+
+  MediSlotNotificationDispatcher:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - MediSlotNotificationDispatcherLogGroup
+    Properties:
+      FunctionName: !Sub "MediSlot-NotificationDispatcher-${Environment}"
+      Description: !Sub "Persists and delivers queued patient and doctor email notifications (${Environment})."
+      CodeUri: ../../src/notification_dispatcher/
+      Handler: handler.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt MediSlotNotificationDispatcherRole.Arn
+      Environment:
+        Variables:
+          NOTIFICATIONS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-NotificationsTableName-${Environment}"
+          SES_FROM_EMAIL: !Ref SESFromEmail
+      Events:
+        NotificationQueue:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::ImportValue:
+                !Sub "MediSlot-NotificationQueueArn-${Environment}"
             BatchSize: 1
             FunctionResponseTypes:
               - ReportBatchItemFailures
