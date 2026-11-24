@@ -1,0 +1,53 @@
+{% extends "patient/_layout.html" %}
+
+{% block title %}My Profile | MediSlot{% endblock %}
+
+{% block page_content %}
+<section class="patient-screen" data-patient-page="profile">
+  <header class="page-header">
+    <div>
+      <p class="patient-eyebrow">PERSONAL DETAILS</p>
+      <h1 class="page-title">My profile</h1>
+      <p class="page-subtitle">Keep your contact and emergency details up to date.</p>
+    </div>
+  </header>
+
+  <form id="patientProfileForm" class="profile-form">
+    <div class="profile-form-grid">
+      <label>First name
+        <input id="firstName" name="first_name" maxlength="100" required>
+      </label>
+      <label>Last name
+        <input id="lastName" name="last_name" maxlength="100" required>
+      </label>
+      <label>Email
+        <input id="email" type="email" disabled>
+      </label>
+      <label>Phone number
+        <input id="phoneNumber" name="phone_number" maxlength="20">
+      </label>
+      <label>Date of birth
+        <input id="dateOfBirth" name="date_of_birth" type="date" required>
+      </label>
+      <label>Gender
+        <select id="gender" name="gender">
+          <option value="">Select</option>
+          <option value="MALE">Male</option>
+          <option value="FEMALE">Female</option>
+          <option value="OTHER">Other</option>
+        </select>
+      </label>
+      <label>Emergency contact name
+        <input id="emergencyContactName" name="emergency_contact_name" maxlength="150">
+      </label>
+      <label>Emergency contact phone
+        <input id="emergencyContactPhone" name="emergency_contact_phone" maxlength="20">
+      </label>
+    </div>
+    <div class="profile-form-actions">
+      <button type="submit" class="btn btn-teal">Save profile</button>
+      <button type="button" id="deactivatePatientAccount" class="btn btn-danger">Deactivate account</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

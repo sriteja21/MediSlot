@@ -12,7 +12,7 @@ from typing import Any
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from shared.booking import calculate_refund, format_money, load_refund_policy
-from shared.database import database_transaction, execute_query
+from shared.database import database_transaction, execute_query, execute_write
 from shared.notifications import publish_appointment_notification
 from shared.waitlist import (
     notify_waitlist_offer as _notify_waitlist_offer,
@@ -218,7 +218,110 @@ def _doctor_search_options() -> dict[str, Any]:
 
 
 def _get_patient_id(authorizer: dict[str, Any]) -> str | None:
-    return str(authorizer.get("userId") or authorizer.get("sub") or "").strip() or None
+    user_id = str(authorizer.get("userId") or authorizer.get("sub") or "").strip()
+    if not user_id:
+        return None
+    rows = execute_query(
+        "SELECT patient_id FROM patients WHERE user_id = %s LIMIT 1",
+        (user_id,),
+    )
+    if rows:
+        return str(rows[0]["patient_id"])
+
+    rows = execute_query(
+        "SELECT patient_id FROM patients WHERE patient_id = %s LIMIT 1",
+        (user_id,),
+    )
+    return str(rows[0]["patient_id"]) if rows else None
+
+
+def _get_patient_profile(patient_id: str) -> dict[str, Any] | None:
+    rows = execute_query(
+        """
+        SELECT p.patient_id, p.first_name, p.last_name, p.phone_number,
+               p.date_of_birth, p.gender, p.emergency_contact_name,
+               p.emergency_contact_phone, p.profile_image_key,
+               u.email, u.is_active
+        FROM patients p
+        JOIN users u ON u.user_id = p.user_id
+        WHERE p.patient_id = %s
+        LIMIT 1
+        """,
+        (patient_id,),
+    )
+    if not rows:
+        return None
+
+    profile = dict(rows[0])
+    profile["id"] = str(profile.pop("patient_id"))
+    profile["full_name"] = " ".join(
+        part for part in (profile.get("first_name"), profile.get("last_name")) if part
+    )
+    if isinstance(profile.get("date_of_birth"), date):
+        profile["date_of_birth"] = profile["date_of_birth"].isoformat()
+    return profile
+
+
+def _update_patient_profile(patient_id: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    allowed_fields = {
+        "first_name": ("first_name", 100),
+        "last_name": ("last_name", 100),
+        "phone_number": ("phone_number", 20),
+        "emergency_contact_name": ("emergency_contact_name", 150),
+        "emergency_contact_phone": ("emergency_contact_phone", 20),
+    }
+    updates: list[str] = []
+    params: list[Any] = []
+
+    for payload_key, (column, max_length) in allowed_fields.items():
+        if payload_key not in payload:
+            continue
+        value = str(payload[payload_key] or "").strip()
+        if len(value) > max_length:
+            return 400, {"message": f"{payload_key} is too long."}
+        updates.append(f"{column} = %s")
+        params.append(value or None)
+
+    if "date_of_birth" in payload:
+        raw_value = str(payload["date_of_birth"] or "").strip()
+        try:
+            date_of_birth = date.fromisoformat(raw_value)
+        except ValueError:
+            return 400, {"message": "date_of_birth must use YYYY-MM-DD format."}
+        updates.append("date_of_birth = %s")
+        params.append(date_of_birth)
+
+    if "gender" in payload:
+        gender = str(payload["gender"] or "").strip().upper()
+        if gender not in {"MALE", "FEMALE", "OTHER"}:
+            return 400, {"message": "gender must be MALE, FEMALE, or OTHER."}
+        updates.append("gender = %s")
+        params.append(gender)
+
+    if not updates:
+        return 400, {"message": "No supported profile fields were provided."}
+
+    params.append(patient_id)
+    execute_write(
+        f"UPDATE patients SET {', '.join(updates)} WHERE patient_id = %s",
+        tuple(params),
+    )
+    profile = _get_patient_profile(patient_id)
+    return (200 if profile else 404), ({"patient": profile} if profile else {"message": "Patient profile not found."})
+
+
+def _deactivate_patient(patient_id: str) -> tuple[int, dict[str, Any]]:
+    rows = execute_query(
+        "SELECT user_id FROM patients WHERE patient_id = %s LIMIT 1",
+        (patient_id,),
+    )
+    if not rows:
+        return 404, {"message": "Patient profile not found."}
+    execute_write(
+        "UPDATE users SET is_active = FALSE WHERE user_id = %s",
+        (rows[0]["user_id"],),
+    )
+    return 200, {"message": "Patient account has been deactivated."}
 
 
 def _patient_booking_response(
@@ -705,6 +808,23 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
     patient_id = _get_patient_id(authorizer)
     if not patient_id:
         return _response(401, {"message": "Authentication required."})
+
+    if method == "GET" and path == "/patients/me":
+        profile = _get_patient_profile(patient_id)
+        if not profile:
+            return _response(404, {"message": "Patient profile not found."})
+        return _response(200, {"patient": profile})
+
+    if method == "PATCH" and path == "/patients/me":
+        status_code, response = _update_patient_profile(
+            patient_id,
+            _get_request_body(event),
+        )
+        return _response(status_code, response)
+
+    if method == "DELETE" and path == "/patients/me":
+        status_code, response = _deactivate_patient(patient_id)
+        return _response(status_code, response)
 
     if method == "GET" and path.endswith("/patients/me/dashboard"):
         patient_rows = execute_query(

@@ -13,6 +13,10 @@
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>
       <span>Dashboard</span>
     </a>
+    <a href="{{ url_for('patient_profile') }}" class="nav-item {% if active_page == 'profile' %}active{% endif %}">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path stroke-linecap="round" d="M4 21a8 8 0 0116 0"></path></svg>
+      <span>My Profile</span>
+    </a>
     <a href="{{ url_for('patient_doctors') }}" class="nav-item {% if active_page == 'doctors' %}active{% endif %}">
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><circle cx="10" cy="8" r="5"></circle><path stroke-linecap="round" stroke-linejoin="round" d="M2 21a8 8 0 0116 0M19 8v6m-3-3h6"></path></svg>
       <span>Find Doctors</span>

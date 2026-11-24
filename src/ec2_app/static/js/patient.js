@@ -8,6 +8,49 @@ let selectedSlot = null;
 let availabilityWeek = 0;
 let availabilityStart = null;
 let currentWeekSlots = [];
+
+async function initializePatientProfile() {
+    const form = document.getElementById('patientProfileForm');
+    if (!form) return;
+
+    try {
+        const response = await fetch('/api/patient/profile', { headers: { Accept: 'application/json' } });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Unable to load profile');
+        const patient = data.patient || {};
+        document.getElementById('firstName').value = patient.first_name || '';
+        document.getElementById('lastName').value = patient.last_name || '';
+        document.getElementById('email').value = patient.email || '';
+        document.getElementById('phoneNumber').value = patient.phone_number || '';
+        document.getElementById('dateOfBirth').value = patient.date_of_birth || '';
+        document.getElementById('gender').value = patient.gender || '';
+        document.getElementById('emergencyContactName').value = patient.emergency_contact_name || '';
+        document.getElementById('emergencyContactPhone').value = patient.emergency_contact_phone || '';
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const payload = Object.fromEntries(new FormData(form).entries());
+            const saveResponse = await fetch('/api/patient/profile', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const saveData = await saveResponse.json();
+            if (!saveResponse.ok) throw new Error(saveData.message || 'Unable to save profile');
+            window.MediSlotUI?.showNotice?.('Profile updated.', 'success');
+        });
+
+        document.getElementById('deactivatePatientAccount').addEventListener('click', async () => {
+            if (!window.confirm('Deactivate your MediSlot patient account?')) return;
+            const deactivateResponse = await fetch('/api/patient/profile', { method: 'DELETE' });
+            const deactivateData = await deactivateResponse.json();
+            if (!deactivateResponse.ok) throw new Error(deactivateData.message || 'Unable to deactivate account');
+            window.location.assign('/login');
+        });
+    } catch (error) {
+        window.MediSlotUI?.showNotice?.(error.message, 'danger');
+    }
+}
 let currentWeekFrom = null;
 let currentWeekDayCount = 0;
 
@@ -19,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (page === 'dashboard') loadDashboard();
   else loadPatientIdentity();
 
+  if (page === 'profile') initializePatientProfile();
   if (page === 'doctors') initializeDoctorSearch();
   if (page === 'doctor-profile') initializeDoctorProfile(screen.dataset.doctorId);
   if (page === 'appointments') {

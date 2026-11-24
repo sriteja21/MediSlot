@@ -606,6 +606,24 @@ Resources:
           - Fn::ImportValue:
               !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
       Events:
+        PatientProfileGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me
+            Method: GET
+        PatientProfilePatch:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me
+            Method: PATCH
+        PatientProfileDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me
+            Method: DELETE
         PatientDashboardGet:
           Type: Api
           Properties:

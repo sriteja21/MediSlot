@@ -411,6 +411,12 @@ def patient_dashboard():
     return render_template("patient/dashboard.html", active_page="dashboard")
 
 
+@app.route("/patient/profile", methods=["GET"])
+@patient_required
+def patient_profile():
+    return render_template("patient/profile.html", active_page="profile")
+
+
 @app.route("/patient/doctors", methods=["GET"])
 @patient_required
 def patient_doctors():
@@ -630,6 +636,21 @@ def api_doctor_cancel_appointment(appointment_id: str):
         "POST",
         f"/doctors/me/appointments/{appointment_id}/cancel",
     )
+    return jsonify(res), status
+
+
+@app.route("/api/patient/profile", methods=["GET", "PATCH", "DELETE"])
+def api_patient_profile():
+    if session.get("role") != "patient":
+        return jsonify({"message": "Patient sign-in required."}), 403
+    payload = request.get_json(silent=True) if request.method == "PATCH" else None
+    status, res = api_call(
+        request.method,
+        "/patients/me",
+        json_body=payload,
+    )
+    if request.method == "DELETE" and status < 400:
+        session.clear()
     return jsonify(res), status
 
 
