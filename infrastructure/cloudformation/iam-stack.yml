@@ -544,7 +544,10 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: ssm:GetParameter
-                Resource: !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/refund-policy"
+                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/waitlist-hold-seconds"
               - Effect: Allow
                 Action: kms:Decrypt
                 Resource: "*"
