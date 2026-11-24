@@ -164,6 +164,20 @@ def _reserve_slot_once(request: dict[str, Any], slot: dict[str, Any]) -> None:
             }
         },
     ]
+    logger.info(
+        "Submitting booking reservation transaction: slots_table=%s "
+        "slots_key_types=%s idempotency_table=%s idempotency_key_types=%s",
+        table_names["slots"],
+        {
+            key: next(iter(value))
+            for key, value in transaction[0]["Update"]["Key"].items()
+        },
+        table_names["idempotency"],
+        {
+            key: next(iter(value))
+            for key, value in transaction[1]["Update"]["Key"].items()
+        },
+    )
     _dynamodb_client.transact_write_items(TransactItems=transaction)
 
 
