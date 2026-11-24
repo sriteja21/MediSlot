@@ -29,7 +29,7 @@ _idempotency_table = (
     _dynamodb.Table(IDEMPOTENCY_TABLE_NAME) if IDEMPOTENCY_TABLE_NAME else None
 )
 _serializer = TypeSerializer()
-_dynamodb_client = _dynamodb.meta.client
+_dynamodb_client = boto3.client("dynamodb", region_name=AWS_REGION)
 TERMINAL_STATUSES = {"CONFIRMED", "DECLINED"}
 MAX_RESERVATION_RETRIES = 8
 
