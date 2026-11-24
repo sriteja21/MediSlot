@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import random
 import time
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from typing import Any
 
 import boto3
 from boto3.dynamodb.types import TypeSerializer
+from botocore.exceptions import ClientError
 
 from shared.database import database_transaction
 from shared.notifications import publish_appointment_notification
@@ -29,11 +31,15 @@ _idempotency_table = (
 _serializer = TypeSerializer()
 _dynamodb_client = _dynamodb.meta.client
 TERMINAL_STATUSES = {"CONFIRMED", "DECLINED"}
-MAX_RESERVATION_RETRIES = 3
+MAX_RESERVATION_RETRIES = 8
 
 
 class ExistingAppointmentError(Exception):
     """Raised when a patient already has an active appointment for the slot."""
+
+
+class BookingAlreadyHandled(Exception):
+    """Raised when a concurrent worker has already completed this request."""
 
 
 def _serialize_values(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -164,7 +170,8 @@ def _reserve_slot(request: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Reserved slot record is missing.")
         return slot
 
-    for _ in range(MAX_RESERVATION_RETRIES):
+    last_cancellation_codes: list[str] = []
+    for attempt in range(MAX_RESERVATION_RETRIES):
         slot = _get_slot(str(request["doctor_id"]), str(request["slot_sk"]))
         if not slot:
             raise ExistingAppointmentError("The selected slot no longer exists.")
@@ -173,11 +180,21 @@ def _reserve_slot(request: dict[str, Any]) -> dict[str, Any]:
             request["slot_reserved"] = True
             request["status"] = "PROCESSING"
             return slot
-        except Exception as exc:
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code != "TransactionCanceledException":
+                raise
+            cancellation_reasons = exc.response.get("CancellationReasons") or []
+            last_cancellation_codes = [
+                str(reason.get("Code", "Unknown")) for reason in cancellation_reasons
+            ]
             latest = _get_request(str(request["user_id"]), str(request["scope_key"]))
             if latest and latest.get("slot_reserved"):
                 request["slot_reserved"] = True
                 return _get_slot(str(request["doctor_id"]), str(request["slot_sk"])) or slot
+            if latest and str(latest.get("status", "")) in TERMINAL_STATUSES:
+                request.update(latest)
+                raise BookingAlreadyHandled(str(latest["status"])) from exc
             latest_slot = _get_slot(str(request["doctor_id"]), str(request["slot_sk"]))
             if latest_slot and int(latest_slot.get("booked_count", 0) or 0) + int(
                 latest_slot.get("held_count", 0) or 0
@@ -185,11 +202,18 @@ def _reserve_slot(request: dict[str, Any]) -> dict[str, Any]:
                 raise ExistingAppointmentError(
                     "The selected slot is no longer available."
                 ) from exc
-            if getattr(exc, "response", {}).get("Error", {}).get("Code") != (
-                "TransactionCanceledException"
-            ):
-                raise
-    raise RuntimeError("Could not safely reserve the selected slot.")
+            if attempt < MAX_RESERVATION_RETRIES - 1:
+                time.sleep(min(0.05 * (2**attempt), 0.8) + random.uniform(0, 0.05))
+    logger.error(
+        "Slot reservation transaction kept cancelling. cancellation_codes=%s retries=%d",
+        last_cancellation_codes,
+        MAX_RESERVATION_RETRIES,
+    )
+    raise RuntimeError(
+        "Could not safely reserve the selected slot after "
+        f"{MAX_RESERVATION_RETRIES} attempts "
+        f"(transaction cancellation codes: {', '.join(last_cancellation_codes) or 'unavailable'})."
+    )
 
 
 def _mark_declined_without_reservation(
@@ -500,7 +524,10 @@ def _process_booking(user_id: str, scope_key: str) -> dict[str, Any]:
 
     appointment_id, payment_id = _appointment_ids(request)
     try:
-        slot = _reserve_slot(request)
+        try:
+            slot = _reserve_slot(request)
+        except BookingAlreadyHandled as exc:
+            return {"status": str(exc), "notification": None}
         if (
             str(slot.get("consultation_type_id")) != str(request["consultation_type_id"])
             or _utc_datetime(slot["start_time"]) != requested_start
