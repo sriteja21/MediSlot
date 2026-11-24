@@ -571,6 +571,20 @@ jobs:
               JWTSecretParameterName="$JWT_SECRET_PARAMETER_NAME" \
               DatabaseCredentialsParameterName="$DATABASE_CREDENTIALS_PARAMETER_NAME"
 
+          RESULT_FILE="$RUNNER_TEMP/medislot-slot-materialiser-result.json"
+          aws lambda invoke \
+            --function-name "MediSlot-SlotMaterialiser-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            "$RESULT_FILE" > /dev/null
+
+          if ! jq -e '.statusCode == 200' "$RESULT_FILE" > /dev/null; then
+            jq . "$RESULT_FILE"
+            echo "::error::Slot materialisation into the versioned table failed."
+            exit 1
+          fi
+
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \

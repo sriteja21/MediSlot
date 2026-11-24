@@ -328,12 +328,12 @@ Resources:
                   - dynamodb:TransactWriteItems
                 Resource:
                   - Fn::ImportValue:
-                      !Sub "MediSlot-SlotsTableArn-${Environment}"
+                      !Sub "MediSlot-SlotsV2TableArn-${Environment}"
                   - Fn::Sub:
                       - "${TableArn}/index/*"
                       - TableArn:
                           Fn::ImportValue:
-                            !Sub "MediSlot-SlotsTableArn-${Environment}"
+                            !Sub "MediSlot-SlotsV2TableArn-${Environment}"
 
         # ----------------------------------------------------
         # IDEMPOTENCY TABLE
@@ -592,12 +592,12 @@ Resources:
                   - dynamodb:Query
                 Resource:
                   - Fn::ImportValue:
-                      !Sub "MediSlot-SlotsTableArn-${Environment}"
+                      !Sub "MediSlot-SlotsV2TableArn-${Environment}"
                   - Fn::Sub:
                       - "${TableArn}/index/*"
                       - TableArn:
                           Fn::ImportValue:
-                            !Sub "MediSlot-SlotsTableArn-${Environment}"
+                            !Sub "MediSlot-SlotsV2TableArn-${Environment}"
         - PolicyName: !Sub "MediSlot-PatientWaitlists-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"

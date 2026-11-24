@@ -110,7 +110,7 @@ Globals:
 
         SLOTS_TABLE:
           Fn::ImportValue:
-            !Sub "MediSlot-SlotsTableName-${Environment}"
+            !Sub "MediSlot-SlotsV2TableName-${Environment}"
 
         IDEMPOTENCY_TABLE:
           Fn::ImportValue:
@@ -476,7 +476,7 @@ Resources:
               !Sub "MediSlot-ProfilePhotosBucketName-${Environment}"
           SLOTS_TABLE:
             Fn::ImportValue:
-              !Sub "MediSlot-SlotsTableName-${Environment}"
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
           SLOT_MATERIALISER_FUNCTION_NAME: !Sub "MediSlot-SlotMaterialiser-${Environment}"
       Events:
         DoctorProfileGet:
@@ -810,7 +810,7 @@ Resources:
                   - dynamodb:TransactWriteItems
                 Resource:
                   Fn::ImportValue:
-                    !Sub "MediSlot-SlotsTableArn-${Environment}"
+                    !Sub "MediSlot-SlotsV2TableArn-${Environment}"
         - PolicyName: !Sub "MediSlot-BookingWorkerIdempotency-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -864,7 +864,7 @@ Resources:
         Variables:
           SLOTS_TABLE:
             Fn::ImportValue:
-              !Sub "MediSlot-SlotsTableName-${Environment}"
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
           IDEMPOTENCY_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-IdempotencyTableName-${Environment}"
@@ -1006,7 +1006,7 @@ Resources:
         Variables:
           SLOTS_TABLE:
             Fn::ImportValue:
-              !Sub "MediSlot-SlotsTableName-${Environment}"
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
 
 # ============================================================
 # OUTPUTS

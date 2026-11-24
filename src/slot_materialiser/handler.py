@@ -9,6 +9,7 @@ Slots are written idempotently into DynamoDB with a conditional slot-key write.
 import logging
 import os
 import sys
+import time as time_module
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,7 +18,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import boto3
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from shared.database import execute_query
@@ -41,6 +42,35 @@ SLOTS_TABLE_NAME = (
 
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 slots_table = dynamodb.Table(SLOTS_TABLE_NAME)
+WAITLIST_OFFER_TABLE_NAME = os.environ.get("WAITLIST_OFFER_TABLE", "").strip()
+waitlist_offer_table = (
+    dynamodb.Table(WAITLIST_OFFER_TABLE_NAME) if WAITLIST_OFFER_TABLE_NAME else None
+)
+
+
+def active_waitlist_holds() -> dict[str, int]:
+    """Count unexpired live offers so a rebuilt slot table retains held seats."""
+    if not waitlist_offer_table:
+        raise RuntimeError("WAITLIST_OFFER_TABLE is not configured.")
+
+    holds: dict[str, int] = {}
+    query_args: dict[str, Any] = {
+        "IndexName": "gsi_live",
+        "KeyConditionExpression": (
+            Key("live_shard").eq("ACTIVE")
+            & Key("expires_at").gte(int(time_module.time()))
+        ),
+    }
+    while True:
+        page = waitlist_offer_table.query(**query_args)
+        for offer in page.get("Items", []):
+            slot_ref = str(offer.get("slot_ref") or "")
+            if slot_ref and offer.get("status") in {"OPEN", "ACCEPTING"}:
+                holds[slot_ref] = holds.get(slot_ref, 0) + 1
+        last_key = page.get("LastEvaluatedKey")
+        if not last_key:
+            return holds
+        query_args["ExclusiveStartKey"] = last_key
 
 
 # ============================================================
@@ -87,6 +117,7 @@ def update_unbooked_slot(
     inactive_reason: str,
     capacity: int | None = None,
     booked_count: int | None = None,
+    held_count: int | None = None,
     end_time: str | None = None,
 ) -> bool:
     """Update a slot only if it has no booked seats."""
@@ -109,6 +140,9 @@ def update_unbooked_slot(
     if booked_count is not None:
         expressions.append("booked_count = :booked_count")
         values[":booked_count"] = booked_count
+    if held_count is not None:
+        expressions.append("held_count = :held_count")
+        values[":held_count"] = held_count
     if end_time is not None:
         expressions.append("end_time = :end_time")
         values[":end_time"] = end_time
@@ -348,6 +382,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "Retrieved %d active appointments for slot inventory reconciliation",
         len(booking_rows),
     )
+    held_counts = active_waitlist_holds()
+    logger.info(
+        "Retrieved active waitlist seat holds for %d slots",
+        len(held_counts),
+    )
 
     existing_by_doctor: dict[str, dict[str, dict[str, Any]]] = {}
     booked_ranges_by_doctor: dict[str, list[tuple[str, datetime, datetime]]] = {}
@@ -497,6 +536,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                             "end_time": end_iso,
                             "capacity": capacity,
                             "booked_count": booked_counts.get((doc_id, slot_id), 0),
+                            "held_count": held_counts.get(slot_id, 0),
                             "is_active": not is_blocked,
                             "is_blocked": is_blocked,
                             "inactive_reason": inactive_reason,
@@ -544,6 +584,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 inactive_reason=str(item["inactive_reason"]),
                 capacity=int(item["capacity"]),
                 booked_count=int(item["booked_count"]),
+                held_count=int(item["held_count"]),
                 end_time=str(item["end_time"]),
             ):
                 total_updated += 1

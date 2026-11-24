@@ -255,6 +255,62 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # A new physical table avoids attempting an in-place key-schema change.
+  # The legacy Slots table and exports remain available during the cutover.
+  MediSlotSlotsV2Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "MediSlot-Slots-v2-${Environment}"
+      BillingMode: !Ref DynamoDBBillingMode
+      AttributeDefinitions:
+        - AttributeName: doctor_id
+          AttributeType: S
+        - AttributeName: slot_sk
+          AttributeType: S
+        - AttributeName: consultation_type_id
+          AttributeType: S
+        - AttributeName: start_time
+          AttributeType: S
+      KeySchema:
+        - AttributeName: doctor_id
+          KeyType: HASH
+        - AttributeName: slot_sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsi_type_time
+          KeySchema:
+            - AttributeName: consultation_type_id
+              KeyType: HASH
+            - AttributeName: start_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: gsi_doctor_time
+          KeySchema:
+            - AttributeName: doctor_id
+              KeyType: HASH
+            - AttributeName: start_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Name
+          Value: !Sub "MediSlot-Slots-v2-${Environment}"
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
   # ==========================================================
   # DYNAMODB TABLE 2: IDEMPOTENCY KEYS
   # ==========================================================
@@ -701,6 +757,12 @@ Outputs:
     Export:
       Name: !Sub "MediSlot-SlotsTableName-${Environment}"
 
+  SlotsV2TableName:
+    Description: Versioned DynamoDB slots table used by the current application.
+    Value: !Ref MediSlotSlotsV2Table
+    Export:
+      Name: !Sub "MediSlot-SlotsV2TableName-${Environment}"
+
   IdempotencyTableName:
     Description: DynamoDB idempotency table.
     Value: !Ref MediSlotIdempotencyTable
@@ -760,6 +822,12 @@ Outputs:
     Value: !GetAtt MediSlotSlotsTable.Arn
     Export:
       Name: !Sub "MediSlot-SlotsTableArn-${Environment}"
+
+  SlotsV2TableArn:
+    Description: Versioned DynamoDB slots table ARN for current application IAM policies.
+    Value: !GetAtt MediSlotSlotsV2Table.Arn
+    Export:
+      Name: !Sub "MediSlot-SlotsV2TableArn-${Environment}"
 
   IdempotencyTableArn:
     Description: DynamoDB idempotency table ARN for IAM policies.
