@@ -83,8 +83,7 @@ def _slot_reservation_condition(
         ":capacity": capacity,
         ":booked": booked,
         ":held": held,
-        ":zero": 0,
-        ":one": 1,
+        ":next_booked": booked + 1,
     }
     booked_condition = (
         "(attribute_not_exists(booked_count) OR booked_count = :booked)"
@@ -96,7 +95,7 @@ def _slot_reservation_condition(
         "is_active = :active AND #capacity = :capacity AND "
         f"{booked_condition} AND {held_condition}"
     )
-    update = "SET booked_count = if_not_exists(booked_count, :zero) + :one"
+    update = "SET booked_count = :next_booked"
     return condition, values, update
 
 
@@ -136,7 +135,7 @@ def _reserve_slot_once(request: dict[str, Any], slot: dict[str, Any]) -> None:
                 ),
                 "UpdateExpression": (
                     "SET #status = :processing, slot_reserved = :true, "
-                    "updated_at = :now, attempts = if_not_exists(attempts, :zero) + :one"
+                    "updated_at = :now"
                 ),
                 "ConditionExpression": (
                     "(#status = :pending OR #status = :processing) AND "
@@ -150,8 +149,6 @@ def _reserve_slot_once(request: dict[str, Any], slot: dict[str, Any]) -> None:
                         ":true": True,
                         ":false": False,
                         ":now": int(time.time()),
-                        ":zero": 0,
-                        ":one": 1,
                     }
                 ),
             }
