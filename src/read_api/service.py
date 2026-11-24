@@ -284,7 +284,7 @@ def hold_slot_seat(slot: dict[str, Any], *, table: Any = None) -> bool:
             ConditionExpression=(
                 "is_active = :active AND #capacity = :capacity "
                 "AND (attribute_not_exists(booked_count) OR "
-                "(booked_count = :booked AND booked_count < :remaining)) "
+                "booked_count = :booked) "
                 "AND (attribute_not_exists(held_count) OR held_count = :held) "
             ),
             ExpressionAttributeNames={"#capacity": "capacity"},
@@ -293,7 +293,6 @@ def hold_slot_seat(slot: dict[str, Any], *, table: Any = None) -> bool:
                 ":capacity": int(slot["capacity"]),
                 ":booked": booked_count,
                 ":held": held_count,
-                ":remaining": int(slot["capacity"]) - held_count,
                 ":zero": 0,
                 ":one": 1,
             },

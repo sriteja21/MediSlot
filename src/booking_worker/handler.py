@@ -85,11 +85,9 @@ def _slot_reservation_condition(
         ":held": held,
         ":zero": 0,
         ":one": 1,
-        ":remaining": capacity - held,
     }
     booked_condition = (
-        "(attribute_not_exists(booked_count) OR "
-        "(booked_count = :booked AND booked_count < :remaining))"
+        "(attribute_not_exists(booked_count) OR booked_count = :booked)"
     )
     held_condition = (
         "(attribute_not_exists(held_count) OR held_count = :held)"
