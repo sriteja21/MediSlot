@@ -340,6 +340,8 @@
                 <strong>${escapeHtml(appointment.patient_name || `Patient ${appointment.patient_id || ''}`)}</strong>
                 <span>${escapeHtml(appointment.status || 'Booked')} · ${escapeHtml(appointment.id || '')}</span>
                 <span>Fee: ${MediSlotMoney.formatINR(appointment.fee_amount || 0)}</span>
+                <span>Payment: ${escapeHtml(paymentStatusLabel(appointment.payment_status))} · ${escapeHtml(String(appointment.payment_method || 'Not recorded').replaceAll('_', ' '))}</span>
+                <span>Refund: ${MediSlotMoney.formatINR(appointment.refund_amount || 0)} · ${escapeHtml(appointment.refund_status || 'No refund')}</span>
                 ${appointment.status === 'CONFIRMED'
                   ? `<button type="button" class="btn btn-secondary btn-sm" data-cancel-appointment="${escapeHtml(appointment.id)}">Cancel appointment</button>`
                   : ''}
@@ -404,6 +406,12 @@
 
   function formatIsoTime(isoStr) {
     return MediSlotTime.formatScheduleTime(isoStr, DOCTOR_TIMEZONE);
+  }
+
+  function paymentStatusLabel(status) {
+    if (status === 'INITIATED') return 'Due at clinic';
+    if (!status) return 'Not recorded';
+    return String(status).replaceAll('_', ' ');
   }
 
   function escapeHtml(str) {

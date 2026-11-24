@@ -1314,10 +1314,27 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
             COALESCE(
                 (SELECT pay.amount FROM payments pay
                  WHERE pay.appointment_id = a.appointment_id
-                   AND pay.payment_status = 'SUCCESS'
                  ORDER BY pay.created_at DESC LIMIT 1),
                 ct.fee
             ) AS fee_amount,
+            (SELECT pay.payment_status FROM payments pay
+             WHERE pay.appointment_id = a.appointment_id
+             ORDER BY pay.created_at DESC LIMIT 1) AS payment_status,
+            (SELECT pay.payment_method FROM payments pay
+             WHERE pay.appointment_id = a.appointment_id
+             ORDER BY pay.created_at DESC LIMIT 1) AS payment_method,
+            COALESCE(
+                (SELECT SUM(r.refund_amount)
+                 FROM refunds r
+                 JOIN payments rp ON rp.payment_id = r.payment_id
+                 WHERE rp.appointment_id = a.appointment_id),
+                0
+            ) AS refund_amount,
+            (SELECT r.refund_status
+             FROM refunds r
+             JOIN payments rp ON rp.payment_id = r.payment_id
+             WHERE rp.appointment_id = a.appointment_id
+             ORDER BY r.created_at DESC LIMIT 1) AS refund_status,
             catalog.name AS consultation_type_name
         FROM appointments a
         LEFT JOIN patients p ON p.patient_id = a.patient_id
@@ -1331,6 +1348,7 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     )
     for appointment in recent_appointments:
         appointment["fee_amount"] = float(appointment["fee_amount"] or 0)
+        appointment["refund_amount"] = float(appointment["refund_amount"] or 0)
 
     dashboard_data = {
         "profile_summary": profile,

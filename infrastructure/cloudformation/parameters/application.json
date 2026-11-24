@@ -1,10 +1,25 @@
 [
-  { "ParameterKey": "Environment", "ParameterValue": "__ENVIRONMENT__" },
-  { "ParameterKey": "JWTSecretParameterName", "ParameterValue": "/MediSlot/__ENVIRONMENT__/auth/jwt-secret" },
-  { "ParameterKey": "DatabaseCredentialsParameterName", "ParameterValue": "/MediSlot/__ENVIRONMENT__/database/application-credentials" },
-  { "ParameterKey": "MaxDoctorPageSize", "ParameterValue": "50" },
-  { "ParameterKey": "MaxSlotRangeDays", "ParameterValue": "30" },
-  { "ParameterKey": "SlotWindowDays", "ParameterValue": "30" },
-  { "ParameterKey": "ProfilePhotoUrlTtlSeconds", "ParameterValue": "900" },
-  { "ParameterKey": "LogLevel", "ParameterValue": "INFO" }
-]
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "__ENVIRONMENT__"
+  },
+  {
+    "ParameterKey": "JWTSecretParameterName",
+    "ParameterValue": "/MediSlot/__ENVIRONMENT__/auth/jwt-secret"
+  },
+  {
+    "ParameterKey": "DatabaseCredentialsParameterName",
+    "ParameterValue": "/MediSlot/__ENVIRONMENT__/database/application-credentials"
+  },
+  {
+    "ParameterKey": "SESFromEmail",
+    "ParameterValue": "sri.tejaa@omc.com"
+  },
+  {
+    "ParameterKey": "RefundPolicyJson",
+    "ParameterValue": "{\"tiers\":[{\"minimum_hours\":48,\"refund_percent\":100,\"inclusive\":false,\"name\":\"more_than_48_hours\"},{\"minimum_hours\":24,\"refund_percent\":75,\"inclusive\":false,\"name\":\"24_to_48_hours\"},{\"minimum_hours\":6,\"refund_percent\":50,\"inclusive\":false,\"name\":\"6_to_24_hours\"},{\"minimum_hours\":0,\"refund_percent\":0,\"inclusive\":true,\"name\":\"less_than_6_hours\"}],\"doctor_refund_percent\":100,\"no_show_refund_percent\":0}"
+  },
+  {
+    "ParameterKey": "WaitlistHoldDurationSeconds",
+    "ParameterValue": "900"
+  }]
