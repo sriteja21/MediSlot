@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Refunds | MediSlot{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  {% include "doctor/_sidebar.html" %}
+
+  <main class="main-content">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Refunds</h1>
+        <p class="page-subtitle">Refund ledger entries for appointments booked with you</p>
+      </div>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="loadRefunds()">Refresh</button>
+    </div>
+
+    <div class="alert alert-info" style="margin-bottom: 1.5rem;">
+      Refunds shown here are ledger records only. MediSlot does not transfer money or process refunds.
+    </div>
+
+    <div id="refundsError" class="alert alert-danger" style="display: none;"></div>
+    <div id="refundsLoading" class="loading-container">
+      <div class="spinner spinner-lg"></div>
+      <p>Loading refund records...</p>
+    </div>
+    <div id="refundsTableContainer" class="table-container" style="display: none;">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Recorded</th>
+            <th>Appointment</th>
+            <th>Patient</th>
+            <th>Consultation</th>
+            <th>Original Payment</th>
+            <th>Refund Amount</th>
+            <th>Status</th>
+            <th>Payment Method</th>
+          </tr>
+        </thead>
+        <tbody id="refundsTableBody"></tbody>
+      </table>
+    </div>
+    <div id="refundsEmpty" class="empty-state" style="display: none;">
+      <div class="empty-title">No Refund Records</div>
+      <p class="empty-desc">Refund ledger entries for your appointments will appear here.</p>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const doctorTimeZone = {{ doctor_timezone|tojson }};
+
+  document.addEventListener('DOMContentLoaded', loadRefunds);
+
+  async function loadRefunds() {
+    const loading = document.getElementById('refundsLoading');
+    const container = document.getElementById('refundsTableContainer');
+    const empty = document.getElementById('refundsEmpty');
+    const error = document.getElementById('refundsError');
+    loading.style.display = 'flex';
+    container.style.display = 'none';
+    empty.style.display = 'none';
+    error.style.display = 'none';
+
+    try {
+      const response = await fetch('/api/doctor/refunds');
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+      const refunds = result.refunds || [];
+      loading.style.display = 'none';
+
+      if (!refunds.length) {
+        empty.style.display = 'block';
+        return;
+      }
+
+      document.getElementById('refundsTableBody').innerHTML = refunds.map(refund => `
+        <tr>
+          <td>${escapeHtml(MediSlotTime.formatAppointmentTime(refund.created_at, doctorTimeZone))}</td>
+          <td>
+            <strong>${escapeHtml(MediSlotTime.formatAppointmentTime(refund.appointment_time, doctorTimeZone))}</strong>
+            <small>${escapeHtml(refund.appointment_id || '')}</small>
+          </td>
+          <td>${escapeHtml(refund.patient_name || 'Registered Patient')}</td>
+          <td>${escapeHtml(refund.consultation_type_name || 'Consultation')}</td>
+          <td>${MediSlotMoney.formatINR(refund.payment_amount || 0)}</td>
+          <td>${MediSlotMoney.formatINR(refund.refund_amount || 0)}</td>
+          <td>${escapeHtml(refund.refund_status || 'Not recorded')}</td>
+          <td>${escapeHtml(String(refund.payment_method || 'Not recorded').replaceAll('_', ' '))}</td>
+        </tr>
+      `).join('');
+      container.style.display = 'block';
+    } catch (exception) {
+      loading.style.display = 'none';
+      error.textContent = `Could not load refund records: ${exception.message}`;
+      error.style.display = 'block';
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+</script>
+{% endblock %}

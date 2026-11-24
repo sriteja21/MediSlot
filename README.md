@@ -7,6 +7,7 @@ MediSlot is an AWS-hosted doctor portal and appointment platform. The checked-in
 - `src/auth` handles registration, login, refresh, and logout.
 - `src/authorizer` validates access tokens and enforces patient/doctor routes.
 - `src/doctor` provides doctor profile, consultation type mutation, availability, blackout, dashboard, and appointment cancellation APIs.
+- The doctor portal provides separate Payments and Refunds pages backed by doctor-scoped ledger endpoints; records are ledger state only, since MediSlot does not process payments or transfer refunds.
 - `src/patient` provides doctor search, weekly slot booking, appointment/payment/refund-ledger views, patient cancellation, and waitlist management APIs.
 - `src/read_api` provides the shared authenticated `GET /slots` endpoint for doctor schedule (`date`) and patient availability (`doctor_id`, `date`, optional `consultation_type_id`) requests, plus the doctor consultation-type list and patient doctor-profile reads. The dedicated Lambda selects role-specific responses using authorizer context; reusable slot storage and seat rules live in `src/read_api/service.py`.
 - Patient and doctor cancellations share the refund-tier calculator and slot seat transitions. Refunds are ledger entries only; payments are marked `INITIATED` with `PAY_AT_CLINIC` because MediSlot does not integrate a payment gateway. Cancellation of a booked seat can issue an exclusive waitlist offer for 15 minutes; an EventBridge schedule expires offers and promotes the next waiter.

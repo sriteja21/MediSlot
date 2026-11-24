@@ -565,6 +565,18 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /doctors/me/dashboard
             Method: GET
+        DoctorPaymentsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/payments
+            Method: GET
+        DoctorRefundsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/refunds
+            Method: GET
         DoctorAppointmentCancel:
           Type: Api
           Properties:

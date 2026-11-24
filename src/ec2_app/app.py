@@ -380,6 +380,31 @@ def doctor_dashboard():
     return render_template("doctor/dashboard.html", active_page="dashboard")
 
 
+def get_doctor_timezone() -> str:
+    status, profile = api_call("GET", "/doctors/me")
+    return profile.get("timezone", "UTC") if status == 200 else "UTC"
+
+
+@app.route("/doctor/payments", methods=["GET"])
+@login_required
+def doctor_payments():
+    return render_template(
+        "doctor/payments.html",
+        active_page="payments",
+        doctor_timezone=get_doctor_timezone(),
+    )
+
+
+@app.route("/doctor/refunds", methods=["GET"])
+@login_required
+def doctor_refunds():
+    return render_template(
+        "doctor/refunds.html",
+        active_page="refunds",
+        doctor_timezone=get_doctor_timezone(),
+    )
+
+
 @app.route("/patient/dashboard", methods=["GET"])
 @patient_required
 def patient_dashboard():
@@ -440,12 +465,10 @@ def doctor_blackouts():
 @login_required
 def doctor_schedule():
     """Serve the daily schedule timeline page."""
-    status, profile = api_call("GET", "/doctors/me")
-    timezone_name = profile.get("timezone", "UTC") if status == 200 else "UTC"
     return render_template(
         "doctor/schedule.html",
         active_page="schedule",
-        doctor_timezone=timezone_name,
+        doctor_timezone=get_doctor_timezone(),
     )
 
 
@@ -580,6 +603,22 @@ def api_doctor_blackouts():
 def api_doctor_dashboard():
     """Proxy to GET /doctors/me/dashboard."""
     status, res = api_call("GET", "/doctors/me/dashboard")
+    return jsonify(res), status
+
+
+@app.route("/api/doctor/payments", methods=["GET"])
+def api_doctor_payments():
+    if session.get("role") != "doctor":
+        return jsonify({"message": "Doctor sign-in required."}), 403
+    status, res = api_call("GET", "/doctors/me/payments")
+    return jsonify(res), status
+
+
+@app.route("/api/doctor/refunds", methods=["GET"])
+def api_doctor_refunds():
+    if session.get("role") != "doctor":
+        return jsonify({"message": "Doctor sign-in required."}), 403
+    status, res = api_call("GET", "/doctors/me/refunds")
     return jsonify(res), status
 
 

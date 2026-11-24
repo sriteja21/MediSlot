@@ -126,8 +126,6 @@
               <th>Type</th>
               <th>Status</th>
               <th>Fee</th>
-              <th>Payment</th>
-              <th>Refund</th>
             </tr>
           </thead>
           <tbody id="recentAppointmentsBody">
@@ -212,14 +210,6 @@
             <td><span class="badge badge-primary">${escapeHtml(appt.consultation_type_name || 'Standard')}</span></td>
             <td><span class="badge ${statusClass}">${escapeHtml(appt.status || 'CONFIRMED')}</span></td>
             <td>${MediSlotMoney.formatINR(appt.fee_amount || 0)}</td>
-            <td>
-              <strong>${escapeHtml(paymentStatusLabel(appt.payment_status))}</strong>
-              <small>${escapeHtml(String(appt.payment_method || 'Not recorded').replaceAll('_', ' '))}</small>
-            </td>
-            <td>
-              <strong>${MediSlotMoney.formatINR(appt.refund_amount || 0)}</strong>
-              <small>${escapeHtml(appt.refund_status || 'No refund')}</small>
-            </td>
           `;
           tbody.appendChild(tr);
         });
@@ -255,10 +245,5 @@
     return MediSlotTime.formatAppointmentTime(value, timeZone);
   }
 
-  function paymentStatusLabel(status) {
-    if (status === 'INITIATED') return 'Due at clinic';
-    if (!status) return 'Not recorded';
-    return String(status).replaceAll('_', ' ');
-  }
 </script>
 {% endblock %}

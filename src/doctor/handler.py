@@ -97,6 +97,8 @@ ROUTE_METHODS = {
     "/doctors/me/blackouts": {"GET", "POST"},
     "/doctors/me/blackouts/{id}": {"DELETE"},
     "/doctors/me/dashboard": {"GET"},
+    "/doctors/me/payments": {"GET"},
+    "/doctors/me/refunds": {"GET"},
     "/doctors/me/appointments/{id}/cancel": {"POST"},
 }
 
@@ -245,6 +247,10 @@ def parse_route(raw_path: str) -> tuple[str, str | None]:
                 return ("/doctors/me/blackouts", None)
             if third == "dashboard":
                 return ("/doctors/me/dashboard", None)
+            if third == "payments":
+                return ("/doctors/me/payments", None)
+            if third == "refunds":
+                return ("/doctors/me/refunds", None)
 
         elif len(segments) == 4:
             resource_id = segments[3]
@@ -1314,27 +1320,10 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
             COALESCE(
                 (SELECT pay.amount FROM payments pay
                  WHERE pay.appointment_id = a.appointment_id
+                   AND pay.payment_status = 'SUCCESS'
                  ORDER BY pay.created_at DESC LIMIT 1),
                 ct.fee
             ) AS fee_amount,
-            (SELECT pay.payment_status FROM payments pay
-             WHERE pay.appointment_id = a.appointment_id
-             ORDER BY pay.created_at DESC LIMIT 1) AS payment_status,
-            (SELECT pay.payment_method FROM payments pay
-             WHERE pay.appointment_id = a.appointment_id
-             ORDER BY pay.created_at DESC LIMIT 1) AS payment_method,
-            COALESCE(
-                (SELECT SUM(r.refund_amount)
-                 FROM refunds r
-                 JOIN payments rp ON rp.payment_id = r.payment_id
-                 WHERE rp.appointment_id = a.appointment_id),
-                0
-            ) AS refund_amount,
-            (SELECT r.refund_status
-             FROM refunds r
-             JOIN payments rp ON rp.payment_id = r.payment_id
-             WHERE rp.appointment_id = a.appointment_id
-             ORDER BY r.created_at DESC LIMIT 1) AS refund_status,
             catalog.name AS consultation_type_name
         FROM appointments a
         LEFT JOIN patients p ON p.patient_id = a.patient_id
@@ -1348,7 +1337,6 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
     )
     for appointment in recent_appointments:
         appointment["fee_amount"] = float(appointment["fee_amount"] or 0)
-        appointment["refund_amount"] = float(appointment["refund_amount"] or 0)
 
     dashboard_data = {
         "profile_summary": profile,
@@ -1364,6 +1352,65 @@ def get_dashboard(doctor_id: str) -> dict[str, Any]:
         "total_patients_served": total_patients_served,
     }
     return format_response(200, dashboard_data)
+
+
+def get_doctor_payments(doctor_id: str) -> dict[str, Any]:
+    """Return payment ledger rows scoped to the authenticated doctor's appointments."""
+    payments = execute_query(
+        """
+        SELECT
+            pay.payment_id,
+            pay.appointment_id,
+            pay.amount,
+            pay.payment_status,
+            pay.payment_method,
+            pay.created_at,
+            a.appointment_datetime AS appointment_time,
+            a.appointment_status,
+            CONCAT_WS(' ', p.first_name, p.last_name) AS patient_name,
+            catalog.name AS consultation_type_name
+        FROM payments pay
+        JOIN appointments a ON a.appointment_id = pay.appointment_id
+        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
+        LEFT JOIN patients p ON p.patient_id = a.patient_id
+        WHERE ct.doctor_id = %s
+        ORDER BY pay.created_at DESC
+        """,
+        (doctor_id,),
+    )
+    return format_response(200, {"payments": payments})
+
+
+def get_doctor_refunds(doctor_id: str) -> dict[str, Any]:
+    """Return refund ledger rows scoped to the authenticated doctor's appointments."""
+    refunds = execute_query(
+        """
+        SELECT
+            r.refund_id,
+            r.refund_amount,
+            r.refund_status,
+            r.created_at,
+            pay.payment_id,
+            pay.payment_method,
+            pay.amount AS payment_amount,
+            a.appointment_id,
+            a.appointment_datetime AS appointment_time,
+            a.appointment_status,
+            CONCAT_WS(' ', p.first_name, p.last_name) AS patient_name,
+            catalog.name AS consultation_type_name
+        FROM refunds r
+        JOIN payments pay ON pay.payment_id = r.payment_id
+        JOIN appointments a ON a.appointment_id = pay.appointment_id
+        JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        JOIN consultation_catalog catalog ON catalog.consultation_type_id = ct.catalog_type_id
+        LEFT JOIN patients p ON p.patient_id = a.patient_id
+        WHERE ct.doctor_id = %s
+        ORDER BY r.created_at DESC
+        """,
+        (doctor_id,),
+    )
+    return format_response(200, {"refunds": refunds})
 
 
 def cancel_doctor_appointment(doctor_id: str, appointment_id: str) -> dict[str, Any]:
@@ -1585,6 +1632,12 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
 
         elif route_pattern == "/doctors/me/dashboard":
             return get_dashboard(doctor_id)
+
+        elif route_pattern == "/doctors/me/payments":
+            return get_doctor_payments(doctor_id)
+
+        elif route_pattern == "/doctors/me/refunds":
+            return get_doctor_refunds(doctor_id)
 
         elif route_pattern == "/doctors/me/appointments/{id}/cancel":
             if not resource_id:

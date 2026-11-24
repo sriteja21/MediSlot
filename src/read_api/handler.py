@@ -121,24 +121,6 @@ def _doctor_schedule(
                  ORDER BY pay.created_at DESC LIMIT 1),
                 ct.fee
             ) AS fee_amount,
-            (SELECT pay.payment_status FROM payments pay
-             WHERE pay.appointment_id = a.appointment_id
-             ORDER BY pay.created_at DESC LIMIT 1) AS payment_status,
-            (SELECT pay.payment_method FROM payments pay
-             WHERE pay.appointment_id = a.appointment_id
-             ORDER BY pay.created_at DESC LIMIT 1) AS payment_method,
-            COALESCE(
-                (SELECT SUM(r.refund_amount)
-                 FROM refunds r
-                 JOIN payments rp ON rp.payment_id = r.payment_id
-                 WHERE rp.appointment_id = a.appointment_id),
-                0
-            ) AS refund_amount,
-            (SELECT r.refund_status
-             FROM refunds r
-             JOIN payments rp ON rp.payment_id = r.payment_id
-             WHERE rp.appointment_id = a.appointment_id
-             ORDER BY r.created_at DESC LIMIT 1) AS refund_status,
             catalog.duration_minutes,
             a.created_at AS booked_at
         FROM appointments a
@@ -154,7 +136,6 @@ def _doctor_schedule(
     )
     for appointment in appointments:
         appointment["fee_amount"] = float(appointment["fee_amount"])
-        appointment["refund_amount"] = float(appointment["refund_amount"] or 0)
         appointment_datetime = appointment["slot_start_utc"]
         if appointment_datetime.tzinfo is None:
             appointment_datetime = appointment_datetime.replace(tzinfo=timezone.utc)

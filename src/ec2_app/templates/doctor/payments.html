@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Payments | MediSlot{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  {% include "doctor/_sidebar.html" %}
+
+  <main class="main-content">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Payments</h1>
+        <p class="page-subtitle">Payment ledger for appointments booked with you</p>
+      </div>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="loadPayments()">Refresh</button>
+    </div>
+
+    <div class="alert alert-info" style="margin-bottom: 1.5rem;">
+      MediSlot does not process payments. “Initiated” records are due at the clinic and are not confirmed charges.
+    </div>
+
+    <div id="paymentsError" class="alert alert-danger" style="display: none;"></div>
+    <div id="paymentsLoading" class="loading-container">
+      <div class="spinner spinner-lg"></div>
+      <p>Loading payment records...</p>
+    </div>
+    <div id="paymentsTableContainer" class="table-container" style="display: none;">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Recorded</th>
+            <th>Appointment</th>
+            <th>Patient</th>
+            <th>Consultation</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Method</th>
+          </tr>
+        </thead>
+        <tbody id="paymentsTableBody"></tbody>
+      </table>
+    </div>
+    <div id="paymentsEmpty" class="empty-state" style="display: none;">
+      <div class="empty-title">No Payment Records</div>
+      <p class="empty-desc">Payment ledger entries for your appointments will appear here.</p>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const doctorTimeZone = {{ doctor_timezone|tojson }};
+
+  document.addEventListener('DOMContentLoaded', loadPayments);
+
+  async function loadPayments() {
+    const loading = document.getElementById('paymentsLoading');
+    const container = document.getElementById('paymentsTableContainer');
+    const empty = document.getElementById('paymentsEmpty');
+    const error = document.getElementById('paymentsError');
+    loading.style.display = 'flex';
+    container.style.display = 'none';
+    empty.style.display = 'none';
+    error.style.display = 'none';
+
+    try {
+      const response = await fetch('/api/doctor/payments');
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+      const payments = result.payments || [];
+      loading.style.display = 'none';
+
+      if (!payments.length) {
+        empty.style.display = 'block';
+        return;
+      }
+
+      document.getElementById('paymentsTableBody').innerHTML = payments.map(payment => `
+        <tr>
+          <td>${escapeHtml(MediSlotTime.formatAppointmentTime(payment.created_at, doctorTimeZone))}</td>
+          <td>
+            <strong>${escapeHtml(MediSlotTime.formatAppointmentTime(payment.appointment_time, doctorTimeZone))}</strong>
+            <small>${escapeHtml(payment.appointment_id || '')}</small>
+          </td>
+          <td>${escapeHtml(payment.patient_name || 'Registered Patient')}</td>
+          <td>${escapeHtml(payment.consultation_type_name || 'Consultation')}</td>
+          <td>${MediSlotMoney.formatINR(payment.amount || 0)}</td>
+          <td>${escapeHtml(paymentStatusLabel(payment.payment_status))}</td>
+          <td>${escapeHtml(String(payment.payment_method || 'Not recorded').replaceAll('_', ' '))}</td>
+        </tr>
+      `).join('');
+      container.style.display = 'block';
+    } catch (exception) {
+      loading.style.display = 'none';
+      error.textContent = `Could not load payment records: ${exception.message}`;
+      error.style.display = 'block';
+    }
+  }
+
+  function paymentStatusLabel(status) {
+    if (status === 'INITIATED') return 'Due at clinic';
+    return status ? String(status).replaceAll('_', ' ') : 'Not recorded';
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+</script>
+{% endblock %}

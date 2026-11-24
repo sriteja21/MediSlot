@@ -30,6 +30,23 @@
       <span>Daily Schedule</span>
     </a>
 
+    <div class="nav-section-title" style="margin-top: 1rem;">Finances</div>
+
+    <a href="{{ url_for('doctor_payments') }}" class="nav-item {% if active_page == 'payments' %}active{% endif %}">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <rect x="2" y="5" width="20" height="14" rx="2"></rect>
+        <path d="M2 10h20M6 15h3"></path>
+      </svg>
+      <span>Payments</span>
+    </a>
+
+    <a href="{{ url_for('doctor_refunds') }}" class="nav-item {% if active_page == 'refunds' %}active{% endif %}">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M3 11a9 9 0 0115.36-6.36L21 7m0 0V3m0 4h-4M21 13a9 9 0 01-15.36 6.36L3 17m0 0v4m0-4h4"></path>
+      </svg>
+      <span>Refunds</span>
+    </a>
+
     <div class="nav-section-title" style="margin-top: 1rem;">Configuration</div>
 
     <a href="{{ url_for('doctor_consultation_types') }}" class="nav-item {% if active_page == 'consultation_types' %}active{% endif %}">
