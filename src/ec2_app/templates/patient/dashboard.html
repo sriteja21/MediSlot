@@ -25,18 +25,18 @@
     </article>
   </div>
 
-  <section class="patient-home-appointments" aria-labelledby="recentAppointmentsTitle">
+  <section class="patient-home-appointments" aria-labelledby="upcomingAppointmentsTitle">
     <div class="patient-section-heading">
       <div>
-        <h2 id="recentAppointmentsTitle">Recent appointments</h2>
-        <p>Your latest visit activity.</p>
+        <h2 id="upcomingAppointmentsTitle">Upcoming appointments</h2>
+        <p>Your next confirmed visits.</p>
       </div>
       <a class="patient-text-link" href="{{ url_for('patient_appointments') }}">All appointments <span aria-hidden="true">&rarr;</span></a>
     </div>
     <div id="dashboardAppointmentsLoading" class="patient-loading"><span class="spinner"></span><span>Loading appointments...</span></div>
     <div id="dashboardAppointmentsError" class="patient-inline-error" role="alert" hidden></div>
     <div id="dashboardAppointments" class="patient-appointment-list"></div>
-    <div id="dashboardAppointmentsEmpty" class="patient-empty" hidden>No appointments yet. Find a doctor to book your first visit.</div>
+    <div id="dashboardAppointmentsEmpty" class="patient-empty" hidden>No upcoming appointments. Find a doctor when you’re ready.</div>
   </section>
 </section>
 {% endblock %}

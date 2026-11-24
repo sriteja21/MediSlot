@@ -10,6 +10,19 @@
     </div>
   </main>
 </div>
+<dialog class="patient-dialog" id="appointmentDetailsDialog" aria-labelledby="appointmentDetailsTitle">
+  <div class="patient-dialog-header">
+    <div>
+      <p class="patient-eyebrow">VISIT DETAILS</p>
+      <h2 id="appointmentDetailsTitle">Appointment</h2>
+    </div>
+    <button type="button" class="patient-dialog-close" data-close-dialog aria-label="Close dialog">&times;</button>
+  </div>
+  <div class="patient-dialog-body" id="appointmentDetailsBody"></div>
+  <div class="patient-dialog-footer">
+    <button type="button" class="btn btn-secondary" data-close-dialog>Close</button>
+  </div>
+</dialog>
 {% endblock %}
 
 {% block scripts %}

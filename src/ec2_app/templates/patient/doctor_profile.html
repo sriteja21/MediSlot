@@ -40,6 +40,13 @@
         <input type="checkbox" id="onlyFreeSeats" checked>
         <span>Only slots with free seats</span>
       </label>
+      <div class="patient-booking-selection" aria-live="polite">
+        <div>
+          <strong id="bookingSelectionTitle">Choose a time</strong>
+          <span id="bookingSelectionText">Select an available slot to continue.</span>
+        </div>
+        <button type="button" class="btn btn-primary" id="bookAppointmentButton" disabled>Book appointment</button>
+      </div>
     </div>
     <div class="patient-slot-summary" aria-live="polite">
       <span id="openSlotCount"></span>
@@ -50,10 +57,6 @@
     <div id="slotError" class="patient-inline-error" role="alert" hidden></div>
     <div id="slotResults" class="patient-slot-days" aria-live="polite"></div>
     <div id="slotEmptyState" class="patient-empty" hidden>No appointments match this week and consultation type. Try another week or turn off the free-seats filter.</div>
-    <div class="patient-booking-footer">
-      <p id="bookingSelectionText">Select an available time to continue.</p>
-      <button type="button" class="btn btn-primary" id="bookAppointmentButton" disabled>Book appointment</button>
-    </div>
   </section>
 </section>
 {% endblock %}

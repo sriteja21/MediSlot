@@ -1,0 +1,62 @@
+{% extends "patient/_layout.html" %}
+
+{% block title %}Payments | MediSlot{% endblock %}
+
+{% block page_content %}
+<section class="patient-screen" data-patient-page="payments">
+  <header class="page-header">
+    <div>
+      <p class="patient-eyebrow">PAYMENT HISTORY</p>
+      <h1 class="page-title">Payments</h1>
+      <p class="page-subtitle">Review payment records linked to your appointments.</p>
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm" id="refreshPatientPayments">Refresh</button>
+  </header>
+
+  <div class="patient-payment-note">Payments marked “Due at clinic” are not charges processed by MediSlot.</div>
+  <div class="patient-filter-bar">
+    <label>Search
+      <input type="search" id="paymentSearch" placeholder="Doctor, appointment or consultation">
+    </label>
+    <label>Status
+      <select id="paymentStatusFilter">
+        <option value="">All statuses</option>
+        <option value="INITIATED">Due at clinic</option>
+        <option value="PAID">Paid</option>
+        <option value="REFUNDED">Refunded</option>
+        <option value="FAILED">Failed</option>
+      </select>
+    </label>
+    <label>From
+      <input type="date" id="paymentDateFrom">
+    </label>
+    <label>To
+      <input type="date" id="paymentDateTo">
+    </label>
+    <button type="button" class="btn btn-secondary btn-sm" id="clearPaymentFilters">Clear filters</button>
+  </div>
+  <div id="patientPaymentsError" class="patient-inline-error" role="alert" hidden></div>
+  <div id="patientPaymentsLoading" class="patient-loading"><span class="spinner"></span><span>Loading payment history...</span></div>
+  <div id="patientPaymentsContainer" class="patient-table-wrap" hidden>
+    <table class="table patient-table">
+      <thead><tr><th>Appointment</th><th>Doctor</th><th>Consultation</th><th>Amount</th><th>Status</th><th>Method</th><th>Details</th></tr></thead>
+      <tbody id="patientPaymentsBody"></tbody>
+    </table>
+  </div>
+  <div id="patientPaymentsEmpty" class="patient-empty" hidden>No payment records match these filters.</div>
+</section>
+
+<dialog class="patient-dialog" id="patientPaymentDetailsDialog" aria-labelledby="patientPaymentDetailsTitle">
+  <div class="patient-dialog-header">
+    <div>
+      <p class="patient-eyebrow">PAYMENT DETAILS</p>
+      <h2 id="patientPaymentDetailsTitle">Appointment payment</h2>
+    </div>
+    <button type="button" class="patient-dialog-close" data-close-payment-dialog aria-label="Close dialog">&times;</button>
+  </div>
+  <div class="patient-dialog-body" id="patientPaymentDetailsBody"></div>
+  <div class="patient-dialog-footer">
+    <button type="button" class="btn btn-secondary" data-close-payment-dialog>Close</button>
+  </div>
+</dialog>
+{% endblock %}

@@ -439,6 +439,12 @@ def patient_appointments():
     return render_template("patient/appointments.html", active_page="appointments")
 
 
+@app.route("/patient/payments", methods=["GET"])
+@patient_required
+def patient_payments():
+    return render_template("patient/payments.html", active_page="payments")
+
+
 @app.route("/doctor/profile", methods=["GET"])
 @login_required
 def doctor_profile():

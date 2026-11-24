@@ -3,51 +3,69 @@
 {% block title %}My Profile | MediSlot{% endblock %}
 
 {% block page_content %}
-<section class="patient-screen" data-patient-page="profile">
-  <header class="page-header">
-    <div>
-      <p class="patient-eyebrow">PERSONAL DETAILS</p>
-      <h1 class="page-title">My profile</h1>
-      <p class="page-subtitle">Keep your contact and emergency details up to date.</p>
+<section class="patient-screen patient-profile-screen" data-patient-page="profile">
+  <header class="patient-profile-hero">
+    <div class="patient-profile-avatar" id="patientProfileAvatar" aria-hidden="true">P</div>
+    <div class="patient-profile-hero-copy">
+      <p class="patient-eyebrow">YOUR ACCOUNT</p>
+      <h1 class="page-title" id="patientProfileHeading">My profile</h1>
+      <p class="page-subtitle">Keep the details used for your care up to date.</p>
     </div>
+    <button type="button" class="btn btn-teal" id="editPatientProfile">Edit profile</button>
   </header>
 
-  <form id="patientProfileForm" class="profile-form">
-    <div class="profile-form-grid">
-      <label>First name
-        <input id="firstName" name="first_name" maxlength="100" required>
+  <form id="patientProfileForm" class="patient-profile-card">
+    <div class="patient-profile-card-heading">
+      <div>
+        <h2>Personal information</h2>
+        <p>Your information is private to your account.</p>
+      </div>
+      <span class="patient-profile-status"><span></span> Patient account</span>
+    </div>
+    <div class="patient-profile-fields">
+      <label class="patient-profile-field">First name
+        <input id="firstName" name="first_name" maxlength="100" required readonly>
       </label>
-      <label>Last name
-        <input id="lastName" name="last_name" maxlength="100" required>
+      <label class="patient-profile-field">Last name
+        <input id="lastName" name="last_name" maxlength="100" required readonly>
       </label>
-      <label>Email
+      <label class="patient-profile-field">Email address
         <input id="email" type="email" disabled>
+        <small>Email is managed by your sign-in account.</small>
       </label>
-      <label>Phone number
-        <input id="phoneNumber" name="phone_number" maxlength="20">
+      <label class="patient-profile-field">Phone number
+        <input id="phoneNumber" name="phone_number" maxlength="20" readonly>
       </label>
-      <label>Date of birth
-        <input id="dateOfBirth" name="date_of_birth" type="date" required>
+      <label class="patient-profile-field">Date of birth
+        <input id="dateOfBirth" name="date_of_birth" type="date" required readonly>
       </label>
-      <label>Gender
-        <select id="gender" name="gender">
-          <option value="">Select</option>
+      <label class="patient-profile-field">Gender
+        <select id="gender" name="gender" disabled>
+          <option value="">Prefer not to say</option>
           <option value="MALE">Male</option>
           <option value="FEMALE">Female</option>
           <option value="OTHER">Other</option>
         </select>
       </label>
-      <label>Emergency contact name
-        <input id="emergencyContactName" name="emergency_contact_name" maxlength="150">
+      <label class="patient-profile-field">Emergency contact
+        <input id="emergencyContactName" name="emergency_contact_name" maxlength="150" readonly>
       </label>
-      <label>Emergency contact phone
-        <input id="emergencyContactPhone" name="emergency_contact_phone" maxlength="20">
+      <label class="patient-profile-field">Emergency contact phone
+        <input id="emergencyContactPhone" name="emergency_contact_phone" maxlength="20" readonly>
       </label>
     </div>
-    <div class="profile-form-actions">
-      <button type="submit" class="btn btn-teal">Save profile</button>
-      <button type="button" id="deactivatePatientAccount" class="btn btn-danger">Deactivate account</button>
+    <div id="patientProfileActions" class="patient-profile-actions" hidden>
+      <button type="button" class="btn btn-secondary" id="cancelPatientProfileEdit">Cancel</button>
+      <button type="submit" class="btn btn-teal" id="savePatientProfile">Save changes</button>
     </div>
   </form>
+
+  <section class="patient-danger-card">
+    <div>
+      <h2>Deactivate account</h2>
+      <p>This disables sign-in to your patient account.</p>
+    </div>
+    <button type="button" id="deactivatePatientAccount" class="btn btn-danger btn-sm">Deactivate</button>
+  </section>
 </section>
 {% endblock %}

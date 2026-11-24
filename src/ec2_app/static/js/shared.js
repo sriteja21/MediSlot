@@ -64,3 +64,29 @@ window.MediSlotMoney = {
     return `₹${this.round(value, fractionDigits)}`;
   },
 };
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.flash-container .alert').forEach(alert => {
+    if (alert.classList.contains('alert-danger')) return;
+    let dismissTimer;
+    const dismiss = () => {
+      alert.classList.add('is-dismissing');
+      window.setTimeout(() => alert.remove(), 220);
+    };
+    const startTimer = () => {
+      window.clearTimeout(dismissTimer);
+      dismissTimer = window.setTimeout(dismiss, 6500);
+    };
+    const stopTimer = () => window.clearTimeout(dismissTimer);
+    alert.addEventListener('mouseenter', stopTimer);
+    alert.addEventListener('mouseleave', startTimer);
+    alert.addEventListener('focusin', stopTimer);
+    alert.addEventListener('focusout', startTimer);
+    alert.querySelector('.alert-close')?.addEventListener('click', dismiss);
+    startTimer();
+  });
+
+  document.querySelectorAll('.nav-item[aria-current="page"]').forEach(link => {
+    link.setAttribute('aria-current', 'page');
+  });
+});

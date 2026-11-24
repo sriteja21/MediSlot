@@ -64,11 +64,27 @@
         </div>
 
         <!-- Summary Metrics for the Selected Day -->
-        <div style="display: flex; gap: 1.5rem; align-items: center; font-size: 0.85rem;">
+        <div class="schedule-metrics">
           <div>Total Slots: <strong id="metricTotalSlots" style="color: #fff;">—</strong></div>
           <div>Available: <strong id="metricOpenSlots" style="color: var(--accent-secondary);">—</strong></div>
           <div>Booked: <strong id="metricBookedSlots" style="color: var(--warning);">—</strong></div>
           <div>Inactive: <strong id="metricBlockedSlots" style="color: var(--text-dim);">—</strong></div>
+        </div>
+        <div class="schedule-filter-bar" aria-label="Filter schedule slots">
+          <label>
+            <span>Find consultation</span>
+            <input type="search" id="scheduleConsultationSearch" class="form-control" placeholder="Search type">
+          </label>
+          <label>
+            <span>Slot status</span>
+            <select id="scheduleStatusFilter" class="form-control">
+              <option value="">All statuses</option>
+              <option value="available">Available</option>
+              <option value="booked">Booked or full</option>
+              <option value="inactive">Inactive or blackout</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn-secondary btn-sm" id="clearScheduleFilters">Clear filters</button>
         </div>
       </div>
     </div>
@@ -118,9 +134,22 @@
     const today = getDoctorToday();
     currentDate = today;
     document.getElementById('scheduleDatePicker').value = today;
+    document.getElementById('scheduleConsultationSearch').addEventListener('input', debounceScheduleReload);
+    document.getElementById('scheduleStatusFilter').addEventListener('change', reloadSchedule);
+    document.getElementById('clearScheduleFilters').addEventListener('click', () => {
+      document.getElementById('scheduleConsultationSearch').value = '';
+      document.getElementById('scheduleStatusFilter').value = '';
+      loadSchedule(currentDate);
+    });
     updateViewToggle();
     loadSchedule(today);
   });
+
+  let scheduleFilterTimer = null;
+  function debounceScheduleReload() {
+    window.clearTimeout(scheduleFilterTimer);
+    scheduleFilterTimer = window.setTimeout(() => loadSchedule(currentDate), 250);
+  }
 
   function updateViewToggle() {
     const todayBtn = document.getElementById('todayViewBtn');
@@ -275,6 +304,18 @@
         appointmentsBySlot.get(key).push(appointment);
       });
 
+      const consultationSearch = document.getElementById('scheduleConsultationSearch').value.trim().toLowerCase();
+      const statusFilter = document.getElementById('scheduleStatusFilter').value;
+      const filteredSlots = allSlots.filter(slot => {
+        const status = !slot.is_active || slot.is_blocked
+          ? 'inactive'
+          : Number(slot.free_seats) <= 0 || Number(slot.booked_count || 0) > 0
+            ? 'booked'
+            : 'available';
+        return (!consultationSearch || String(slot.consultation_type_name || '').toLowerCase().includes(consultationSearch))
+          && (!statusFilter || status === statusFilter);
+      });
+
       loading.style.display = 'none';
 
       let totalCount = allSlots.length;
@@ -288,7 +329,10 @@
         document.getElementById('metricOpenSlots').textContent = '0';
         document.getElementById('metricBookedSlots').textContent = '0';
         document.getElementById('metricBlockedSlots').textContent = '0';
+        document.getElementById('emptyStateHelpText').textContent =
+          'Slots may not have been materialized yet for this date, or the day is outside your weekly availability patterns or marked as a blackout date.';
         emptyState.style.display = 'block';
+        grid.style.display = 'none';
         return;
       }
 
@@ -387,7 +431,26 @@
       document.getElementById('metricBookedSlots').textContent = (partialCount + fullCount);
       document.getElementById('metricBlockedSlots').textContent = inactiveCount;
 
-      grid.style.display = 'grid';
+      grid.querySelectorAll('.slot-card').forEach(card => {
+        const slotSummary = card.querySelector('.slot-expander summary');
+        const text = slotSummary?.textContent?.toLowerCase() || '';
+        const status = card.classList.contains('status-blocked')
+          ? 'inactive'
+          : card.classList.contains('status-full') || card.classList.contains('status-partial')
+            ? 'booked'
+            : 'available';
+        card.hidden = (consultationSearch && !text.includes(consultationSearch))
+          || (statusFilter && status !== statusFilter);
+      });
+      if (filteredSlots.length === 0) {
+        document.getElementById('emptyStateHelpText').textContent =
+          'No slots match these filters. Clear one or more filters to view the full schedule.';
+        emptyState.style.display = 'block';
+        grid.style.display = 'none';
+      } else {
+        emptyState.style.display = 'none';
+        grid.style.display = 'grid';
+      }
 
     } catch (err) {
       console.warn('Schedule fetch error:', err);

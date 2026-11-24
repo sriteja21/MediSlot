@@ -17,7 +17,7 @@
       <div style="position: fixed; top: 1.5rem; right: 1.5rem; z-index: 9999; max-width: 420px; width: calc(100% - 3rem);">
         <div class="flash-container">
           {% for category, message in messages %}
-            <div class="alert alert-{{ category if category in ['danger', 'success', 'warning', 'info'] else 'info' }}">
+            <div class="alert alert-{{ category if category in ['danger', 'success', 'warning', 'info'] else 'info' }}" role="status">
               <span>{{ message }}</span>
               <button type="button" class="alert-close" onclick="this.closest('.alert').remove()">&times;</button>
             </div>

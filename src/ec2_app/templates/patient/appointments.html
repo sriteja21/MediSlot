@@ -1,43 +1,101 @@
 {% extends "patient/_layout.html" %}
 
-{% block title %}My Appointments | MediSlot{% endblock %}
+{% block title %}Appointments | MediSlot{% endblock %}
 
 {% block page_content %}
 <section class="patient-screen" data-patient-page="appointments">
   <header class="page-header">
     <div>
-      <p class="patient-eyebrow">YOUR VISITS</p>
+      <p class="patient-eyebrow">YOUR CARE</p>
       <h1 class="page-title">Appointments</h1>
-      <p class="page-subtitle">Review your upcoming and previous visits.</p>
+      <p class="page-subtitle">Manage visits, waitlists and slot offers in one place.</p>
     </div>
-    <button type="button" class="btn btn-secondary btn-sm" id="refreshAppointments" title="Refresh appointments" aria-label="Refresh appointments">
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-    </button>
+    <button type="button" class="btn btn-secondary btn-sm" id="refreshAppointments">Refresh</button>
   </header>
 
-  <div id="patientAppointmentsError" class="patient-inline-error" role="alert" hidden></div>
-  <div id="patientAppointmentsLoading" class="patient-loading"><span class="spinner"></span><span>Loading appointments...</span></div>
-  <div id="patientAppointmentsContainer" class="patient-table-wrap" hidden>
-    <table class="table patient-table">
-      <thead><tr><th>Date and time</th><th>Doctor</th><th>Hospital</th><th>Consultation</th><th>Status</th><th>Fee / payment</th><th>Refund</th><th>Actions</th></tr></thead>
-      <tbody id="patientAppointmentsBody"></tbody>
-    </table>
-  </div>
-  <div id="patientAppointmentsEmpty" class="patient-empty" hidden>
-    <p>No appointments yet.</p>
-    <a class="btn btn-teal btn-sm" href="{{ url_for('patient_doctors') }}">Find a doctor</a>
+  <div class="patient-tabs" role="tablist" aria-label="Appointment items">
+    <button type="button" class="patient-tab active" role="tab" aria-selected="true" aria-controls="patientVisitsPanel" data-appointment-tab="visits">Booked visits</button>
+    <button type="button" class="patient-tab" role="tab" aria-selected="false" aria-controls="patientWaitlistsPanel" data-appointment-tab="waitlists">Waitlists <span id="waitlistTabCount">0</span></button>
+    <button type="button" class="patient-tab" role="tab" aria-selected="false" aria-controls="patientOffersPanel" data-appointment-tab="offers">Slot offers <span id="offerTabCount">0</span></button>
   </div>
 
-  <section class="patient-home-appointments" aria-labelledby="waitlistOffersTitle">
-    <div class="patient-section-heading">
-      <div>
-        <h2 id="waitlistOffersTitle">Waitlists and slot offers</h2>
-        <p>Offers remain available for 15 minutes. Accept one to confirm the appointment.</p>
-      </div>
+  <section id="patientVisitsPanel" class="patient-tab-panel" role="tabpanel">
+    <div class="patient-filter-bar">
+      <label>Search visits
+        <input type="search" id="appointmentSearch" placeholder="Doctor, hospital or consultation">
+      </label>
+      <label>Status
+        <select id="appointmentStatusFilter">
+          <option value="">All statuses</option>
+          <option value="CONFIRMED">Confirmed</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="CANCELLED">Cancelled</option>
+          <option value="CANCELLED_BY_PATIENT">Cancelled by me</option>
+          <option value="CANCELLED_BY_DOCTOR">Cancelled by doctor</option>
+        </select>
+      </label>
+      <label>From
+        <input type="date" id="appointmentDateFrom">
+      </label>
+      <label>To
+        <input type="date" id="appointmentDateTo">
+      </label>
+      <button type="button" class="btn btn-secondary btn-sm" id="clearAppointmentFilters">Clear filters</button>
+    </div>
+    <div id="patientAppointmentsError" class="patient-inline-error" role="alert" hidden></div>
+    <div id="patientAppointmentsLoading" class="patient-loading"><span class="spinner"></span><span>Loading visits...</span></div>
+    <div id="patientAppointmentsContainer" class="patient-table-wrap" hidden>
+      <table class="table patient-table">
+        <thead><tr><th>Date</th><th>Doctor</th><th>Hospital</th><th>Consultation</th><th>Status</th><th>Payment</th><th>Details</th></tr></thead>
+        <tbody id="patientAppointmentsBody"></tbody>
+      </table>
+    </div>
+    <div id="patientAppointmentsEmpty" class="patient-empty" hidden>No visits match these filters.</div>
+  </section>
+
+  <section id="patientWaitlistsPanel" class="patient-tab-panel" role="tabpanel" hidden>
+    <div class="patient-filter-bar patient-filter-bar-compact">
+      <label>Search waitlists
+        <input type="search" id="waitlistSearch" placeholder="Filter by date">
+      </label>
     </div>
     <div id="patientWaitlistError" class="patient-inline-error" role="alert" hidden></div>
     <div id="patientWaitlists" class="patient-appointment-list"></div>
-    <div id="patientWaitlistsEmpty" class="patient-empty" hidden>You have no active waitlists or slot offers.</div>
+    <div id="patientWaitlistsEmpty" class="patient-empty" hidden>No active waitlists.</div>
+  </section>
+
+  <section id="patientOffersPanel" class="patient-tab-panel" role="tabpanel" hidden>
+    <div class="patient-filter-bar patient-filter-bar-compact">
+      <label>Search slot offers
+        <input type="search" id="offerSearch" placeholder="Filter by date or status">
+      </label>
+    </div>
+    <div id="patientOffers" class="patient-appointment-list"></div>
+    <div id="patientOffersEmpty" class="patient-empty" hidden>No active slot offers.</div>
   </section>
 </section>
+
+<dialog class="patient-dialog patient-refund-dialog" id="refundPreviewDialog" aria-labelledby="refundDialogTitle">
+  <div class="patient-dialog-header">
+    <div>
+      <p class="patient-eyebrow">CANCELLATION PREVIEW</p>
+      <h2 id="refundDialogTitle">Review cancellation</h2>
+    </div>
+    <button type="button" class="patient-dialog-close" data-close-refund aria-label="Close dialog">&times;</button>
+  </div>
+  <div class="patient-dialog-body">
+    <p class="patient-dialog-lead">Please review the estimate before cancelling this visit.</p>
+    <div class="patient-refund-summary">
+      <div><span>Appointment</span><strong id="refundAppointmentTime">—</strong></div>
+      <div><span>Estimated refund</span><strong id="refundAmount">—</strong></div>
+      <div><span>Refund tier</span><strong id="refundTier">—</strong></div>
+    </div>
+    <p class="patient-dialog-note">This is an estimate for clinic processing. MediSlot does not charge or refund payments.</p>
+    <div id="refundDialogError" class="patient-inline-error" role="alert" hidden></div>
+  </div>
+  <div class="patient-dialog-footer">
+    <button type="button" class="btn btn-secondary" data-close-refund>Keep appointment</button>
+    <button type="button" class="btn btn-danger" id="confirmAppointmentCancellation">Cancel appointment</button>
+  </div>
+</dialog>
 {% endblock %}

@@ -8,48 +8,99 @@ let selectedSlot = null;
 let availabilityWeek = 0;
 let availabilityStart = null;
 let currentWeekSlots = [];
+let patientAppointments = [];
+let patientWaitlistEntries = [];
+let patientWaitlistOffers = [];
+let pendingRefundAppointment = null;
 
 async function initializePatientProfile() {
     const form = document.getElementById('patientProfileForm');
     if (!form) return;
 
     try {
-        const response = await fetch('/api/patient/profile', { headers: { Accept: 'application/json' } });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Unable to load profile');
+        const data = await fetchJson('/api/patient/profile');
         const patient = data.patient || {};
-        document.getElementById('firstName').value = patient.first_name || '';
-        document.getElementById('lastName').value = patient.last_name || '';
+        const fields = profileFields();
+        fields.forEach(field => {
+            const element = document.getElementById(field);
+            const key = element.name || field;
+            element.value = patient[key] || '';
+        });
         document.getElementById('email').value = patient.email || '';
-        document.getElementById('phoneNumber').value = patient.phone_number || '';
-        document.getElementById('dateOfBirth').value = patient.date_of_birth || '';
-        document.getElementById('gender').value = patient.gender || '';
-        document.getElementById('emergencyContactName').value = patient.emergency_contact_name || '';
-        document.getElementById('emergencyContactPhone').value = patient.emergency_contact_phone || '';
+        setPatientName([patient.first_name, patient.last_name].filter(Boolean).join(' '));
+        document.getElementById('patientProfileHeading').textContent =
+            [patient.first_name, patient.last_name].filter(Boolean).join(' ') || 'My profile';
+        document.getElementById('patientProfileAvatar').textContent =
+            `${patient.first_name?.[0] || ''}${patient.last_name?.[0] || ''}`.toUpperCase() || 'P';
 
+        const editButton = document.getElementById('editPatientProfile');
+        const cancelButton = document.getElementById('cancelPatientProfileEdit');
+        const actions = document.getElementById('patientProfileActions');
+        const saveButton = document.getElementById('savePatientProfile');
+        let originalValues = profileValues(form);
+        const setEditing = (editing) => {
+            fields.forEach(field => {
+                const element = document.getElementById(field);
+                if (element) {
+                    if (element.tagName === 'SELECT') element.disabled = !editing;
+                    else element.readOnly = !editing;
+                }
+            });
+            actions.hidden = !editing;
+            editButton.hidden = editing;
+        };
+        editButton.addEventListener('click', () => {
+            originalValues = profileValues(form);
+            setEditing(true);
+            document.getElementById('firstName').focus();
+        });
+        cancelButton.addEventListener('click', () => {
+            restoreProfileValues(form, originalValues);
+            setEditing(false);
+        });
         form.addEventListener('submit', async (event) => {
             event.preventDefault();
-            const payload = Object.fromEntries(new FormData(form).entries());
-            const saveResponse = await fetch('/api/patient/profile', {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            const saveData = await saveResponse.json();
-            if (!saveResponse.ok) throw new Error(saveData.message || 'Unable to save profile');
-            window.MediSlotUI?.showNotice?.('Profile updated.', 'success');
+            saveButton.disabled = true;
+            try {
+                const payload = Object.fromEntries(new FormData(form).entries());
+                await fetchJson('/api/patient/profile', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                originalValues = profileValues(form);
+                setEditing(false);
+                showNotice('Your profile has been updated.', 'success');
+            } catch (error) {
+                showNotice(error.message || 'Unable to save profile.', 'danger');
+            } finally {
+                saveButton.disabled = false;
+            }
         });
 
         document.getElementById('deactivatePatientAccount').addEventListener('click', async () => {
             if (!window.confirm('Deactivate your MediSlot patient account?')) return;
-            const deactivateResponse = await fetch('/api/patient/profile', { method: 'DELETE' });
-            const deactivateData = await deactivateResponse.json();
-            if (!deactivateResponse.ok) throw new Error(deactivateData.message || 'Unable to deactivate account');
+            await fetchJson('/api/patient/profile', { method: 'DELETE' });
             window.location.assign('/login');
         });
     } catch (error) {
-        window.MediSlotUI?.showNotice?.(error.message, 'danger');
+        showNotice(error.message || 'Unable to load profile.', 'danger');
     }
+}
+
+function profileFields() {
+    return ['firstName', 'lastName', 'phoneNumber', 'dateOfBirth', 'gender',
+        'emergencyContactName', 'emergencyContactPhone'];
+}
+
+function profileValues(form) {
+    return Object.fromEntries(profileFields().map(id => [id, document.getElementById(id).value]));
+}
+
+function restoreProfileValues(form, values) {
+    Object.entries(values).forEach(([id, value]) => {
+        document.getElementById(id).value = value;
+    });
 }
 let currentWeekFrom = null;
 let currentWeekDayCount = 0;
@@ -57,6 +108,14 @@ let currentWeekDayCount = 0;
 document.addEventListener('DOMContentLoaded', () => {
   const screen = document.querySelector('[data-patient-page]');
   if (!screen) return;
+
+  document.querySelectorAll('[data-close-dialog]').forEach(button =>
+    button.addEventListener('click', () => document.getElementById('appointmentDetailsDialog').close())
+  );
+  const appointmentDetailsDialog = document.getElementById('appointmentDetailsDialog');
+  appointmentDetailsDialog?.addEventListener('click', event => {
+    if (event.target === appointmentDetailsDialog) appointmentDetailsDialog.close();
+  });
 
   const page = screen.dataset.patientPage;
   if (page === 'dashboard') loadDashboard();
@@ -67,8 +126,12 @@ document.addEventListener('DOMContentLoaded', () => {
   if (page === 'doctor-profile') initializeDoctorProfile(screen.dataset.doctorId);
   if (page === 'appointments') {
     document.getElementById('refreshAppointments').addEventListener('click', loadAppointments);
+    initializeAppointmentFilters();
+    initializeAppointmentTabs();
+    initializeRefundDialog();
     loadAppointments();
   }
+  if (page === 'payments') initializePatientPayments();
 });
 
 async function loadPatientIdentity() {
@@ -98,20 +161,21 @@ async function loadDashboard() {
       : 'Patient dashboard';
     document.getElementById('upcomingCount').textContent = data.upcoming_appointments_count ?? 0;
     const appointments = data.appointments || [];
-    const nextAppointment = appointments.find(item =>
+    const upcoming = appointments.filter(item =>
       item.status === 'CONFIRMED' && new Date(normalizeDateTime(item.slot_start_utc)) >= new Date()
-    );
+    ).sort((a, b) => new Date(normalizeDateTime(a.slot_start_utc)) - new Date(normalizeDateTime(b.slot_start_utc)));
+    const nextAppointment = upcoming[0];
     document.getElementById('nextAppointmentContent').innerHTML = nextAppointment
       ? `<strong>${escapeHtml(nextAppointment.doctor_name || 'Doctor')}</strong>
          <span>${escapeHtml(formatDateTime(nextAppointment.slot_start_utc))}</span>
          <span>${escapeHtml(nextAppointment.hospital_name || '')}</span>`
       : '<span>No upcoming visits</span><a class="patient-text-link" href="/patient/doctors">Find a doctor</a>';
 
-    if (!appointments.length) {
+    if (!upcoming.length) {
       empty.hidden = false;
       return;
     }
-    appointments.slice(0, 4).forEach(appointment => list.appendChild(createAppointmentItem(appointment)));
+    upcoming.slice(0, 4).forEach(appointment => list.appendChild(createAppointmentItem(appointment)));
   } catch (errorValue) {
     error.textContent = errorValue.message || 'Could not load your dashboard.';
     error.hidden = false;
@@ -493,11 +557,21 @@ function updateBookingButton() {
   const button = document.getElementById('bookAppointmentButton');
   if (!button) return;
   const text = document.getElementById('bookingSelectionText');
+  const title = document.getElementById('bookingSelectionTitle');
   button.disabled = !selectedSlot;
-  if (!text) return;
-  text.textContent = selectedSlot
-    ? `${selectedDoctor.doctor_name} · ${formatSlotTime(selectedSlot.start_time, selectedDoctor.timezone)}`
-    : 'Select an available time to continue.';
+  if (title) {
+    title.textContent = selectedSlot
+      ? `${selectedDoctor.doctor_name} · ${formatSlotTime(selectedSlot.start_time, selectedDoctor.timezone)}`
+      : 'Choose a time';
+  }
+  if (text) {
+    const consultation = selectedSlot && (selectedDoctor.consultations || []).find(item =>
+      item.consultation_type_id === selectedSlot.consultation_type_id
+    );
+    text.textContent = selectedSlot
+      ? `${consultation?.name || 'Consultation'} · ${MediSlotMoney.formatINR(consultation?.fee || 0)}`
+      : 'Select an available slot to continue.';
+  }
 }
 
 function addCalendarDays(dateKey, days) {
@@ -532,12 +606,8 @@ async function loadAppointments() {
     const data = await fetchJson('/api/patient/dashboard');
     setPatientName(data.patient?.full_name);
     await loadWaitlists();
-    if (!(data.appointments || []).length) {
-      empty.hidden = false;
-      return;
-    }
-    data.appointments.forEach(appointment => body.appendChild(createAppointmentRow(appointment)));
-    table.hidden = false;
+    patientAppointments = data.appointments || [];
+    renderAppointments();
   } catch (errorValue) {
     error.textContent = errorValue.message || 'Could not load your appointments.';
     error.hidden = false;
@@ -546,8 +616,101 @@ async function loadAppointments() {
   }
 }
 
+function initializeAppointmentFilters() {
+  ['appointmentSearch', 'appointmentStatusFilter', 'appointmentDateFrom', 'appointmentDateTo']
+    .forEach(id => document.getElementById(id).addEventListener('input', renderAppointments));
+  document.getElementById('clearAppointmentFilters').addEventListener('click', () => {
+    ['appointmentSearch', 'appointmentStatusFilter', 'appointmentDateFrom', 'appointmentDateTo']
+      .forEach(id => { document.getElementById(id).value = ''; });
+    renderAppointments();
+  });
+  document.getElementById('waitlistSearch').addEventListener('input', renderWaitlists);
+  document.getElementById('offerSearch').addEventListener('input', renderOffers);
+}
+
+function initializeAppointmentTabs() {
+  document.querySelectorAll('[data-appointment-tab]').forEach(button => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('[data-appointment-tab]').forEach(tab => {
+        const selected = tab === button;
+        tab.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', String(selected));
+      });
+      document.querySelectorAll('.patient-tab-panel').forEach(panel => {
+        panel.hidden = panel.id !== button.getAttribute('aria-controls');
+      });
+    });
+  });
+}
+
+function initializeRefundDialog() {
+  const dialog = document.getElementById('refundPreviewDialog');
+  document.querySelectorAll('[data-close-refund]').forEach(button =>
+    button.addEventListener('click', () => dialog.close())
+  );
+  document.getElementById('confirmAppointmentCancellation').addEventListener('click', async event => {
+    if (!pendingRefundAppointment) return;
+    const button = event.currentTarget;
+    const error = document.getElementById('refundDialogError');
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      const result = await fetchJson(
+        `/api/patient/appointments/${encodeURIComponent(pendingRefundAppointment.id)}/cancel`,
+        { method: 'POST' },
+      );
+      dialog.close();
+      pendingRefundAppointment = null;
+      showNotice(`Appointment cancelled. Estimated refund: ${MediSlotMoney.formatINR(result.refund_amount)}.`, 'success');
+      await loadAppointments();
+    } catch (requestError) {
+      error.textContent = requestError.message || 'Could not cancel this appointment.';
+      error.hidden = false;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+function renderAppointments() {
+  const table = document.getElementById('patientAppointmentsContainer');
+  const empty = document.getElementById('patientAppointmentsEmpty');
+  const body = document.getElementById('patientAppointmentsBody');
+  if (!table || !body) return;
+  const query = document.getElementById('appointmentSearch').value.trim().toLowerCase();
+  const status = document.getElementById('appointmentStatusFilter').value;
+  const from = document.getElementById('appointmentDateFrom').value;
+  const to = document.getElementById('appointmentDateTo').value;
+  const filtered = patientAppointments.filter(appointment => {
+    const text = [
+      appointment.doctor_name, appointment.hospital_name, appointment.hospital_city,
+      appointment.consultation_type, appointment.status,
+    ].join(' ').toLowerCase();
+    const date = normalizeDateTime(appointment.slot_start_utc).slice(0, 10);
+    return (!query || text.includes(query))
+      && (!status || appointment.status === status)
+      && (!from || date >= from)
+      && (!to || date <= to);
+  });
+  body.replaceChildren(...filtered.map(createAppointmentRow));
+  table.hidden = filtered.length === 0;
+  empty.hidden = filtered.length > 0;
+}
+
 function createAppointmentRow(appointment) {
   const row = document.createElement('tr');
+  row.classList.add('patient-appointment-row');
+  row.tabIndex = 0;
+  row.setAttribute('aria-label', `View appointment details for ${appointment.doctor_name || 'doctor'}`);
+  row.addEventListener('click', event => {
+    if (!event.target.closest('button')) showAppointmentDetails(appointment);
+  });
+  row.addEventListener('keydown', event => {
+    if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest('button')) {
+      event.preventDefault();
+      showAppointmentDetails(appointment);
+    }
+  });
   const status = String(appointment.status || 'UNKNOWN');
   const statusClass = status === 'CONFIRMED' ? 'badge-open'
     : status === 'COMPLETED' ? 'badge-primary' : 'badge-secondary';
@@ -583,15 +746,19 @@ function createAppointmentRow(appointment) {
 
   const actionsCell = document.createElement('td');
   actionsCell.dataset.label = 'Actions';
+  const detailsButton = document.createElement('button');
+  detailsButton.type = 'button';
+  detailsButton.className = 'btn btn-secondary btn-sm';
+  detailsButton.textContent = 'Details';
+  detailsButton.addEventListener('click', () => showAppointmentDetails(appointment));
+  actionsCell.appendChild(detailsButton);
   if (status === 'CONFIRMED') {
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
-    cancelButton.className = 'btn btn-secondary btn-sm';
-    cancelButton.textContent = 'Refund preview & cancel';
+    cancelButton.className = 'btn btn-danger btn-sm patient-cancel-appointment';
+    cancelButton.textContent = 'Cancel';
     cancelButton.addEventListener('click', () => cancelAppointment(appointment));
     actionsCell.appendChild(cancelButton);
-  } else {
-    actionsCell.textContent = '—';
   }
   row.appendChild(actionsCell);
   return row;
@@ -602,19 +769,13 @@ async function cancelAppointment(appointment) {
     const quote = await fetchJson(
       `/api/patient/appointments/${encodeURIComponent(appointment.id)}/refund-preview`,
     );
-    const confirmed = window.confirm(
-      `Cancel this appointment?\n\nEstimated refund ledger: ${MediSlotMoney.formatINR(quote.refund_amount)} (${quote.refund_percent}% — ${String(quote.refund_tier).replaceAll('_', ' ')}).\n\nMediSlot does not process payments; any refund is recorded for clinic processing.`,
-    );
-    if (!confirmed) return;
-    const result = await fetchJson(
-      `/api/patient/appointments/${encodeURIComponent(appointment.id)}/cancel`,
-      { method: 'POST' },
-    );
-    showNotice(
-      `Appointment cancelled. Refund ledger: ${MediSlotMoney.formatINR(result.refund_amount)}.`,
-      'success',
-    );
-    await loadAppointments();
+    pendingRefundAppointment = appointment;
+    document.getElementById('refundAppointmentTime').textContent = formatDateTime(appointment.slot_start_utc);
+    document.getElementById('refundAmount').textContent = MediSlotMoney.formatINR(quote.refund_amount || 0);
+    document.getElementById('refundTier').textContent =
+      `${String(quote.refund_tier || 'standard').replaceAll('_', ' ')} · ${quote.refund_percent ?? 0}%`;
+    document.getElementById('refundDialogError').hidden = true;
+    document.getElementById('refundPreviewDialog').showModal();
   } catch (error) {
     showNotice(error.message || 'Could not cancel this appointment.', 'danger');
   }
@@ -622,23 +783,44 @@ async function cancelAppointment(appointment) {
 
 async function loadWaitlists() {
   const error = document.getElementById('patientWaitlistError');
-  const list = document.getElementById('patientWaitlists');
-  const empty = document.getElementById('patientWaitlistsEmpty');
-  if (!list || !empty) return;
+  if (!error) return;
   error.hidden = true;
-  list.replaceChildren();
-  empty.hidden = true;
   try {
     const data = await fetchJson('/api/patient/waitlists');
-    const waitlists = data.waitlists || [];
-    const offers = data.offers || [];
-    waitlists.forEach(item => list.appendChild(createWaitlistItem(item)));
-    offers.filter(item => item.status === 'OPEN').forEach(item => list.appendChild(createOfferItem(item)));
-    empty.hidden = waitlists.length + offers.filter(item => item.status === 'OPEN').length > 0;
+    patientWaitlistEntries = data.waitlists || [];
+    patientWaitlistOffers = (data.offers || []).filter(item => item.status === 'OPEN');
+    renderWaitlists();
+    renderOffers();
   } catch (errorValue) {
     error.textContent = errorValue.message || 'Could not load waitlists and offers.';
     error.hidden = false;
   }
+}
+
+function renderWaitlists() {
+  const list = document.getElementById('patientWaitlists');
+  const empty = document.getElementById('patientWaitlistsEmpty');
+  if (!list || !empty) return;
+  const query = (document.getElementById('waitlistSearch')?.value || '').trim().toLowerCase();
+  const matches = patientWaitlistEntries.filter(entry =>
+    !query || formatDateTime(entry.slot_start).toLowerCase().includes(query)
+  );
+  list.replaceChildren(...matches.map(createWaitlistItem));
+  empty.hidden = matches.length > 0;
+  document.getElementById('waitlistTabCount').textContent = String(patientWaitlistEntries.length);
+}
+
+function renderOffers() {
+  const list = document.getElementById('patientOffers');
+  const empty = document.getElementById('patientOffersEmpty');
+  if (!list || !empty) return;
+  const query = (document.getElementById('offerSearch')?.value || '').trim().toLowerCase();
+  const matches = patientWaitlistOffers.filter(offer =>
+    !query || `${formatDateTime(offer.slot_start)} ${offer.status || 'open'}`.toLowerCase().includes(query)
+  );
+  list.replaceChildren(...matches.map(createOfferItem));
+  empty.hidden = matches.length > 0;
+  document.getElementById('offerTabCount').textContent = String(patientWaitlistOffers.length);
 }
 
 function createWaitlistItem(entry) {
@@ -705,15 +887,181 @@ function createOfferItem(offer) {
 
 function createAppointmentItem(appointment) {
   const item = document.createElement('article');
-  item.className = 'patient-appointment-item';
-  item.innerHTML = `
-    <div class="patient-appointment-date">${escapeHtml(formatDateTime(appointment.slot_start_utc))}</div>
-    <div class="patient-appointment-details">
+  item.className = 'patient-appointment-item patient-appointment-clickable';
+  const detailsButton = document.createElement('button');
+  detailsButton.type = 'button';
+  detailsButton.className = 'patient-appointment-open';
+  detailsButton.setAttribute('aria-label', `View appointment with ${appointment.doctor_name || 'doctor'}`);
+  detailsButton.innerHTML = `
+    <span class="patient-appointment-date">${escapeHtml(formatDateTime(appointment.slot_start_utc))}</span>
+    <span class="patient-appointment-details">
       <strong>${escapeHtml(appointment.doctor_name || 'Doctor')}</strong>
       <span>${escapeHtml(appointment.consultation_type || 'Consultation')} · ${escapeHtml(appointment.hospital_name || 'Hospital')}</span>
-    </div>
+    </span>
     <span class="badge ${appointment.status === 'CONFIRMED' ? 'badge-open' : 'badge-secondary'}">${escapeHtml(String(appointment.status || 'UNKNOWN').replaceAll('_', ' '))}</span>`;
+  detailsButton.addEventListener('click', () => showAppointmentDetails(appointment));
+  item.appendChild(detailsButton);
   return item;
+}
+
+function showAppointmentDetails(appointment) {
+  const body = document.getElementById('appointmentDetailsBody');
+  if (!body) return;
+  const details = [
+    ['Doctor', appointment.doctor_name || 'Doctor'],
+    ['Date and time', formatDateTime(appointment.slot_start_utc)],
+    ['Hospital', [appointment.hospital_name, appointment.hospital_city].filter(Boolean).join(', ') || '—'],
+    ['Consultation', appointment.consultation_type || 'Consultation'],
+    ['Status', String(appointment.status || 'UNKNOWN').replaceAll('_', ' ')],
+    ['Fee', MediSlotMoney.formatINR(appointment.fee_amount || 0)],
+    ['Payment', `${appointment.payment_status || 'Not recorded'} · ${String(appointment.payment_method || 'PAY_AT_CLINIC').replaceAll('_', ' ').toLowerCase()}`],
+    ['Refunds recorded', MediSlotMoney.formatINR(appointment.refund_amount || 0)],
+  ];
+  body.replaceChildren(...details.map(([label, value]) => {
+    const row = document.createElement('div');
+    row.className = 'patient-detail-row';
+    const key = document.createElement('span');
+    key.textContent = label;
+    const content = document.createElement('strong');
+    content.textContent = value;
+    row.append(key, content);
+    return row;
+  }));
+  document.getElementById('appointmentDetailsDialog').showModal();
+}
+
+function initializePatientPayments() {
+  const filters = ['paymentSearch', 'paymentStatusFilter', 'paymentDateFrom', 'paymentDateTo'];
+  filters.forEach(id => document.getElementById(id).addEventListener('input', renderPatientPayments));
+  document.getElementById('clearPaymentFilters').addEventListener('click', () => {
+    filters.forEach(id => { document.getElementById(id).value = ''; });
+    renderPatientPayments();
+  });
+  document.getElementById('refreshPatientPayments').addEventListener('click', loadPatientPayments);
+  const dialog = document.getElementById('patientPaymentDetailsDialog');
+  document.querySelectorAll('[data-close-payment-dialog]').forEach(button =>
+    button.addEventListener('click', () => dialog.close())
+  );
+  loadPatientPayments();
+}
+
+let patientPaymentAppointments = [];
+
+async function loadPatientPayments() {
+  const loading = document.getElementById('patientPaymentsLoading');
+  const error = document.getElementById('patientPaymentsError');
+  const table = document.getElementById('patientPaymentsContainer');
+  const empty = document.getElementById('patientPaymentsEmpty');
+  loading.hidden = false;
+  error.hidden = true;
+  table.hidden = true;
+  empty.hidden = true;
+  try {
+    const data = await fetchJson('/api/patient/dashboard');
+    setPatientName(data.patient?.full_name);
+    patientPaymentAppointments = (data.appointments || []).filter(appointment =>
+      appointment.payment_status || Number(appointment.fee_amount || 0) > 0
+    );
+    renderPatientPayments();
+  } catch (requestError) {
+    error.textContent = requestError.message || 'Could not load payment history.';
+    error.hidden = false;
+  } finally {
+    loading.hidden = true;
+  }
+}
+
+function renderPatientPayments() {
+  const body = document.getElementById('patientPaymentsBody');
+  if (!body) return;
+  const query = document.getElementById('paymentSearch').value.trim().toLowerCase();
+  const status = document.getElementById('paymentStatusFilter').value;
+  const from = document.getElementById('paymentDateFrom').value;
+  const to = document.getElementById('paymentDateTo').value;
+  const filtered = patientPaymentAppointments.filter(appointment => {
+    const paymentStatus = String(appointment.payment_status || 'INITIATED').toUpperCase();
+    const searchable = [
+      appointment.id, appointment.doctor_name, appointment.consultation_type,
+      appointment.payment_method, paymentStatus,
+    ].join(' ').toLowerCase();
+    const date = normalizeDateTime(appointment.slot_start_utc).slice(0, 10);
+    return (!query || searchable.includes(query))
+      && (!status || paymentStatus === status)
+      && (!from || date >= from)
+      && (!to || date <= to);
+  });
+  body.replaceChildren(...filtered.map(appointment => {
+    const row = document.createElement('tr');
+    const values = [
+      formatDateTime(appointment.slot_start_utc),
+      appointment.doctor_name || 'Doctor',
+      appointment.consultation_type || 'Consultation',
+      MediSlotMoney.formatINR(appointment.fee_amount || 0),
+      String(appointment.payment_status || 'INITIATED').replaceAll('_', ' '),
+      String(appointment.payment_method || 'PAY_AT_CLINIC').replaceAll('_', ' '),
+      MediSlotMoney.formatINR(appointment.refund_amount || 0),
+    ];
+    values.forEach((value, index) => {
+      const cell = document.createElement('td');
+      cell.dataset.label = ['Appointment', 'Doctor', 'Consultation', 'Amount', 'Status', 'Method', 'Refunded'][index];
+      if (index === values.length - 1) {
+        const details = document.createElement('button');
+        details.type = 'button';
+        details.className = 'btn btn-secondary btn-sm';
+        details.textContent = 'Details';
+        details.addEventListener('click', () => showPaymentDetails(appointment));
+        cell.appendChild(details);
+      } else {
+        cell.textContent = value;
+      }
+      row.appendChild(cell);
+    });
+    row.classList.add('patient-payment-row');
+    row.tabIndex = 0;
+    row.setAttribute('aria-label', `View payment details for appointment ${appointment.id || ''}`);
+    row.addEventListener('click', event => {
+      if (!event.target.closest('button')) showPaymentDetails(appointment);
+    });
+    row.addEventListener('keydown', event => {
+      if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest('button')) {
+        event.preventDefault();
+        showPaymentDetails(appointment);
+      }
+    });
+    return row;
+  }));
+  const table = document.getElementById('patientPaymentsContainer');
+  const empty = document.getElementById('patientPaymentsEmpty');
+  table.hidden = filtered.length === 0;
+  empty.hidden = filtered.length > 0;
+}
+
+function showPaymentDetails(appointment) {
+  const body = document.getElementById('patientPaymentDetailsBody');
+  if (!body) return;
+  const details = [
+    ['Appointment date', formatDateTime(appointment.slot_start_utc)],
+    ['Appointment ID', appointment.id || '—'],
+    ['Doctor', appointment.doctor_name || 'Doctor'],
+    ['Hospital', [appointment.hospital_name, appointment.hospital_city].filter(Boolean).join(', ') || '—'],
+    ['Consultation', appointment.consultation_type || 'Consultation'],
+    ['Appointment status', String(appointment.status || 'UNKNOWN').replaceAll('_', ' ')],
+    ['Amount', MediSlotMoney.formatINR(appointment.fee_amount || 0)],
+    ['Payment status', String(appointment.payment_status || 'INITIATED').replaceAll('_', ' ')],
+    ['Payment method', String(appointment.payment_method || 'PAY_AT_CLINIC').replaceAll('_', ' ')],
+    ['Refund recorded', MediSlotMoney.formatINR(appointment.refund_amount || 0)],
+  ];
+  body.replaceChildren(...details.map(([label, value]) => {
+    const row = document.createElement('div');
+    row.className = 'patient-detail-row';
+    const key = document.createElement('span');
+    key.textContent = label;
+    const content = document.createElement('strong');
+    content.textContent = value;
+    row.append(key, content);
+    return row;
+  }));
+  document.getElementById('patientPaymentDetailsDialog').showModal();
 }
 
 async function fetchJson(url, options = {}) {
