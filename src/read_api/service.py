@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
@@ -270,40 +269,6 @@ def release_slot_seat(
         )
 
 
-def hold_slot_seat(slot: dict[str, Any], *, table: Any = None) -> bool:
-    """Reserve one free seat for an exclusive waitlist offer."""
-    if slot_free_seats(slot) <= 0 or slot.get("is_active") is False:
-        return False
-    slot_table = table if table is not None else get_slots_table()
-    booked_count = int(slot.get("booked_count") or 0)
-    held_count = int(slot.get("held_count") or 0)
-    try:
-        slot_table.update_item(
-            Key=slot_table_key(slot),
-            UpdateExpression="SET held_count = if_not_exists(held_count, :zero) + :one",
-            ConditionExpression=(
-                "is_active = :active AND #capacity = :capacity "
-                "AND (attribute_not_exists(booked_count) OR "
-                "booked_count = :booked) "
-                "AND (attribute_not_exists(held_count) OR held_count = :held) "
-            ),
-            ExpressionAttributeNames={"#capacity": "capacity"},
-            ExpressionAttributeValues={
-                ":active": True,
-                ":capacity": int(slot["capacity"]),
-                ":booked": booked_count,
-                ":held": held_count,
-                ":zero": 0,
-                ":one": 1,
-            },
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False
-        raise
-    return True
-
-
 def convert_booked_seat_to_hold(
     slot: dict[str, Any],
     *,
@@ -336,33 +301,5 @@ def convert_held_seat_to_booked(slot: dict[str, Any], *, table: Any = None) -> N
             ":zero": 0,
             ":one": 1,
             ":negative_one": -1,
-        },
-    )
-
-
-def convert_held_seat_to_booking(
-    slot: dict[str, Any],
-    capacity: int,
-    *,
-    table: Any = None,
-) -> None:
-    """Atomically convert a waitlist hold into a booked seat."""
-    slot_table = table if table is not None else get_slots_table()
-    slot_table.update_item(
-        Key=slot_table_key(slot),
-        UpdateExpression=(
-            "SET booked_count = if_not_exists(booked_count, :zero) + :one "
-            "ADD held_count :negative_one"
-        ),
-        ConditionExpression=(
-            "held_count > :zero AND #capacity = :capacity AND "
-            "(attribute_not_exists(booked_count) OR booked_count < :capacity)"
-        ),
-        ExpressionAttributeNames={"#capacity": "capacity"},
-        ExpressionAttributeValues={
-            ":zero": 0,
-            ":one": 1,
-            ":negative_one": -1,
-            ":capacity": capacity,
         },
     )

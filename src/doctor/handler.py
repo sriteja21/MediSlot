@@ -43,13 +43,13 @@ from shared.database import (
 )
 from shared.booking import calculate_refund, format_money, load_refund_policy
 from shared.notifications import publish_appointment_notification
-from shared.waitlist import promote_waitlist
 from read_api.service import (
     convert_booked_seat_to_hold,
     convert_held_seat_to_booked,
     get_slot_by_id,
     local_day_utc_bounds,
     query_doctor_slots,
+    release_slot_seat,
     slot_belongs_to_doctor,
     slot_id_for_datetime,
 )
@@ -1501,10 +1501,9 @@ def cancel_doctor_appointment(doctor_id: str, appointment_id: str) -> dict[str, 
         )
 
     try:
-        offer = promote_waitlist(slot, seat_already_held=True)
+        release_slot_seat(slot, held=True)
     except Exception:
-        logger.exception("Appointment %s was cancelled but waitlist promotion failed.", appointment_id)
-        offer = None
+        logger.exception("Appointment %s was cancelled but its slot hold could not be released.", appointment_id)
     try:
         publish_appointment_notification(
             appointment_id=appointment_id,
@@ -1527,7 +1526,6 @@ def cancel_doctor_appointment(doctor_id: str, appointment_id: str) -> dict[str, 
             "refund_amount": refund["refund_amount"],
             "refund_percent": refund["refund_percent"],
             "refund_tier": refund["tier"],
-            "waitlist_offer_issued": bool(offer),
         },
     )
 

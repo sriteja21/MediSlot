@@ -391,25 +391,58 @@ def _create_or_recover_appointment(
             if not existing:
                 cursor.execute(
                     """
-                    SELECT appointment_id
-                    FROM appointments
+                    SELECT patient_id
+                    FROM patients
                     WHERE patient_id = %s
-                      AND consultation_type_id = %s
-                      AND appointment_datetime = %s
-                      AND appointment_status NOT IN (
+                    FOR UPDATE
+                    """,
+                    (request["patient_id"],),
+                )
+                if not cursor.fetchone():
+                    raise ExistingAppointmentError("Patient account was not found.")
+
+                cursor.execute(
+                    """
+                    SELECT a.appointment_id
+                    FROM appointments a
+                    JOIN consultation_types ct
+                      ON ct.consultation_type_id = a.consultation_type_id
+                    WHERE a.patient_id = %s
+                      AND ct.doctor_id = %s
+                      AND a.appointment_datetime = %s
+                      AND a.appointment_status NOT IN (
                           'CANCELLED', 'CANCELLED_BY_PATIENT', 'CANCELLED_BY_DOCTOR'
                       )
                     LIMIT 1
                     """,
                     (
                         request["patient_id"],
-                        request["consultation_type_id"],
+                        request["doctor_id"],
                         _mysql_datetime(request["appointment_datetime"]),
                     ),
                 )
                 if cursor.fetchone():
                     raise ExistingAppointmentError(
                         "You already have an appointment for this slot."
+                    )
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS active_count
+                    FROM appointments a
+                    JOIN consultation_types ct
+                      ON ct.consultation_type_id = a.consultation_type_id
+                    WHERE a.patient_id = %s
+                      AND ct.doctor_id = %s
+                      AND a.appointment_status IN ('PENDING', 'CONFIRMED')
+                      AND a.appointment_datetime > UTC_TIMESTAMP(3)
+                    """,
+                    (request["patient_id"], request["doctor_id"]),
+                )
+                active_appointments = int(cursor.fetchone()["active_count"])
+                if active_appointments >= 3:
+                    raise ExistingAppointmentError(
+                        "You can have at most three active appointments with the same doctor."
                     )
 
                 cursor.execute(
@@ -614,6 +647,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         consultation_type_id=notification["consultation_type_id"],
                         appointment_datetime=notification["appointment_datetime"],
                         message="Your appointment booking is confirmed.",
+                        patient_only=True,
                     )
                 except Exception:
                     logger.exception("Booking committed but notification delivery failed.")

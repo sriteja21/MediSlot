@@ -8,18 +8,12 @@
     <div>
       <p class="patient-eyebrow">YOUR CARE</p>
       <h1 class="page-title">Appointments</h1>
-      <p class="page-subtitle">Manage visits, waitlists and slot offers in one place.</p>
+      <p class="page-subtitle">Review and manage your appointments.</p>
     </div>
     <button type="button" class="btn btn-secondary btn-sm" id="refreshAppointments">Refresh</button>
   </header>
 
-  <div class="patient-tabs" role="tablist" aria-label="Appointment items">
-    <button type="button" class="patient-tab active" role="tab" aria-selected="true" aria-controls="patientVisitsPanel" data-appointment-tab="visits">Booked visits</button>
-    <button type="button" class="patient-tab" role="tab" aria-selected="false" aria-controls="patientWaitlistsPanel" data-appointment-tab="waitlists">Waitlists <span id="waitlistTabCount">0</span></button>
-    <button type="button" class="patient-tab" role="tab" aria-selected="false" aria-controls="patientOffersPanel" data-appointment-tab="offers">Slot offers <span id="offerTabCount">0</span></button>
-  </div>
-
-  <section id="patientVisitsPanel" class="patient-tab-panel" role="tabpanel">
+  <section>
     <div class="patient-filter-bar">
       <label>Search visits
         <input type="search" id="appointmentSearch" placeholder="Doctor, hospital or consultation">
@@ -46,33 +40,13 @@
     <div id="patientAppointmentsLoading" class="patient-loading"><span class="spinner"></span><span>Loading visits...</span></div>
     <div id="patientAppointmentsContainer" class="patient-table-wrap" hidden>
       <table class="table patient-table">
-        <thead><tr><th>Date</th><th>Doctor</th><th>Hospital</th><th>Consultation</th><th>Status</th><th>Payment</th><th>Details</th></tr></thead>
+        <thead><tr><th>Date</th><th>Doctor</th><th>Hospital</th><th>Consultation</th><th>Status</th><th>Payment</th><th>Refund</th><th>Actions</th></tr></thead>
         <tbody id="patientAppointmentsBody"></tbody>
       </table>
     </div>
     <div id="patientAppointmentsEmpty" class="patient-empty" hidden>No visits match these filters.</div>
   </section>
 
-  <section id="patientWaitlistsPanel" class="patient-tab-panel" role="tabpanel" hidden>
-    <div class="patient-filter-bar patient-filter-bar-compact">
-      <label>Search waitlists
-        <input type="search" id="waitlistSearch" placeholder="Filter by date">
-      </label>
-    </div>
-    <div id="patientWaitlistError" class="patient-inline-error" role="alert" hidden></div>
-    <div id="patientWaitlists" class="patient-appointment-list"></div>
-    <div id="patientWaitlistsEmpty" class="patient-empty" hidden>No active waitlists.</div>
-  </section>
-
-  <section id="patientOffersPanel" class="patient-tab-panel" role="tabpanel" hidden>
-    <div class="patient-filter-bar patient-filter-bar-compact">
-      <label>Search slot offers
-        <input type="search" id="offerSearch" placeholder="Filter by date or status">
-      </label>
-    </div>
-    <div id="patientOffers" class="patient-appointment-list"></div>
-    <div id="patientOffersEmpty" class="patient-empty" hidden>No active slot offers.</div>
-  </section>
 </section>
 
 <dialog class="patient-dialog patient-refund-dialog" id="refundPreviewDialog" aria-labelledby="refundDialogTitle">

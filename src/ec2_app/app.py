@@ -758,30 +758,6 @@ def api_patient_cancel_appointment(appointment_id: str):
     return jsonify(res), status
 
 
-@app.route("/api/patient/waitlists", methods=["GET", "POST", "DELETE"])
-def api_patient_waitlists():
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-    data = request.get_json(silent=True) or {}
-    status, res = api_call(
-        request.method,
-        "/patients/me/waitlists",
-        json_body=data if request.method in {"POST", "DELETE"} else None,
-    )
-    return jsonify(res), status
-
-
-@app.route("/api/patient/waitlist-offers/<offer_id>/accept", methods=["POST"])
-def api_patient_accept_waitlist_offer(offer_id: str):
-    if session.get("role") != "patient":
-        return jsonify({"message": "Patient sign-in required."}), 403
-    status, res = api_call(
-        "POST",
-        f"/patients/me/waitlist-offers/{offer_id}/accept",
-    )
-    return jsonify(res), status
-
-
 # ============================================================
 # ENTRYPOINT
 # ============================================================

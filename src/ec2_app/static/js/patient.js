@@ -10,8 +10,6 @@ let availabilityWeek = 0;
 let availabilityStart = null;
 let currentWeekSlots = [];
 let patientAppointments = [];
-let patientWaitlistEntries = [];
-let patientWaitlistOffers = [];
 let pendingRefundAppointment = null;
 let activeBookingRequestId = sessionStorage.getItem('medislotPendingBookingRequest');
 
@@ -132,7 +130,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (page === 'appointments') {
     document.getElementById('refreshAppointments').addEventListener('click', loadAppointments);
     initializeAppointmentFilters();
-    initializeAppointmentTabs();
     initializeRefundDialog();
     loadAppointments();
   }
@@ -509,24 +506,12 @@ function createPatientSlotCard(slot) {
     waitlistButton.type = 'button';
     waitlistButton.className = 'btn btn-secondary btn-sm';
     waitlistButton.textContent = 'Join waitlist';
-    waitlistButton.addEventListener('click', () => joinSlotWaitlist(slot));
+    waitlistButton.disabled = true;
+    waitlistButton.title = 'Waitlist is currently unavailable';
+    waitlistButton.setAttribute('aria-label', 'Join waitlist, currently unavailable');
     wrapper.appendChild(waitlistButton);
   }
   return wrapper;
-}
-
-async function joinSlotWaitlist(slot) {
-  try {
-    await fetchJson('/api/patient/waitlists', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slot_id: slot.slot_id }),
-    });
-    showNotice('You joined the waitlist. We will notify you if this time opens.', 'success');
-    await loadWaitlists();
-  } catch (error) {
-    showNotice(error.message || 'Could not join this waitlist.', 'danger');
-  }
 }
 
 async function bookAppointment() {
@@ -780,7 +765,6 @@ async function loadAppointments() {
   try {
     const data = await fetchJson('/api/patient/dashboard');
     setPatientName(data.patient?.full_name);
-    await loadWaitlists();
     patientAppointments = data.appointments || [];
     renderAppointments();
   } catch (errorValue) {
@@ -798,23 +782,6 @@ function initializeAppointmentFilters() {
     ['appointmentSearch', 'appointmentStatusFilter', 'appointmentDateFrom', 'appointmentDateTo']
       .forEach(id => { document.getElementById(id).value = ''; });
     renderAppointments();
-  });
-  document.getElementById('waitlistSearch').addEventListener('input', renderWaitlists);
-  document.getElementById('offerSearch').addEventListener('input', renderOffers);
-}
-
-function initializeAppointmentTabs() {
-  document.querySelectorAll('[data-appointment-tab]').forEach(button => {
-    button.addEventListener('click', () => {
-      document.querySelectorAll('[data-appointment-tab]').forEach(tab => {
-        const selected = tab === button;
-        tab.classList.toggle('active', selected);
-        tab.setAttribute('aria-selected', String(selected));
-      });
-      document.querySelectorAll('.patient-tab-panel').forEach(panel => {
-        panel.hidden = panel.id !== button.getAttribute('aria-controls');
-      });
-    });
   });
 }
 
@@ -921,12 +888,6 @@ function createAppointmentRow(appointment) {
 
   const actionsCell = document.createElement('td');
   actionsCell.dataset.label = 'Actions';
-  const detailsButton = document.createElement('button');
-  detailsButton.type = 'button';
-  detailsButton.className = 'btn btn-secondary btn-sm';
-  detailsButton.textContent = 'Details';
-  detailsButton.addEventListener('click', () => showAppointmentDetails(appointment));
-  actionsCell.appendChild(detailsButton);
   if (status === 'CONFIRMED') {
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
@@ -934,6 +895,13 @@ function createAppointmentRow(appointment) {
     cancelButton.textContent = 'Cancel';
     cancelButton.addEventListener('click', () => cancelAppointment(appointment));
     actionsCell.appendChild(cancelButton);
+  } else {
+    const detailsButton = document.createElement('button');
+    detailsButton.type = 'button';
+    detailsButton.className = 'btn btn-secondary btn-sm';
+    detailsButton.textContent = 'Details';
+    detailsButton.addEventListener('click', () => showAppointmentDetails(appointment));
+    actionsCell.appendChild(detailsButton);
   }
   row.appendChild(actionsCell);
   return row;
@@ -954,110 +922,6 @@ async function cancelAppointment(appointment) {
   } catch (error) {
     showNotice(error.message || 'Could not cancel this appointment.', 'danger');
   }
-}
-
-async function loadWaitlists() {
-  const error = document.getElementById('patientWaitlistError');
-  if (!error) return;
-  error.hidden = true;
-  try {
-    const data = await fetchJson('/api/patient/waitlists');
-    patientWaitlistEntries = data.waitlists || [];
-    patientWaitlistOffers = (data.offers || []).filter(item => item.status === 'OPEN');
-    renderWaitlists();
-    renderOffers();
-  } catch (errorValue) {
-    error.textContent = errorValue.message || 'Could not load waitlists and offers.';
-    error.hidden = false;
-  }
-}
-
-function renderWaitlists() {
-  const list = document.getElementById('patientWaitlists');
-  const empty = document.getElementById('patientWaitlistsEmpty');
-  if (!list || !empty) return;
-  const query = (document.getElementById('waitlistSearch')?.value || '').trim().toLowerCase();
-  const matches = patientWaitlistEntries.filter(entry =>
-    !query || formatDateTime(entry.slot_start).toLowerCase().includes(query)
-  );
-  list.replaceChildren(...matches.map(createWaitlistItem));
-  empty.hidden = matches.length > 0;
-  document.getElementById('waitlistTabCount').textContent = String(patientWaitlistEntries.length);
-}
-
-function renderOffers() {
-  const list = document.getElementById('patientOffers');
-  const empty = document.getElementById('patientOffersEmpty');
-  if (!list || !empty) return;
-  const query = (document.getElementById('offerSearch')?.value || '').trim().toLowerCase();
-  const matches = patientWaitlistOffers.filter(offer =>
-    !query || `${formatDateTime(offer.slot_start)} ${offer.status || 'open'}`.toLowerCase().includes(query)
-  );
-  list.replaceChildren(...matches.map(createOfferItem));
-  empty.hidden = matches.length > 0;
-  document.getElementById('offerTabCount').textContent = String(patientWaitlistOffers.length);
-}
-
-function createWaitlistItem(entry) {
-  const item = document.createElement('article');
-  item.className = 'patient-appointment-item';
-  const details = document.createElement('div');
-  details.className = 'patient-appointment-details';
-  const title = document.createElement('strong');
-  title.textContent = 'Waitlist';
-  const time = document.createElement('span');
-  time.textContent = formatDateTime(entry.slot_start);
-  details.append(title, time);
-  const leaveButton = document.createElement('button');
-  leaveButton.type = 'button';
-  leaveButton.className = 'btn btn-secondary btn-sm';
-  leaveButton.textContent = 'Leave waitlist';
-  leaveButton.addEventListener('click', async () => {
-    try {
-      await fetchJson('/api/patient/waitlists', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slot_id: entry.slot_ref }),
-      });
-      await loadWaitlists();
-    } catch (error) {
-      showNotice(error.message || 'Could not leave this waitlist.', 'danger');
-    }
-  });
-  item.append(details, leaveButton);
-  return item;
-}
-
-function createOfferItem(offer) {
-  const item = document.createElement('article');
-  item.className = 'patient-appointment-item';
-  const details = document.createElement('div');
-  details.className = 'patient-appointment-details';
-  const title = document.createElement('strong');
-  title.textContent = 'A slot is available for you';
-  const time = document.createElement('span');
-  time.textContent = `${formatDateTime(offer.slot_start)} · expires ${new Date(Number(offer.expires_at) * 1000).toLocaleTimeString()}`;
-  details.append(title, time);
-  const acceptButton = document.createElement('button');
-  acceptButton.type = 'button';
-  acceptButton.className = 'btn btn-teal btn-sm';
-  acceptButton.textContent = 'Accept offer';
-  acceptButton.addEventListener('click', async () => {
-    acceptButton.disabled = true;
-    try {
-      const booking = await fetchJson(
-        `/api/patient/waitlist-offers/${encodeURIComponent(offer.offer_id)}/accept`,
-        { method: 'POST' },
-      );
-      showNotice(`Appointment booked for ${formatDateTime(booking.appointment_datetime)}.`, 'success');
-      await loadAppointments();
-    } catch (error) {
-      showNotice(error.message || 'Could not accept this offer.', 'danger');
-      acceptButton.disabled = false;
-    }
-  });
-  item.append(details, acceptButton);
-  return item;
 }
 
 function createAppointmentItem(appointment) {

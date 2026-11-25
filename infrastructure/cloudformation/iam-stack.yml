@@ -297,7 +297,6 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
                   - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/refund-policy"
-                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/waitlist-hold-seconds"
 
               - Sid: DecryptDatabaseCredentials
                 Effect: Allow
@@ -355,50 +354,18 @@ Resources:
                     !Sub "MediSlot-IdempotencyTableArn-${Environment}"
 
         # ----------------------------------------------------
-        # WAITLIST TABLE
+        # Legacy waitlist offer cleanup and slot-hold reconciliation
         # ----------------------------------------------------
 
-        - PolicyName: !Sub "MediSlot-ApiWaitlist-${Environment}"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: ManageWaitlist
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactWriteItems
-                Resource:
-                  - Fn::ImportValue:
-                      !Sub "MediSlot-WaitlistTableArn-${Environment}"
-                  - Fn::Sub:
-                      - "${TableArn}/index/*"
-                      - TableArn:
-                          Fn::ImportValue:
-                            !Sub "MediSlot-WaitlistTableArn-${Environment}"
-
-        # ----------------------------------------------------
-        # WAITLIST OFFER TABLE
-        # ----------------------------------------------------
-
-        - PolicyName: !Sub "MediSlot-ApiWaitlistOffer-${Environment}"
+        - PolicyName: !Sub "MediSlot-ApiLegacyWaitlistCleanup-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Sid: ManageWaitlistOffers
                 Effect: Allow
                 Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
                   - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
                   - dynamodb:Query
-                  - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactWriteItems
                 Resource:
                   - Fn::ImportValue:
                       !Sub "MediSlot-WaitlistOfferTableArn-${Environment}"
@@ -547,7 +514,6 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter${DatabaseCredentialsParameterName}"
                   - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/refund-policy"
-                  - !Sub "arn:${AWS::Partition}:ssm:${Region}:${AWS::AccountId}:parameter/MediSlot/${Environment}/booking/waitlist-hold-seconds"
               - Effect: Allow
                 Action: kms:Decrypt
                 Resource: "*"
@@ -601,33 +567,14 @@ Resources:
                       - TableArn:
                           Fn::ImportValue:
                             !Sub "MediSlot-SlotsV2TableArn-${Environment}"
-        - PolicyName: !Sub "MediSlot-PatientWaitlists-${Environment}"
+        - PolicyName: !Sub "MediSlot-PatientLegacyWaitlistCleanup-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ManageWaitlistRows
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                Resource:
-                  - Fn::ImportValue:
-                      !Sub "MediSlot-WaitlistTableArn-${Environment}"
-                  - Fn::Sub:
-                      - "${TableArn}/index/*"
-                      - TableArn:
-                          Fn::ImportValue:
-                            !Sub "MediSlot-WaitlistTableArn-${Environment}"
               - Sid: ManageWaitlistOffers
                 Effect: Allow
                 Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
                   - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
                   - dynamodb:Query
                 Resource:
                   - Fn::ImportValue:

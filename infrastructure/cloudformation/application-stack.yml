@@ -43,12 +43,6 @@ Parameters:
     Description: JSON refund policy shared by patient and doctor cancellation flows.
     Default: '{"tiers":[{"minimum_hours":48,"refund_percent":100,"inclusive":false,"name":"more_than_48_hours"},{"minimum_hours":24,"refund_percent":75,"inclusive":false,"name":"24_to_48_hours"},{"minimum_hours":6,"refund_percent":50,"inclusive":false,"name":"6_to_24_hours"},{"minimum_hours":0,"refund_percent":0,"inclusive":true,"name":"less_than_6_hours"}],"doctor_refund_percent":100,"no_show_refund_percent":0}'
 
-  WaitlistHoldDurationSeconds:
-    Type: String
-    Description: Number of seconds a patient has to accept a waitlist offer.
-    Default: "900"
-    AllowedPattern: "^[1-9][0-9]*$"
-
 # ============================================================
 # GLOBAL LAMBDA CONFIGURATION
 # ============================================================
@@ -75,7 +69,6 @@ Globals:
 
         DATABASE_CREDENTIALS_PARAMETER_NAME: !Ref DatabaseCredentialsParameterName
         REFUND_POLICY_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/booking/refund-policy"
-        WAITLIST_HOLD_DURATION_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/booking/waitlist-hold-seconds"
         # ----------------------------------------------------
         # RDS CONFIGURATION
         # Imported from the existing Data stack.
@@ -116,10 +109,6 @@ Globals:
           Fn::ImportValue:
             !Sub "MediSlot-IdempotencyTableName-${Environment}"
 
-        WAITLIST_TABLE:
-          Fn::ImportValue:
-            !Sub "MediSlot-WaitlistTableName-${Environment}"
-
         WAITLIST_OFFER_TABLE:
           Fn::ImportValue:
             !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
@@ -141,17 +130,6 @@ Resources:
       Type: String
       Value: !Ref RefundPolicyJson
       Description: Shared MediSlot cancellation refund tiers.
-      Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
-
-  WaitlistHoldDurationParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/MediSlot/${Environment}/booking/waitlist-hold-seconds"
-      Type: String
-      Value: !Ref WaitlistHoldDurationSeconds
-      Description: MediSlot waitlist offer duration in seconds.
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
@@ -710,31 +688,7 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /patients/me/appointments/{appointment_id}/refund-preview
             Method: GET
-        PatientWaitlistsGet:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /patients/me/waitlists
-            Method: GET
-        PatientWaitlistsPost:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /patients/me/waitlists
-            Method: POST
-        PatientWaitlistsDelete:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /patients/me/waitlists
-            Method: DELETE
-        PatientWaitlistOfferAccept:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /patients/me/waitlist-offers/{offer_id}/accept
-            Method: POST
-        WaitlistOfferExpiry:
+        LegacyWaitlistOfferCleanup:
           Type: Schedule
           Properties:
             Schedule: rate(1 minute)

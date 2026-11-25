@@ -18,16 +18,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared.booking import calculate_refund, format_money, load_refund_policy
 from shared.database import database_transaction, execute_query, execute_write
 from shared.notifications import publish_appointment_notification
-from shared.waitlist import (
-    notify_waitlist_offer as _notify_waitlist_offer,
-    promote_waitlist as _promote_waitlist,
-    query_all_items as _query_all_items,
-    waitlist_offer_table as _waitlist_offer_table,
-    waitlist_table as _waitlist_table,
-)
 from read_api.service import (
     convert_booked_seat_to_hold,
-    convert_held_seat_to_booking,
     get_slot_by_id,
     release_slot_seat,
     convert_held_seat_to_booked,
@@ -39,12 +31,16 @@ from read_api.service import (
 logger = logging.getLogger(__name__)
 BOOKING_QUEUE_URL = os.environ.get("BOOKING_QUEUE_URL", "").strip()
 IDEMPOTENCY_TABLE_NAME = os.environ.get("IDEMPOTENCY_TABLE", "").strip()
+WAITLIST_OFFER_TABLE_NAME = os.environ.get("WAITLIST_OFFER_TABLE", "").strip()
 _dynamodb = boto3.resource(
     "dynamodb",
     region_name=os.environ.get("AWS_REGION", "ap-south-1"),
 )
 _idempotency_table = (
     _dynamodb.Table(IDEMPOTENCY_TABLE_NAME) if IDEMPOTENCY_TABLE_NAME else None
+)
+_waitlist_offer_table = (
+    _dynamodb.Table(WAITLIST_OFFER_TABLE_NAME) if WAITLIST_OFFER_TABLE_NAME else None
 )
 BOOKING_QUEUE = boto3.client(
     "sqs",
@@ -507,25 +503,6 @@ def _deactivate_patient(patient_id: str) -> tuple[int, dict[str, Any]]:
     return 200, {"message": "Patient account has been deactivated."}
 
 
-def _patient_booking_response(
-    appointment_id: str,
-    consultation_type_id: str,
-    appointment_datetime_utc: datetime,
-    *,
-    fee_amount: Any = None,
-    payment_status: str = "INITIATED",
-) -> dict[str, Any]:
-    return {
-        "appointment_id": appointment_id,
-        "consultation_type_id": consultation_type_id,
-        "appointment_datetime": appointment_datetime_utc.isoformat().replace("+00:00", "Z"),
-        "status": "CONFIRMED",
-        "fee_amount": float(fee_amount) if fee_amount is not None else None,
-        "payment_status": payment_status,
-        "payment_method": "PAY_AT_CLINIC",
-    }
-
-
 def _refund_quote(appointment: dict[str, Any], cancellation_by: str) -> dict[str, Any]:
     return calculate_refund(
         appointment["fee_amount"],
@@ -536,250 +513,40 @@ def _refund_quote(appointment: dict[str, Any], cancellation_by: str) -> dict[str
     )
 
 
-def _join_waitlist(patient_id: str, slot_id: str) -> tuple[int, dict[str, Any]]:
-    slot = get_slot_by_id(slot_id)
-    state = slot_availability_state(slot)
-    if state == "missing":
-        return 404, {"message": "Slot not found."}
-    if state == "past":
-        return 409, {"message": "Past slots cannot be waitlisted."}
-    if state != "full":
-        return 409, {"message": "Waitlists are available only when the slot is full."}
-    slot_start = datetime.fromisoformat(str(slot["start_time"]).replace("Z", "+00:00"))
-    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    existing = _waitlist_table().get_item(
-        Key={"slot_ref": slot_id, "patient_id": patient_id}
-    ).get("Item")
-    if existing:
-        return 200, {"message": "You are already on this waitlist.", "joined_at": existing["joined_at"]}
-
-    active_offers = _query_all_items(
-        _waitlist_offer_table(),
-        IndexName="gsi_patient_offer",
-        KeyConditionExpression=(
-            Key("patient_id").eq(patient_id)
-            & Key("expires_at").gte(int(time.time()))
-        ),
-    )
-    if any(
-        offer.get("slot_ref") == slot_id
-        and offer.get("status") in {"OPEN", "ACCEPTING"}
-        for offer in active_offers
-    ):
-        return 409, {"message": "You already have an active offer for this slot."}
-
-    future_entries = _query_all_items(
-        _waitlist_table(),
-        IndexName="gsi_patient",
-        KeyConditionExpression=Key("patient_id").eq(patient_id) & Key("slot_start").gt(now_iso),
-    )
-    if len(future_entries) >= 5:
-        return 409, {"message": "You can join at most five waitlists at a time."}
-
-    joined_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    _waitlist_table().put_item(
-        Item={
-            "slot_ref": slot_id,
-            "patient_id": patient_id,
-            "joined_at": joined_at,
-            "slot_start": slot_start.isoformat().replace("+00:00", "Z"),
-            "expires_at": int(slot_start.timestamp()),
-            "consultation_type_id": str(slot["consultation_type_id"]),
-        },
-        ConditionExpression="attribute_not_exists(slot_ref)",
-    )
-    return 201, {"message": "You joined the waitlist.", "joined_at": joined_at}
-
-
-def _patient_waitlists(patient_id: str) -> dict[str, Any]:
-    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    waitlists = _query_all_items(
-        _waitlist_table(),
-        IndexName="gsi_patient",
-        KeyConditionExpression=Key("patient_id").eq(patient_id) & Key("slot_start").gt(now),
-    )
-    offers = _query_all_items(
-        _waitlist_offer_table(),
-        IndexName="gsi_patient_offer",
-        KeyConditionExpression=(
-            Key("patient_id").eq(patient_id)
-            & Key("expires_at").gte(int(time.time()))
-        ),
-    )
-    return {"waitlists": waitlists, "offers": offers}
-
-
-def _accept_waitlist_offer(patient_id: str, offer_id: str) -> tuple[int, dict[str, Any]]:
-    offers = _query_all_items(
-        _waitlist_offer_table(),
-        IndexName="gsi_patient_offer",
-        KeyConditionExpression=(
-            Key("patient_id").eq(patient_id)
-            & Key("expires_at").gte(int(time.time()))
-        ),
-    )
-    offer = next((item for item in offers if item.get("offer_id") == offer_id), None)
-    if not offer or offer.get("status") != "OPEN":
-        return 404, {"message": "Active waitlist offer not found."}
-
-    now = int(time.time())
-    try:
-        _waitlist_offer_table().update_item(
-            Key={"slot_ref": offer["slot_ref"], "patient_id": patient_id},
-            UpdateExpression="SET #status = :accepting",
-            ConditionExpression="#status = :open AND expires_at > :now",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":accepting": "ACCEPTING",
-                ":open": "OPEN",
-                ":now": now,
-            },
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return 409, {"message": "This offer has expired or has already been accepted."}
-        raise
-
-    slot = get_slot_by_id(str(offer["slot_ref"]))
-    if not slot:
-        _waitlist_offer_table().update_item(
-            Key={"slot_ref": offer["slot_ref"], "patient_id": patient_id},
-            UpdateExpression="SET #status = :open",
-            ConditionExpression="#status = :accepting",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={":open": "OPEN", ":accepting": "ACCEPTING"},
-        )
-        return 404, {"message": "Offered slot no longer exists."}
-    slot_state = slot_availability_state(slot)
-    if slot_state not in {"available", "full"}:
-        release_slot_seat(slot, held=True)
-        _waitlist_offer_table().update_item(
-            Key={"slot_ref": offer["slot_ref"], "patient_id": patient_id},
-            UpdateExpression="SET #status = :expired REMOVE live_shard",
-            ConditionExpression="#status = :accepting",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={":expired": "EXPIRED", ":accepting": "ACCEPTING"},
-        )
-        return 409, {"message": "This offered slot is no longer available."}
-    consultation_rows = execute_query(
-        """
-        SELECT ct.fee, ct.capacity, ct.consultation_type_id
-        FROM consultation_types ct
-        WHERE ct.consultation_type_id = %s AND ct.is_active = TRUE
-        LIMIT 1
-        """,
-        (offer["consultation_type_id"],),
-    )
-    if not consultation_rows:
-        _waitlist_offer_table().update_item(
-            Key={"slot_ref": offer["slot_ref"], "patient_id": patient_id},
-            UpdateExpression="SET #status = :open",
-            ConditionExpression="#status = :accepting",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={":open": "OPEN", ":accepting": "ACCEPTING"},
-        )
-        return 409, {"message": "This consultation type is no longer available."}
-    consultation = consultation_rows[0]
-    appointment_id = str(uuid.uuid4())
-    appointment_datetime = datetime.fromisoformat(str(slot["start_time"]).replace("Z", "+00:00"))
-    seat_converted = False
-    try:
-        convert_held_seat_to_booking(slot, int(consultation["capacity"]))
-        seat_converted = True
-        with database_transaction() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO appointments (
-                        appointment_id, patient_id, consultation_type_id,
-                        appointment_datetime, appointment_status
-                    ) VALUES (%s, %s, %s, %s, 'CONFIRMED')
-                    """,
-                    (
-                        appointment_id,
-                        patient_id,
-                        offer["consultation_type_id"],
-                        appointment_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-                    ),
-                )
-                cursor.execute(
-                    """
-                    INSERT INTO payments (
-                        payment_id, appointment_id, amount, payment_status, payment_method
-                    ) VALUES (%s, %s, %s, 'INITIATED', 'PAY_AT_CLINIC')
-                    """,
-                    (str(uuid.uuid4()), appointment_id, consultation["fee"]),
-                )
-    except Exception:
-        logger.exception("Could not confirm waitlist offer %s.", offer_id)
-        if seat_converted:
-            try:
-                convert_booked_seat_to_hold(slot)
-            except Exception:
-                logger.exception("Could not restore held seat for waitlist offer %s.", offer_id)
-        try:
-            _waitlist_offer_table().update_item(
-                Key={"slot_ref": offer["slot_ref"], "patient_id": patient_id},
-                UpdateExpression="SET #status = :open",
-                ConditionExpression="#status = :accepting",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={":open": "OPEN", ":accepting": "ACCEPTING"},
-            )
-        except ClientError:
-            logger.exception("Could not restore waitlist offer %s after booking failure.", offer_id)
-        raise
-
-    try:
-        _waitlist_offer_table().update_item(
-            Key={"slot_ref": offer["slot_ref"], "patient_id": patient_id},
-            UpdateExpression="SET #status = :accepted, accepted_at = :now REMOVE live_shard",
-            ConditionExpression="#status = :accepting",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":accepted": "ACCEPTED",
-                ":accepting": "ACCEPTING",
-                ":now": now,
-            },
-        )
-    except ClientError:
-        logger.exception("Appointment %s was booked but offer %s could not be finalized.", appointment_id, offer_id)
-    try:
-        publish_appointment_notification(
-            appointment_id=appointment_id,
-            event_type="APPOINTMENT_BOOKED",
-            patient_id=patient_id,
-            consultation_type_id=str(offer["consultation_type_id"]),
-            appointment_datetime=appointment_datetime,
-            message="Your waitlist offer was accepted and the appointment is confirmed.",
-        )
-    except Exception:
-        logger.exception("Waitlist appointment %s was booked but notification failed.", appointment_id)
-    return 201, _patient_booking_response(
-        appointment_id,
-        str(offer["consultation_type_id"]),
-        appointment_datetime,
-        fee_amount=consultation["fee"],
-    )
-
-
 def _sweep_expired_waitlist_offers() -> int:
+    if not _waitlist_offer_table:
+        raise RuntimeError("Waitlist offer table is not configured for legacy offer cleanup.")
+
     now = int(time.time())
-    expired = _query_all_items(
-        _waitlist_offer_table(),
-        IndexName="gsi_live",
-        KeyConditionExpression=Key("live_shard").eq("ACTIVE") & Key("expires_at").lte(now),
-    )
+    query_args: dict[str, Any] = {
+        "IndexName": "gsi_live",
+        "KeyConditionExpression": (
+            Key("live_shard").eq("ACTIVE") & Key("expires_at").lte(now)
+        ),
+    }
+    expired: list[dict[str, Any]] = []
+    while True:
+        page = _waitlist_offer_table.query(**query_args)
+        expired.extend(page.get("Items", []))
+        last_key = page.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        query_args["ExclusiveStartKey"] = last_key
+
     processed = 0
     for offer in expired:
         try:
-            _waitlist_offer_table().update_item(
+            _waitlist_offer_table.update_item(
                 Key={"slot_ref": offer["slot_ref"], "patient_id": offer["patient_id"]},
                 UpdateExpression="SET #status = :expired REMOVE live_shard",
-                ConditionExpression="#status = :open AND expires_at <= :now",
+                ConditionExpression=(
+                    "#status IN (:open, :accepting) AND expires_at <= :now"
+                ),
                 ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
                     ":expired": "EXPIRED",
                     ":open": "OPEN",
+                    ":accepting": "ACCEPTING",
                     ":now": now,
                 },
             )
@@ -787,26 +554,12 @@ def _sweep_expired_waitlist_offers() -> int:
             if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 continue
             raise
+
         slot = get_slot_by_id(str(offer["slot_ref"]))
         if not slot:
             logger.error("Expired offer %s references missing slot.", offer.get("offer_id"))
             continue
-        try:
-            _notify_waitlist_offer(
-                str(offer["patient_id"]),
-                str(offer["offer_id"]),
-                slot,
-                int(offer["expires_at"]),
-                "WAITLIST_HOLD_OFFER_EXPIRED",
-            )
-        except Exception:
-            logger.exception("Expired offer %s notification failed.", offer.get("offer_id"))
-        slot_state = slot_availability_state(slot)
-        if slot_state not in {"available", "full"}:
-            release_slot_seat(slot, held=True)
-            processed += 1
-            continue
-        _promote_waitlist(slot, seat_already_held=True)
+        release_slot_seat(slot, held=True)
         processed += 1
     return processed
 
@@ -889,10 +642,9 @@ def _cancel_patient_appointment(
         return 500, {"message": "Cancellation could not be completed. Please retry or contact support."}
 
     try:
-        offer = _promote_waitlist(slot, seat_already_held=True)
+        release_slot_seat(slot, held=True)
     except Exception:
-        logger.exception("Appointment %s was cancelled but waitlist promotion failed.", appointment_id)
-        offer = None
+        logger.exception("Appointment %s was cancelled but its slot hold could not be released.", appointment_id)
     message = (
         f"Appointment {appointment_id} was cancelled. "
         f"Refund ledger amount: INR {format_money(quote['refund_amount'])}."
@@ -914,7 +666,6 @@ def _cancel_patient_appointment(
         "refund_amount": quote["refund_amount"],
         "refund_percent": quote["refund_percent"],
         "refund_tier": quote["tier"],
-        "waitlist_offer_issued": bool(offer),
     }
 
 
@@ -950,18 +701,6 @@ def _refund_preview(patient_id: str, appointment_id: str) -> tuple[int, dict[str
         "payment_method": "PAY_AT_CLINIC",
         "note": "Refund is a ledger estimate only; MediSlot does not process payments.",
     }
-
-
-def _remove_waitlist(patient_id: str, slot_id: str) -> tuple[int, dict[str, Any]]:
-    response = _waitlist_table().delete_item(
-        Key={"slot_ref": slot_id, "patient_id": patient_id},
-        ConditionExpression="attribute_exists(slot_ref)",
-        ReturnValues="ALL_OLD",
-    )
-    if not response.get("Attributes"):
-        return 404, {"message": "Waitlist entry not found."}
-    return 200, {"message": "You left the waitlist.", "slot_id": slot_id}
-
 
 
 def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[str, Any]:
@@ -1127,34 +866,6 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
                 }
             },
         )
-
-    if method == "GET" and path == "/patients/me/waitlists":
-        return _response(200, _patient_waitlists(patient_id))
-
-    if method == "POST" and path == "/patients/me/waitlists":
-        payload = _get_request_body(event)
-        slot_id = str(payload.get("slot_id") or "").strip()
-        if not slot_id:
-            return _response(400, {"message": "slot_id is required."})
-        status_code, response = _join_waitlist(patient_id, slot_id)
-        return _response(status_code, response)
-
-    if method == "DELETE" and path == "/patients/me/waitlists":
-        payload = _get_request_body(event)
-        slot_id = str(payload.get("slot_id") or "").strip()
-        if not slot_id:
-            return _response(400, {"message": "slot_id is required."})
-        status_code, response = _remove_waitlist(patient_id, slot_id)
-        return _response(status_code, response)
-
-    if (
-        method == "POST"
-        and len(path_parts) == 5
-        and path_parts[:3] == ["patients", "me", "waitlist-offers"]
-        and path_parts[4] == "accept"
-    ):
-        status_code, response = _accept_waitlist_offer(patient_id, path_parts[3])
-        return _response(status_code, response)
 
     if (
         method == "GET"
