@@ -364,7 +364,11 @@
         );
         await loadAvailability();
       } else {
-        showAlert(resData.message || 'Failed to add availability pattern.', 'danger');
+        showAlert(
+          resData.error || resData.message
+            || (updateId ? 'Failed to update availability pattern.' : 'Failed to add availability pattern.'),
+          'danger'
+        );
       }
     } catch (err) {
       showAlert('Network error while creating availability pattern.', 'danger');
@@ -389,7 +393,7 @@
         showAlert('Availability pattern removed successfully.', 'success');
         await loadAvailability();
       } else {
-        showAlert(resData.message || 'Failed to delete pattern.', 'danger');
+        showAlert(resData.error || resData.message || 'Failed to delete pattern.', 'danger');
       }
     } catch (err) {
       showAlert('Network error occurred while removing pattern.', 'danger');

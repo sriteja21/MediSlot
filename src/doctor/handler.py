@@ -846,6 +846,115 @@ def find_overlapping_availability_pattern(
     return None
 
 
+def _future_doctor_appointments(doctor_id: str) -> list[dict[str, Any]]:
+    return execute_query(
+        """
+        SELECT a.appointment_datetime, a.consultation_type_id,
+               catalog.duration_minutes
+        FROM appointments a
+        JOIN consultation_types ct
+          ON ct.consultation_type_id = a.consultation_type_id
+        JOIN consultation_catalog catalog
+          ON catalog.consultation_type_id = ct.catalog_type_id
+        WHERE ct.doctor_id = %s
+          AND a.appointment_datetime >= UTC_TIMESTAMP(3)
+          AND a.appointment_status IN ('PENDING', 'CONFIRMED')
+        ORDER BY a.appointment_datetime ASC
+        """,
+        (doctor_id,),
+    )
+
+
+def _time_from_database(value: Any) -> time_type:
+    if isinstance(value, timedelta):
+        total_seconds = int(value.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return time_type(hours, minutes, seconds)
+    if isinstance(value, time_type):
+        return value
+    return time_type.fromisoformat(str(value))
+
+
+def _availability_conflicts(
+    doctor_id: str,
+    *,
+    old_consultation_type_id: str,
+    old_day_of_week: int,
+    old_start_time: Any,
+    old_end_time: Any,
+    timezone_name: str,
+    new_consultation_type_id: str | None = None,
+    new_day_of_week: int | None = None,
+    new_start_time: str | None = None,
+    new_end_time: str | None = None,
+) -> list[datetime]:
+    doctor_timezone = ZoneInfo(timezone_name or "UTC")
+    old_start = _time_from_database(old_start_time)
+    old_end = _time_from_database(old_end_time)
+    new_start = _time_from_database(new_start_time) if new_start_time else None
+    new_end = _time_from_database(new_end_time) if new_end_time else None
+    conflicts = []
+
+    for appointment in _future_doctor_appointments(doctor_id):
+        if str(appointment["consultation_type_id"]) != old_consultation_type_id:
+            continue
+        appointment_start = appointment["appointment_datetime"]
+        if appointment_start.tzinfo is None:
+            appointment_start = appointment_start.replace(tzinfo=timezone.utc)
+        local_start = appointment_start.astimezone(doctor_timezone)
+        if (local_start.weekday() + 1) % 7 != old_day_of_week:
+            continue
+        local_end = local_start + timedelta(
+            minutes=int(appointment["duration_minutes"])
+        )
+        if local_start.time() >= old_end or local_end.time() <= old_start:
+            continue
+
+        remains_available = (
+            new_consultation_type_id == old_consultation_type_id
+            and new_day_of_week == old_day_of_week
+            and new_start is not None
+            and new_end is not None
+            and local_start.time() >= new_start
+            and local_end.date() == local_start.date()
+            and local_end.time() <= new_end
+        )
+        if not remains_available:
+            conflicts.append(local_start)
+    return conflicts
+
+
+def _blackout_appointment_conflicts(
+    doctor_id: str,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> list[dict[str, Any]]:
+    return execute_query(
+        """
+        SELECT a.appointment_datetime, a.consultation_type_id
+        FROM appointments a
+        JOIN consultation_types ct
+          ON ct.consultation_type_id = a.consultation_type_id
+        JOIN consultation_catalog catalog
+          ON catalog.consultation_type_id = ct.catalog_type_id
+        WHERE ct.doctor_id = %s
+          AND a.appointment_status IN ('PENDING', 'CONFIRMED')
+          AND a.appointment_datetime < %s
+          AND DATE_ADD(
+              a.appointment_datetime,
+              INTERVAL catalog.duration_minutes MINUTE
+          ) > %s
+        ORDER BY a.appointment_datetime ASC
+        """,
+        (
+            doctor_id,
+            end_utc.replace(tzinfo=None),
+            start_utc.replace(tzinfo=None),
+        ),
+    )
+
+
 def create_availability(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """
     POST /doctors/me/availability
@@ -925,9 +1034,11 @@ def delete_availability(doctor_id: str, pattern_id: str) -> dict[str, Any]:
     """
     rows = execute_query(
         """
-        SELECT ap.pattern_id
+        SELECT ap.pattern_id, ap.consultation_type_id, ap.day_of_week,
+               ap.start_time, ap.end_time, d.timezone
         FROM availability_patterns ap
         JOIN consultation_types ct ON ct.consultation_type_id = ap.consultation_type_id
+        JOIN doctors d ON d.doctor_id = ct.doctor_id
         WHERE ap.pattern_id = %s AND ct.doctor_id = %s
         """,
         (pattern_id, doctor_id),
@@ -935,9 +1046,30 @@ def delete_availability(doctor_id: str, pattern_id: str) -> dict[str, Any]:
     if not rows:
         return format_response(404, {"error": "Availability pattern not found."})
 
+    pattern = rows[0]
+    conflicts = _availability_conflicts(
+        doctor_id,
+        old_consultation_type_id=str(pattern["consultation_type_id"]),
+        old_day_of_week=int(pattern["day_of_week"]),
+        old_start_time=pattern["start_time"],
+        old_end_time=pattern["end_time"],
+        timezone_name=str(pattern.get("timezone") or "UTC"),
+    )
+    if conflicts:
+        return format_response(
+            409,
+            {
+                "error": (
+                    f"Cannot delete this availability pattern: "
+                    f"{len(conflicts)} future appointment(s) use it. "
+                    "Cancel those appointments first."
+                )
+            },
+        )
+
     execute_write(
         "DELETE FROM availability_patterns WHERE pattern_id = %s",
-        (pattern_id, doctor_id),
+        (pattern_id,),
     )
     trigger_slot_materialisation()
     return format_response(
@@ -959,9 +1091,11 @@ def update_availability(
 
     existing_rows = execute_query(
         """
-        SELECT ap.pattern_id
+        SELECT ap.pattern_id, ap.consultation_type_id, ap.day_of_week,
+               ap.start_time, ap.end_time, d.timezone
         FROM availability_patterns ap
         JOIN consultation_types ct ON ct.consultation_type_id = ap.consultation_type_id
+        JOIN doctors d ON d.doctor_id = ct.doctor_id
         WHERE ap.pattern_id = %s AND ct.doctor_id = %s
         """,
         (pattern_id, doctor_id),
@@ -1011,6 +1145,33 @@ def update_availability(
     if not consultation_rows:
         raise ValueError("consultation_type_id must identify an active type belonging to this doctor.")
 
+    existing_pattern = existing_rows[0]
+    conflicts = _availability_conflicts(
+        doctor_id,
+        old_consultation_type_id=str(existing_pattern["consultation_type_id"]),
+        old_day_of_week=int(existing_pattern["day_of_week"]),
+        old_start_time=existing_pattern["start_time"],
+        old_end_time=existing_pattern["end_time"],
+        timezone_name=str(existing_pattern.get("timezone") or "UTC"),
+        new_consultation_type_id=consultation_type_id,
+        new_day_of_week=day_of_week,
+        new_start_time=start_local_time,
+        new_end_time=end_local_time,
+    )
+    if conflicts:
+        first_conflict = conflicts[0].strftime("%Y-%m-%d %H:%M")
+        return format_response(
+            409,
+            {
+                "error": (
+                    f"Cannot edit this availability pattern: "
+                    f"{len(conflicts)} future appointment(s) would fall outside "
+                    f"the updated schedule (first: {first_conflict}). "
+                    "Cancel those appointments first."
+                )
+            },
+        )
+
     execute_write(
         """
         UPDATE availability_patterns
@@ -1026,7 +1187,6 @@ def update_availability(
             end_local_time,
             consultation_type_id,
             pattern_id,
-            doctor_id,
         ),
     )
     trigger_slot_materialisation()
@@ -1144,6 +1304,23 @@ def create_blackout(doctor_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return format_response(
             409,
             {"error": f"Blackout date '{b_date.isoformat()}' overlaps an existing blackout."},
+        )
+
+    occupied_appointments = _blackout_appointment_conflicts(
+        doctor_id,
+        start_utc,
+        end_utc,
+    )
+    if occupied_appointments:
+        return format_response(
+            409,
+            {
+                "error": (
+                    f"Cannot add blackout for '{b_date.isoformat()}': "
+                    f"{len(occupied_appointments)} future appointment(s) are already "
+                    "scheduled during this date. Cancel those appointments first."
+                )
+            },
         )
 
     blackout_id = str(uuid.uuid4())

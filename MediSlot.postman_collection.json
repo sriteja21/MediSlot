@@ -1,0 +1,567 @@
+{
+  "info": {
+    "_postman_id": "80e409ea-5ec0-4b19-a197-24910d3f658e",
+    "name": "MediSlot API",
+    "description": "Postman Collection v2.1 for MediSlot. Set baseUrl to the API Gateway root (without the stage) and stage. Public auth requests need no token; successful login saves accessToken. Registration options, doctor search/profile, and slot lookup capture real IDs for later requests. Booking requires a patient token plus a verified doctor with an active consultation and a future materialized slot. Booking is asynchronous: poll the booking request status endpoint. Replace sample email/password/license values with accounts you control.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://4o40pyo6n2.execute-api.ap-south-1.amazonaws.com" },
+    { "key": "stage", "value": "dev" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "patientEmail", "value": "patient@example.com" },
+    { "key": "doctorEmail", "value": "doctor@example.com" },
+    { "key": "password", "value": "ChangeThisPassword123!" },
+    { "key": "hospitalId", "value": "" },
+    { "key": "specialisationId", "value": "" },
+    { "key": "doctorId", "value": "" },
+    { "key": "consultationTypeId", "value": "" },
+    { "key": "appointmentId", "value": "REPLACE_WITH_APPOINTMENT_ID" },
+    { "key": "bookingRequestId", "value": "REPLACE_WITH_BOOKING_REQUEST_ID" },
+    { "key": "slotFrom", "value": "" },
+    { "key": "slotTo", "value": "" },
+    { "key": "slotStart", "value": "" },
+    { "key": "slotId", "value": "" },
+    { "key": "availabilityId", "value": "REPLACE_WITH_AVAILABILITY_ID" },
+    { "key": "blackoutId", "value": "REPLACE_WITH_BLACKOUT_ID" },
+    { "key": "consultationTypeRecordId", "value": "REPLACE_WITH_DOCTOR_CONSULTATION_TYPE_ID" }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Registration options (hospital and specialization IDs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "const hospital = (data.hospitals || [])[0];",
+                  "const specialisation = (data.specialisations || [])[0];",
+                  "if (hospital) pm.collectionVariables.set('hospitalId', hospital.id);",
+                  "if (specialisation) pm.collectionVariables.set('specialisationId', String(specialisation.id));",
+                  "pm.test('Registration options contain sample hospital and specialisation', function () {",
+                  "  pm.expect(hospital, 'hospital row').to.exist;",
+                  "  pm.expect(specialisation, 'specialisation row').to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": { "type": "noauth" },
+            "url": "{{baseUrl}}/{{stage}}/auth/registration-options"
+          }
+        },
+        {
+          "name": "Register patient",
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{patientEmail}}\",\n  \"password\": \"{{password}}\",\n  \"full_name\": \"Sample Patient\",\n  \"date_of_birth\": \"1990-05-20\",\n  \"gender\": \"OTHER\",\n  \"phone\": \"+919876543210\",\n  \"emergency_contact_name\": \"Emergency Contact\",\n  \"emergency_contact_phone\": \"+919876543211\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/auth/patients/register"
+          }
+        },
+        {
+          "name": "Register doctor (replace IDs from Registration options)",
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{doctorEmail}}\",\n  \"password\": \"{{password}}\",\n  \"full_name\": \"Sample Doctor\",\n  \"licence_number\": \"LICENSE-REPLACE-ME\",\n  \"hospital_id\": \"{{hospitalId}}\",\n  \"specialisation_ids\": [{{specialisationId}}],\n  \"years_experience\": 5,\n  \"qualifications\": \"MBBS, MD\",\n  \"timezone\": \"Asia/Kolkata\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/auth/doctors/register"
+          }
+        },
+        {
+          "name": "Patient login (saves access and refresh tokens)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const data = pm.response.json();",
+                  "  if (data.access_token) pm.collectionVariables.set('accessToken', data.access_token);",
+                  "  if (data.refresh_token) pm.collectionVariables.set('refreshToken', data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{patientEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/auth/patients/login"
+          }
+        },
+        {
+          "name": "Doctor login (saves access and refresh tokens)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const data = pm.response.json();",
+                  "  if (data.access_token) pm.collectionVariables.set('accessToken', data.access_token);",
+                  "  if (data.refresh_token) pm.collectionVariables.set('refreshToken', data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{doctorEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/auth/doctors/login"
+          }
+        },
+        {
+          "name": "Generic login",
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{patientEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/auth/login"
+          }
+        },
+        {
+          "name": "Refresh access token (saves new access token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const data = pm.response.json();",
+                  "  if (data.access_token) pm.collectionVariables.set('accessToken', data.access_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/auth/refresh"
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/{{stage}}/auth/logout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Shared reads",
+      "item": [
+        {
+          "name": "Get patient slots (next 14 days; saves first free slot)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const from = new Date(Date.now() + 86400000);",
+                  "const to = new Date(Date.now() + 14 * 86400000);",
+                  "pm.collectionVariables.set('slotFrom', from.toISOString().slice(0, 10));",
+                  "pm.collectionVariables.set('slotTo', to.toISOString().slice(0, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "const slot = (data.slots || []).find(item => item.available && Number(item.free_seats) > 0);",
+                  "if (slot) {",
+                  "  pm.collectionVariables.set('slotStart', slot.start_time);",
+                  "  pm.collectionVariables.set('slotId', slot.slot_id);",
+                  "  pm.collectionVariables.set('consultationTypeId', slot.consultation_type_id);",
+                  "}",
+                  "pm.test('An available slot was returned', function () {",
+                  "  pm.expect(slot, 'free slot in next 14 days').to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/{{stage}}/slots?from={{slotFrom}}&to={{slotTo}}&doctor_id={{doctorId}}&consultation_type_id={{consultationTypeId}}"
+          }
+        },
+        {
+          "name": "Get patient availability (date range)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/{{stage}}/slots?from={{slotFrom}}&to={{slotTo}}&doctor_id={{doctorId}}&consultation_type_id={{consultationTypeId}}"
+          }
+        },
+        {
+          "name": "Get doctor consultation types",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/consultation-types"
+          }
+        },
+        {
+          "name": "Get patient-facing doctor profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "const doctor = data.doctor;",
+                  "const consultation = (doctor?.consultations || [])[0];",
+                  "if (doctor?.doctor_id) pm.collectionVariables.set('doctorId', doctor.doctor_id);",
+                  "if (consultation?.consultation_type_id) pm.collectionVariables.set('consultationTypeId', consultation.consultation_type_id);",
+                  "pm.test('Doctor profile includes an active consultation type', function () {",
+                  "  pm.expect(doctor, 'verified doctor profile').to.exist;",
+                  "  pm.expect(consultation, 'consultation type').to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/{{stage}}/patients/doctors/{{doctorId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Doctor",
+      "item": [
+        {
+          "name": "Get profile",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/doctors/me" }
+        },
+        {
+          "name": "Update profile",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+919876543210\",\n  \"qualification\": \"MBBS, MD\",\n  \"experience_years\": 5,\n  \"timezone\": \"Asia/Kolkata\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/doctors/me"
+          }
+        },
+        {
+          "name": "Get profile photo upload URL",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/doctors/me/photo-upload-url" }
+        },
+        {
+          "name": "Create consultation type",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kind\": \"IN_PERSON\",\n  \"fee_amount\": 800,\n  \"capacity\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/consultation-types"
+          }
+        },
+        {
+          "name": "Update consultation type",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fee_amount\": 900,\n  \"is_active\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/consultation-types/{{consultationTypeRecordId}}"
+          }
+        },
+        {
+          "name": "Delete consultation type",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/consultation-types/{{consultationTypeRecordId}}"
+          }
+        },
+        {
+          "name": "Get availability patterns",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/doctors/me/availability" }
+        },
+        {
+          "name": "Create availability pattern",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"day_of_week\": 2,\n  \"start_local_time\": \"09:00\",\n  \"end_local_time\": \"12:00\",\n  \"consultation_type_id\": \"{{consultationTypeId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/availability"
+          }
+        },
+        {
+          "name": "Update availability pattern",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"day_of_week\": 2,\n  \"start_local_time\": \"10:00\",\n  \"end_local_time\": \"13:00\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/availability/{{availabilityId}}"
+          }
+        },
+        {
+          "name": "Delete availability pattern",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/{{stage}}/doctors/me/availability/{{availabilityId}}" }
+        },
+        {
+          "name": "Get blackouts",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/doctors/me/blackouts" }
+        },
+        {
+          "name": "Create blackout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blackout_date\": \"2030-01-15\",\n  \"reason\": \"Personal leave\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/blackouts"
+          }
+        },
+        {
+          "name": "Delete blackout",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/{{stage}}/doctors/me/blackouts/{{blackoutId}}" }
+        },
+        {
+          "name": "Doctor dashboard",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/doctors/me/dashboard" }
+        },
+        {
+          "name": "Doctor payments",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/doctors/me/payments" }
+        },
+        {
+          "name": "Doctor refunds",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/doctors/me/refunds" }
+        },
+        {
+          "name": "Cancel appointment (doctor)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Doctor unavailable\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/doctors/me/appointments/{{appointmentId}}/cancel"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Patient",
+      "item": [
+        {
+          "name": "Get profile",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/patients/me" }
+        },
+        {
+          "name": "Update profile",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+919876543210\",\n  \"gender\": \"OTHER\",\n  \"emergency_contact_name\": \"Emergency Contact\",\n  \"emergency_contact_phone\": \"+919876543211\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/patients/me"
+          }
+        },
+        {
+          "name": "Deactivate account",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/{{stage}}/patients/me" }
+        },
+        {
+          "name": "Patient dashboard",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/patients/me/dashboard" }
+        },
+        {
+          "name": "Search doctors",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "const doctor = (data.doctors || [])[0];",
+                  "if (doctor?.doctor_id) pm.collectionVariables.set('doctorId', doctor.doctor_id);",
+                  "pm.test('At least one verified doctor is available', function () {",
+                  "  pm.expect(doctor, 'verified doctor result').to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/{{stage}}/patients/doctors/search?page=1&limit=50"
+          }
+        },
+        {
+          "name": "Doctor search filter options",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/patients/doctors/search-options" }
+        },
+        {
+          "name": "Submit booking request",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "if (data.request_id) pm.collectionVariables.set('bookingRequestId', data.request_id);",
+                  "pm.test('Booking request was accepted or already confirmed', function () {",
+                  "  pm.expect([200, 202]).to.include(pm.response.code);",
+                  "  pm.expect(data.request_id).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idempotencyKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consultation_type_id\": \"{{consultationTypeId}}\",\n  \"appointment_datetime\": \"{{slotStart}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/patients/me/appointments"
+          }
+        },
+        {
+          "name": "Get booking request status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const data = pm.response.json();",
+                  "const booking = data.booking_request || {};",
+                  "if (booking.appointment_id) pm.collectionVariables.set('appointmentId', booking.appointment_id);",
+                  "pm.test('Booking status is returned', function () {",
+                  "  pm.expect(booking.status).to.be.oneOf(['PENDING', 'PROCESSING', 'CONFIRMED', 'DECLINED']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/patients/me/booking-requests/{{bookingRequestId}}" }
+        },
+        {
+          "name": "Cancel appointment (patient)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"No longer available\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/{{stage}}/patients/me/appointments/{{appointmentId}}/cancel"
+          }
+        },
+        {
+          "name": "Preview cancellation refund",
+          "request": { "method": "GET", "url": "{{baseUrl}}/{{stage}}/patients/me/appointments/{{appointmentId}}/refund-preview" }
+        }
+      ]
+    }
+  ]
+}

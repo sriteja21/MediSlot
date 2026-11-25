@@ -226,7 +226,7 @@
         showAlert(`Blackout date (${payload.blackout_date}) scheduled successfully!`, 'success');
         await loadBlackouts();
       } else {
-        showAlert(resData.message || 'Failed to add blackout date.', 'danger');
+        showAlert(resData.error || resData.message || 'Failed to add blackout date.', 'danger');
       }
     } catch (err) {
       showAlert('Network error while scheduling blackout date.', 'danger');
@@ -251,7 +251,7 @@
         showAlert('Blackout date removed successfully.', 'success');
         await loadBlackouts();
       } else {
-        showAlert(resData.message || 'Failed to remove blackout date.', 'danger');
+        showAlert(resData.error || resData.message || 'Failed to remove blackout date.', 'danger');
       }
     } catch (err) {
       showAlert('Network error occurred while removing blackout date.', 'danger');
