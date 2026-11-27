@@ -9,11 +9,23 @@ from typing import Any
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+from shared.metrics import emit_metric
 
 
 logger = logging.getLogger(__name__)
 _dynamodb = None
 _ses = None
+
+SUBJECTS = {
+    "AppointmentBooked": "Appointment confirmed",
+    "AppointmentCancelledByPatient": "Appointment cancelled",
+    "AppointmentCancelledByDoctor": "Appointment cancelled",
+    "AppointmentRescheduled": "Appointment rescheduled",
+    "WaitlistOfferIssued": "A seat is available for you",
+    "AppointmentReminder24h": "Appointment tomorrow",
+    "AppointmentReminder2h": "Appointment in 2 hours",
+    "AppointmentNoShow": "Appointment marked as missed",
+}
 
 
 def _table() -> Any:
@@ -37,6 +49,21 @@ def _ses_client() -> Any:
             region_name=os.environ.get("AWS_REGION", "ap-south-1"),
         )
     return _ses
+
+
+def _notifications_from_record(record: dict[str, Any]):
+    event = json.loads(record.get("body") or "")
+    detail_type = str(event.get("detail-type") or "")
+    detail = event.get("detail") or {}
+    for recipient in detail.get("recipients", []):
+        yield {
+            "notification_id": f"{detail['event_key']}#{detail_type}#{recipient['user_id']}",
+            "event_type": detail_type,
+            "recipient_user_id": str(recipient["user_id"]),
+            "recipient_email": str(recipient["email"]),
+            "subject": f"MediSlot: {SUBJECTS[detail_type]}",
+            "message": f"{detail.get('message', '')}\nDoctor: {detail.get('doctor_name', '')}\nAppointment: {detail.get('appointment_datetime', '')}",
+        }
 
 
 def _notification_from_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -110,6 +137,18 @@ def _mark_sent(notification: dict[str, Any], sent_at: int) -> None:
     )
 
 
+def _mark_undeliverable(notification: dict[str, Any], now: int) -> None:
+    _table().update_item(
+        Key={
+            "recipient_user_id": notification["recipient_user_id"],
+            "notification_id": notification["notification_id"],
+        },
+        UpdateExpression="SET #status = :u, failed_at = :now REMOVE retry_shard, next_attempt_at",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":u": "UNDELIVERABLE", ":now": now},
+    )
+
+
 def _mark_failed(notification: dict[str, Any], now: int) -> None:
     notification_id = notification["notification_id"]
     shard = int(hashlib.sha256(notification_id.encode()).hexdigest()[:8], 16) % 10
@@ -149,6 +188,7 @@ def _deliver(notification: dict[str, Any]) -> None:
         },
     )
     _mark_sent(notification, int(time.time()))
+    emit_metric("NotificationsDispatched")
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, list[dict[str, str]]]:
@@ -157,28 +197,42 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, list[dict[s
     logger.info("Notification dispatcher received %d queue records.", len(records))
     for record in records:
         message_id = str(record.get("messageId") or "")
+        record_failed = False
         try:
-            notification = _notification_from_record(record)
-            now = int(time.time())
-            persisted = _persist_pending(notification, now)
-            if persisted.get("status") == "SENT":
-                continue
+            notifications = list(_notifications_from_record(record))
+        except Exception:
             try:
-                _deliver({**notification, **persisted})
-            except (BotoCoreError, ClientError, RuntimeError) as exc:
-                _mark_failed(notification, int(time.time()))
-                logger.error(
-                    "Notification delivery failed; queue retry will be used (%s): %s",
-                    type(exc).__name__,
-                    exc,
-                )
+                notifications = [_notification_from_record(record)]
+            except Exception as exc:
+                logger.error("Notification dispatcher could not parse a queue record (%s).", type(exc).__name__)
                 if message_id:
                     failures.append({"itemIdentifier": message_id})
-        except Exception as exc:
-            logger.error(
-                "Notification dispatcher could not process a queue record (%s).",
-                type(exc).__name__,
-            )
-            if message_id:
-                failures.append({"itemIdentifier": message_id})
+                continue
+
+        for notification in notifications:
+            try:
+                now = int(time.time())
+                persisted = _persist_pending(notification, now)
+                if persisted.get("status") == "SENT":
+                    continue
+                try:
+                    _deliver({**notification, **persisted})
+                except ClientError as exc:
+                    if exc.response.get("Error", {}).get("Code") == "MessageRejected":
+                        _mark_undeliverable(notification, int(time.time()))
+                        logger.warning("Recipient not verified in SES; marked undeliverable.")
+                    else:
+                        _mark_failed(notification, int(time.time()))
+                        record_failed = True
+                        logger.error("Notification delivery failed; queue retry will be used: %s", exc)
+                except (BotoCoreError, RuntimeError) as exc:
+                    _mark_failed(notification, int(time.time()))
+                    record_failed = True
+                    logger.error("Notification delivery failed; queue retry will be used: %s", exc)
+            except Exception as exc:
+                record_failed = True
+                logger.exception("Notification dispatcher could not process a recipient.")
+
+        if record_failed and message_id:
+            failures.append({"itemIdentifier": message_id})
     return {"batchItemFailures": failures}

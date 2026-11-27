@@ -13,6 +13,7 @@ import boto3
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
+from shared.booking import slot_sk_for
 from shared.database import database_transaction
 from shared.notifications import publish_appointment_notification
 
@@ -364,7 +365,7 @@ def _release_reserved_slot_and_decline(
 
 
 def _appointment_ids(request: dict[str, Any]) -> tuple[str, str]:
-    stable_id = str(request["booking_id"])
+    stable_id = str(request["scope_key"])
     appointment_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"appointment:{stable_id}"))
     payment_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"payment:{stable_id}"))
     return appointment_id, payment_id
@@ -468,25 +469,27 @@ def _create_or_recover_appointment(
                 cursor.execute(
                     """
                     INSERT INTO appointments (
-                        appointment_id, patient_id, consultation_type_id,
+                        appointment_id, patient_id, doctor_id, consultation_type_id,
                         appointment_datetime, appointment_status
-                    ) VALUES (%s, %s, %s, %s, 'CONFIRMED')
+                    ) VALUES (%s, %s, %s, %s, %s, 'CONFIRMED')
                     """,
                     (
                         appointment_id,
                         request["patient_id"],
+                        request["doctor_id"],
                         request["consultation_type_id"],
                         _mysql_datetime(request["appointment_datetime"]),
                     ),
                 )
-                cursor.execute(
-                    """
-                    INSERT INTO payments (
-                        payment_id, appointment_id, amount, payment_status, payment_method
-                    ) VALUES (%s, %s, %s, 'INITIATED', 'PAY_AT_CLINIC')
-                    """,
-                    (payment_id, appointment_id, consultation["fee"]),
-                )
+                if consultation["fee"] > 0:
+                    cursor.execute(
+                        """
+                        INSERT INTO payments (
+                            payment_id, appointment_id, amount, payment_status, payment_method
+                        ) VALUES (%s, %s, %s, 'INITIATED', 'PAY_AT_CLINIC')
+                        """,
+                        (payment_id, appointment_id, consultation["fee"]),
+                    )
             else:
                 cursor.execute(
                     """
@@ -500,15 +503,16 @@ def _create_or_recover_appointment(
                 consultation = cursor.fetchone()
                 if not consultation:
                     raise RuntimeError("Booking consultation type no longer exists.")
-                cursor.execute(
-                    """
-                    INSERT INTO payments (
-                        payment_id, appointment_id, amount, payment_status, payment_method
-                    ) VALUES (%s, %s, %s, 'INITIATED', 'PAY_AT_CLINIC')
-                    ON DUPLICATE KEY UPDATE payment_id = payment_id
-                    """,
-                    (payment_id, appointment_id, consultation["fee"]),
-                )
+                if consultation["fee"] > 0:
+                    cursor.execute(
+                        """
+                        INSERT INTO payments (
+                            payment_id, appointment_id, amount, payment_status, payment_method
+                        ) VALUES (%s, %s, %s, 'INITIATED', 'PAY_AT_CLINIC')
+                        ON DUPLICATE KEY UPDATE payment_id = payment_id
+                        """,
+                        (payment_id, appointment_id, consultation["fee"]),
+                    )
 
             notification = {
                 "appointment_id": appointment_id,
@@ -581,16 +585,7 @@ def _process_booking(user_id: str, scope_key: str) -> dict[str, Any]:
         raise RuntimeError("Booking request has an unsupported status.")
 
     requested_start = _utc_datetime(request["appointment_datetime"])
-    slot_start_epoch = int(requested_start.timestamp())
-    if str(request["slot_sk"]) != (
-        f"{slot_start_epoch}#{request['consultation_type_id']}"
-    ):
-        message = "The booking request refers to an invalid slot."
-        if request.get("slot_reserved"):
-            _release_reserved_slot_and_decline(request, message)
-        else:
-            _mark_declined_without_reservation(request, message)
-        return {"status": "DECLINED", "notification": None}
+    request["slot_sk"] = slot_sk_for(request["consultation_type_id"], requested_start)
 
     appointment_id, payment_id = _appointment_ids(request)
     try:

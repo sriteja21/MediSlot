@@ -116,7 +116,7 @@ def get_s3_client():
     return _s3_client
 
 
-def trigger_slot_materialisation() -> None:
+def trigger_slot_materialisation(doctor_id: str | None = None) -> None:
     global _lambda_client
     if not SLOT_MATERIALISER_FUNCTION_NAME:
         logger.warning("Slot materializer function name is not configured.")
@@ -137,7 +137,7 @@ def trigger_slot_materialisation() -> None:
         _lambda_client.invoke(
             FunctionName=SLOT_MATERIALISER_FUNCTION_NAME,
             InvocationType="Event",
-            Payload=b"{}",
+            Payload=json.dumps({"doctor_id": doctor_id}).encode() if doctor_id else b"{}",
         )
     except Exception:
         logger.exception("Could not trigger slot materialization.")
@@ -1652,7 +1652,7 @@ def cancel_doctor_appointment(doctor_id: str, appointment_id: str) -> dict[str, 
                 )
                 if cursor.rowcount != 1:
                     raise RuntimeError("Appointment was changed by another request.")
-                if appointment.get("payment_id"):
+                if appointment.get("payment_id") and refund["refund_amount"] > 0:
                     cursor.execute(
                         """
                         INSERT INTO refunds (

@@ -15,9 +15,10 @@ from typing import Any
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
-from shared.booking import calculate_refund, format_money, load_refund_policy
+from shared.booking import calculate_refund, format_money, load_refund_policy, slot_sk_for
 from shared.database import database_transaction, execute_query, execute_write
 from shared.notifications import publish_appointment_notification
+from shared.waitlist import accept_waitlist_offer, join_waitlist, list_waitlists, remove_waitlist
 from read_api.service import (
     convert_booked_seat_to_hold,
     get_slot_by_id,
@@ -158,19 +159,14 @@ def _submit_booking_request(
         request_item = {
             "user_id": user_id,
             "scope_key": scope_key,
-            "request_id": scope_key,
-            "booking_id": str(uuid.uuid4()),
             "request_hash": request_hash,
             "patient_id": patient_id,
             "doctor_id": str(consultation["doctor_id"]),
-            "slot_id": slot_id,
-            "slot_sk": str(slot["slot_sk"]),
             "consultation_type_id": consultation_type_id,
             "appointment_datetime": appointment_dt_utc.isoformat().replace("+00:00", "Z"),
             "status": "PENDING",
             "slot_reserved": False,
             "expires_at": now + 30 * 86400,
-            "created_at": now,
             "updated_at": now,
         }
 
@@ -202,7 +198,7 @@ def _submit_booking_request(
                     "message": "This idempotency key was already used for a different booking request."
                 }
 
-    request_id = str(existing["request_id"])
+    request_id = scope_key
     status = str(existing.get("status", "PENDING"))
     if status == "CONFIRMED":
         return 200, {
@@ -217,27 +213,13 @@ def _submit_booking_request(
             "status": status,
             "message": existing.get("result_message") or "Booking request was declined.",
         }
-    if status == "FAILED":
-        _idempotency_table.update_item(
-            Key={"user_id": user_id, "scope_key": scope_key},
-            UpdateExpression="SET #status = :pending, updated_at = :now",
-            ConditionExpression="#status = :failed",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":pending": "PENDING",
-                ":failed": "FAILED",
-                ":now": now,
-            },
-        )
-
     try:
         BOOKING_QUEUE.send_message(
             QueueUrl=BOOKING_QUEUE_URL,
             MessageBody=json.dumps(
                 {"user_id": user_id, "scope_key": scope_key}
             ),
-            MessageGroupId=f"{existing['doctor_id']}#{existing['slot_sk']}",
-            MessageDeduplicationId=str(existing["booking_id"]),
+            MessageGroupId=f"{existing['doctor_id']}#{slot_sk_for(existing['consultation_type_id'], appointment_dt_utc)}",
         )
     except BotoCoreError:
         logger.exception("Could not enqueue booking request.")
@@ -619,7 +601,7 @@ def _cancel_patient_appointment(
                 )
                 if cursor.rowcount != 1:
                     raise RuntimeError("Appointment was changed by another request.")
-                if appointment.get("payment_id"):
+                if appointment.get("payment_id") and quote["refund_amount"] > 0:
                     cursor.execute(
                         """
                         INSERT INTO refunds (
@@ -857,15 +839,37 @@ def lambda_handler(event: dict[str, Any] | None, context: Any = None) -> dict[st
             200,
             {
                 "booking_request": {
-                    "request_id": request["request_id"],
+                    "request_id": request["scope_key"],
                     "status": request.get("status", "PENDING"),
                     "appointment_id": request.get("appointment_id"),
                     "result_message": request.get("result_message"),
-                    "created_at": request.get("created_at"),
                     "updated_at": request.get("updated_at"),
                 }
             },
         )
+
+    if method == "GET" and path == "/patients/me/waitlists":
+        return _response(200, list_waitlists(patient_id))
+
+    if method == "POST" and path == "/patients/me/waitlists":
+        payload = _get_request_body(event)
+        slot_id = str(payload.get("slot_id") or "").strip()
+        if not slot_id:
+            return _response(400, {"message": "slot_id is required."})
+        status_code, response = join_waitlist(patient_id, slot_id)
+        return _response(status_code, response)
+
+    if method == "DELETE" and path == "/patients/me/waitlists":
+        payload = _get_request_body(event)
+        slot_id = str(payload.get("slot_id") or "").strip()
+        if not slot_id:
+            return _response(400, {"message": "slot_id is required."})
+        status_code, response = remove_waitlist(patient_id, slot_id)
+        return _response(status_code, response)
+
+    if method == "POST" and len(path_parts) == 5 and path_parts[:3] == ["patients", "me", "waitlist-offers"]:
+        status_code, response = accept_waitlist_offer(patient_id, path_parts[3])
+        return _response(status_code, response)
 
     if (
         method == "GET"

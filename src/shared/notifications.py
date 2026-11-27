@@ -11,6 +11,18 @@ import boto3
 
 logger = logging.getLogger(__name__)
 _sqs = None
+_events = None
+
+DETAIL_TYPES = {
+    "APPOINTMENT_BOOKED": "AppointmentBooked",
+    "APPOINTMENT_CANCELLED_BY_PATIENT": "AppointmentCancelledByPatient",
+    "APPOINTMENT_CANCELLED_BY_DOCTOR": "AppointmentCancelledByDoctor",
+    "APPOINTMENT_RESCHEDULED": "AppointmentRescheduled",
+    "WAITLIST_OFFER_ISSUED": "WaitlistOfferIssued",
+    "REMINDER_24H": "AppointmentReminder24h",
+    "REMINDER_2H": "AppointmentReminder2h",
+    "NO_SHOW": "AppointmentNoShow",
+}
 
 
 def _queue_client() -> Any:
@@ -21,6 +33,20 @@ def _queue_client() -> Any:
             region_name=os.environ.get("AWS_REGION", "ap-south-1"),
         )
     return _sqs
+
+
+def publish_domain_event(detail_type: str, detail: dict[str, Any], source: str = "medislot.appointments") -> None:
+    global _events
+    if _events is None:
+        _events = boto3.client("events", region_name=os.environ.get("AWS_REGION", "ap-south-1"))
+    response = _events.put_events(Entries=[{
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Source": source,
+        "DetailType": detail_type,
+        "Detail": json.dumps(detail, default=str),
+    }])
+    if response.get("FailedEntryCount"):
+        raise RuntimeError(f"EventBridge rejected the event: {response.get('Entries', [])}")
 
 
 def publish_email_notification(
@@ -107,15 +133,18 @@ def publish_appointment_notification(
     if not patient_only:
         recipients.append((contacts["doctor_user_id"], contacts["doctor_email"], "doctor"))
 
-    for user_id, email, recipient_role in recipients:
-        publish_email_notification(
-            event_key=f"{appointment_id}#{event_type}",
-            event_type=event_type,
-            recipient_user_id=str(user_id),
-            recipient_email=str(email),
-            subject=f"MediSlot appointment {event_type.replace('_', ' ').lower()}",
-            message=(
-                f"{message}\nDoctor: {contacts['doctor_name']}\n"
-                f"Appointment: {timestamp}\nRecipient: {recipient_role}"
-            ),
-        )
+    publish_domain_event(
+        DETAIL_TYPES[event_type],
+        {
+            "event_key": f"{appointment_id}#{event_type}",
+            "appointment_id": str(appointment_id),
+            "consultation_type_id": str(consultation_type_id),
+            "appointment_datetime": timestamp,
+            "message": message,
+            "doctor_name": contacts["doctor_name"],
+            "recipients": [
+                {"user_id": str(user_id), "email": str(email), "role": role}
+                for user_id, email, role in recipients
+            ],
+        },
+    )

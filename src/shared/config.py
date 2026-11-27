@@ -19,7 +19,10 @@ from typing import Any
 import boto3
 
 
-_ssm_client = boto3.client("ssm")
+_ssm_client = boto3.client(
+    "ssm",
+    region_name=os.environ.get("AWS_REGION", "ap-south-1"),
+)
 
 
 def get_required_env(name: str) -> str:

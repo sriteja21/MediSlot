@@ -205,8 +205,13 @@ CREATE TABLE IF NOT EXISTS blackout_dates (
 CREATE TABLE IF NOT EXISTS appointments (
     appointment_id CHAR(36) NOT NULL,
     patient_id CHAR(36) NOT NULL,
+    doctor_id CHAR(36) NOT NULL,
     consultation_type_id CHAR(36) NOT NULL,
     appointment_datetime DATETIME(3) NOT NULL,
+    cancelled_at DATETIME(3) NULL,
+    reminder_24h_sent_at DATETIME(3) NULL,
+    reminder_2h_sent_at DATETIME(3) NULL,
+    reschedule_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
     appointment_status ENUM(
         'PENDING', 'CONFIRMED', 'CANCELLED', 'CANCELLED_BY_PATIENT',
         'CANCELLED_BY_DOCTOR', 'COMPLETED', 'NO_SHOW'
@@ -230,9 +235,12 @@ CREATE TABLE IF NOT EXISTS appointments (
     UNIQUE KEY uq_active_patient_slot (active_patient_slot),
     KEY idx_appointments_patient_time (patient_id, appointment_datetime),
     KEY idx_appointments_type_time_status (consultation_type_id, appointment_datetime, appointment_status),
+    KEY idx_appointments_doctor_time (doctor_id, appointment_datetime, appointment_status),
     KEY idx_appointments_reminders (appointment_status, appointment_datetime),
     CONSTRAINT fk_appointments_patient FOREIGN KEY (patient_id)
         REFERENCES patients(patient_id),
+    CONSTRAINT fk_appointments_doctor FOREIGN KEY (doctor_id)
+        REFERENCES doctors(doctor_id),
     CONSTRAINT fk_appointments_consultation_type FOREIGN KEY (consultation_type_id)
         REFERENCES consultation_types(consultation_type_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

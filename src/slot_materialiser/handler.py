@@ -191,6 +191,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     fallback_start_date = now_utc.date() + timedelta(days=1)
     fallback_end_date = now_utc.date() + timedelta(days=30)
 
+    doctor_filter = str((event or {}).get("doctor_id") or "").strip()
+
     # Query doctors separately so doctors with no remaining patterns are reconciled.
     doctors = execute_query(
         """
@@ -198,7 +200,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         FROM doctors d
         JOIN users u ON u.user_id = d.user_id
         WHERE u.is_active = TRUE
-        """
+          AND (%s = '' OR d.doctor_id = %s)
+        """,
+        (doctor_filter, doctor_filter),
     )
     query_patterns = """
         SELECT
@@ -216,9 +220,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         JOIN consultation_catalog catalog
             ON catalog.consultation_type_id = ct.catalog_type_id
         WHERE ap.is_active = TRUE AND ct.is_active = TRUE
+          AND (%s = '' OR ct.doctor_id = %s)
         ORDER BY ct.doctor_id, ap.day_of_week, ap.start_time
     """
-    patterns = execute_query(query_patterns)
+    patterns = execute_query(query_patterns, (doctor_filter, doctor_filter))
     logger.info("Retrieved %d active availability patterns from database", len(patterns))
 
     # Group patterns by doctor_id

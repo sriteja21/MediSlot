@@ -387,6 +387,42 @@ def execute_schema(
         raise
 
 
+def _column_exists(cursor: Any, table: str, column: str) -> bool:
+    cursor.execute(
+        """SELECT 1
+           FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = %s""",
+        (DB_NAME, table, column),
+    )
+    return cursor.fetchone() is not None
+
+
+def migrate_appointment_columns(connection: Connection) -> None:
+    with connection.cursor() as cursor:
+        if not _column_exists(cursor, "appointments", "doctor_id"):
+            cursor.execute("ALTER TABLE appointments ADD COLUMN doctor_id CHAR(36) NULL AFTER patient_id")
+            cursor.execute(
+                """UPDATE appointments a
+                   JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                   SET a.doctor_id = ct.doctor_id WHERE a.doctor_id IS NULL"""
+            )
+            cursor.execute(
+                """ALTER TABLE appointments
+                   MODIFY doctor_id CHAR(36) NOT NULL,
+                   ADD KEY idx_appointments_doctor_time (doctor_id, appointment_datetime, appointment_status),
+                   ADD CONSTRAINT fk_appointments_doctor FOREIGN KEY (doctor_id) REFERENCES doctors(doctor_id)"""
+            )
+        for column, ddl in (
+            ("cancelled_at", "DATETIME(3) NULL"),
+            ("reminder_24h_sent_at", "DATETIME(3) NULL"),
+            ("reminder_2h_sent_at", "DATETIME(3) NULL"),
+            ("reschedule_count", "TINYINT UNSIGNED NOT NULL DEFAULT 0"),
+        ):
+            if not _column_exists(cursor, "appointments", column):
+                cursor.execute(f"ALTER TABLE appointments ADD COLUMN {column} {ddl}")
+    connection.commit()
+
+
 def migrate_appointment_cancellation_status(connection: Connection) -> None:
     """Add cancellation initiators while keeping cancelled slots reusable."""
     with connection.cursor() as cursor:
@@ -571,6 +607,7 @@ def initialize_database() -> dict[str, Any]:
         )
 
         migrate_appointment_cancellation_status(connection)
+        migrate_appointment_columns(connection)
 
         verified_tables = verify_schema(connection)
 

@@ -1,0 +1,71 @@
+{
+  "StartAt": "Validate",
+  "States": {
+    "Validate": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "validate", "input.$": "$"},
+      "ResultPath": "$.ctxValidate",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Rejected"}],
+      "Next": "ClaimTarget"
+    },
+    "ClaimTarget": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "claim_target", "input.$": "$"},
+      "ResultPath": "$.ctxClaim",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Rejected"}],
+      "Next": "MoveAppointment"
+    },
+    "MoveAppointment": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "move_appointment", "input.$": "$"},
+      "ResultPath": "$.ctxMove",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseTargetOnly"}],
+      "Next": "ReleaseOriginal"
+    },
+    "ReleaseOriginal": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "release_original", "input.$": "$"},
+      "ResultPath": "$.ctxReleaseOriginal",
+      "Retry": [{"ErrorEquals": ["TransientSeatError"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "RevertAppointment"}],
+      "Next": "PublishRescheduled"
+    },
+    "RevertAppointment": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "revert_appointment", "input.$": "$"},
+      "ResultPath": "$.ctxRevert",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "CompensationFailed"}],
+      "Next": "ReleaseTargetAfterRevert"
+    },
+    "ReleaseTargetAfterRevert": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "release_target", "input.$": "$"},
+      "ResultPath": "$.ctxReleaseTarget",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "CompensationFailed"}],
+      "Next": "Compensated"
+    },
+    "ReleaseTargetOnly": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "release_target", "input.$": "$"},
+      "ResultPath": "$.ctxReleaseTarget",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "CompensationFailed"}],
+      "Next": "Rejected"
+    },
+    "PublishRescheduled": {
+      "Type": "Task",
+      "Resource": "${RescheduleFunctionArn}",
+      "Parameters": {"action": "publish_rescheduled", "input.$": "$"},
+      "End": true
+    },
+    "Rejected": {"Type": "Fail", "Error": "RescheduleRejected", "Cause": "Reschedule validation or target claim failed"},
+    "Compensated": {"Type": "Fail", "Error": "RescheduleCompensated", "Cause": "Original appointment restored and target seat released"},
+    "CompensationFailed": {"Type": "Fail", "Error": "CompensationFailed", "Cause": "A reschedule compensation step failed"}
+  }
+}

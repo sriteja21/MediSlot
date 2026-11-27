@@ -125,3 +125,7 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def slot_sk_for(consultation_type_id: str, start: datetime) -> str:
+    return f"{int(_as_utc(start).timestamp())}#{consultation_type_id}"

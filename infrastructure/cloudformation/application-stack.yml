@@ -38,6 +38,12 @@ Parameters:
     Description: Verified SES sender address used for patient and doctor email.
     Default: ""
 
+  EnableFaultInjection:
+    Type: String
+    Description: Enables only test fault injection for reschedule compensation tests.
+    AllowedValues: ["true", "false"]
+    Default: "false"
+
   RefundPolicyJson:
     Type: String
     Description: JSON refund policy shared by patient and doctor cancellation flows.
@@ -109,13 +115,14 @@ Globals:
           Fn::ImportValue:
             !Sub "MediSlot-IdempotencyTableName-${Environment}"
 
+        WAITLIST_TABLE:
+          Fn::ImportValue:
+            !Sub "MediSlot-WaitlistTableName-${Environment}"
         WAITLIST_OFFER_TABLE:
           Fn::ImportValue:
             !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
 
-        NOTIFICATION_QUEUE_URL:
-          Fn::ImportValue:
-            !Sub "MediSlot-NotificationQueueUrl-${Environment}"
+        EVENT_BUS_NAME: !Ref MediSlotEventBus
 
 # ============================================================
 # RESOURCES
@@ -553,12 +560,6 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /doctors/me/refunds
             Method: GET
-        DoctorAppointmentCancel:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApi
-            Path: /doctors/me/appointments/{appointment_id}/cancel
-            Method: POST
 
   MediSlotBookingDeadLetterQueue:
     Type: AWS::SQS::Queue
@@ -566,6 +567,7 @@ Resources:
       QueueName: !Sub "MediSlot-Booking-${Environment}-dlq.fifo"
       FifoQueue: true
       SqsManagedSseEnabled: true
+      VisibilityTimeout: 360
       MessageRetentionPeriod: 1209600
 
   MediSlotBookingQueue:
@@ -676,11 +678,29 @@ Resources:
             RestApiId: !Ref MediSlotApi
             Path: /patients/me/booking-requests/{request_id}
             Method: GET
-        PatientAppointmentCancel:
+        PatientWaitlistGet:
           Type: Api
           Properties:
             RestApiId: !Ref MediSlotApi
-            Path: /patients/me/appointments/{appointment_id}/cancel
+            Path: /patients/me/waitlists
+            Method: GET
+        PatientWaitlistJoin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/waitlists
+            Method: POST
+        PatientWaitlistLeave:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/waitlists
+            Method: DELETE
+        PatientWaitlistAccept:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/waitlist-offers/{offer_id}/accept
             Method: POST
         PatientRefundPreview:
           Type: Api
@@ -738,7 +758,9 @@ Resources:
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
                   - sqs:ChangeMessageVisibility
-                Resource: !GetAtt MediSlotBookingQueue.Arn
+                Resource:
+                  - !GetAtt MediSlotBookingQueue.Arn
+                  - !GetAtt MediSlotBookingDeadLetterQueue.Arn
         - PolicyName: !Sub "MediSlot-BookingWorkerDatabase-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -783,10 +805,8 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: sqs:SendMessage
-                Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-NotificationQueueArn-${Environment}"
+                Action: events:PutEvents
+                Resource: !GetAtt MediSlotEventBus.Arn
       Tags:
         - Key: Name
           Value: !Sub "MediSlot-BookingWorkerRole-${Environment}"
@@ -822,14 +842,349 @@ Resources:
           IDEMPOTENCY_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-IdempotencyTableName-${Environment}"
+          EVENT_BUS_NAME: !Ref MediSlotEventBus
       Events:
         BookingQueue:
           Type: SQS
           Properties:
             Queue: !GetAtt MediSlotBookingQueue.Arn
             BatchSize: 1
+            ScalingConfig:
+              MaximumConcurrency: 5
             FunctionResponseTypes:
               - ReportBatchItemFailures
+
+  MediSlotBookingDlqProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MediSlot-BookingDlqProcessor-${Environment}"
+      RetentionInDays: 14
+
+  MediSlotBookingDlqProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-BookingDlqProcessor-${Environment}"
+      CodeUri: ../../src/booking_worker/
+      Handler: dlq_handler.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt MediSlotBookingWorkerRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
+          IDEMPOTENCY_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-IdempotencyTableName-${Environment}"
+      Events:
+        BookingDlq:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MediSlotBookingDeadLetterQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  MediSlotAppointmentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-Appointment-${Environment}"
+      Description: !Sub "Owns appointment cancel, complete and no-show transitions (${Environment})."
+      CodeUri: ../../src/appointment/
+      Handler: handler.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
+          REFUND_POLICY_PARAMETER_NAME: !Sub "${RefundPolicyParameterName}"
+          RESCHEDULE_STATE_MACHINE_ARN: !Ref MediSlotRescheduleStateMachine
+          EVENT_BUS_NAME: !Ref MediSlotEventBus
+      Events:
+        PatientReschedule:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/appointments/{appointment_id}/reschedule
+            Method: POST
+        PatientCancel:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /patients/me/appointments/{appointment_id}/cancel
+            Method: POST
+        DoctorCancel:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/appointments/{appointment_id}/cancel
+            Method: POST
+        DoctorComplete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/appointments/{appointment_id}/complete
+            Method: POST
+        DoctorNoShow:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApi
+            Path: /doctors/me/appointments/{appointment_id}/no-show
+            Method: POST
+
+  MediSlotEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub "MediSlot-Events-${Environment}"
+
+  NotificationEventsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-NotificationEvents-${Environment}-dlq"
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+
+  NotificationEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-NotificationEvents-${Environment}"
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotificationEventsDlq.Arn
+        maxReceiveCount: 5
+
+  NotificationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref MediSlotEventBus
+      EventPattern:
+        source:
+          - prefix: medislot.
+        detail-type:
+          - AppointmentBooked
+          - AppointmentCancelledByPatient
+          - AppointmentCancelledByDoctor
+          - AppointmentRescheduled
+          - WaitlistOfferIssued
+          - AppointmentReminder24h
+          - AppointmentReminder2h
+          - AppointmentNoShow
+      Targets:
+        - Id: notification-queue
+          Arn: !GetAtt NotificationEventsQueue.Arn
+
+  NotificationEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref NotificationEventsQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt NotificationRule.Arn
+
+  WaitlistEventsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-WaitlistEvents-${Environment}-dlq"
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+
+  WaitlistEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "MediSlot-WaitlistEvents-${Environment}"
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WaitlistEventsDlq.Arn
+        maxReceiveCount: 5
+
+  WaitlistRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref MediSlotEventBus
+      EventPattern:
+        source:
+          - medislot.waitlist
+        detail-type:
+          - SlotSeatFreed
+          - WaitlistOfferExpired
+      Targets:
+        - Id: waitlist-queue
+          Arn: !GetAtt WaitlistEventsQueue.Arn
+
+  WaitlistEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref WaitlistEventsQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt WaitlistEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt WaitlistRule.Arn
+
+  MediSlotWaitlistPromoter:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-WaitlistPromoter-${Environment}"
+      CodeUri: ../../src/waitlist_promoter/
+      Handler: handler.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          WAITLIST_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-WaitlistTableName-${Environment}"
+          WAITLIST_OFFER_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
+          EVENT_BUS_NAME: !Ref MediSlotEventBus
+      Events:
+        WaitlistEvents:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt WaitlistEventsQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  MediSlotWaitlistSweeper:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-WaitlistSweeper-${Environment}"
+      CodeUri: ../../src/waitlist_sweeper/
+      Handler: handler.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          WAITLIST_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-WaitlistTableName-${Environment}"
+          WAITLIST_OFFER_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
+          EVENT_BUS_NAME: !Ref MediSlotEventBus
+      Events:
+        EveryMinute:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
+
+  BookingDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "MediSlot-BookingDlq-${Environment}"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt MediSlotBookingDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+
+  NotificationDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "MediSlot-NotificationDlq-${Environment}"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt NotificationEventsDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+
+  WaitlistDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "MediSlot-WaitlistDlq-${Environment}"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt WaitlistEventsDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
 
   MediSlotNotificationDispatcherLogGroup:
     Type: AWS::Logs::LogGroup
@@ -879,9 +1234,7 @@ Resources:
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
                   - sqs:ChangeMessageVisibility
-                Resource:
-                  Fn::ImportValue:
-                    !Sub "MediSlot-NotificationQueueArn-${Environment}"
+                Resource: !GetAtt NotificationEventsQueue.Arn
         - PolicyName: !Sub "MediSlot-NotificationDispatcherTable-${Environment}"
           PolicyDocument:
             Version: "2012-10-17"
@@ -924,9 +1277,7 @@ Resources:
         NotificationQueue:
           Type: SQS
           Properties:
-            Queue:
-              Fn::ImportValue:
-                !Sub "MediSlot-NotificationQueueArn-${Environment}"
+            Queue: !GetAtt NotificationEventsQueue.Arn
             BatchSize: 1
             FunctionResponseTypes:
               - ReportBatchItemFailures
@@ -934,6 +1285,84 @@ Resources:
   # ==========================================================
   # DAILY SLOT MATERIALISER
   # ==========================================================
+
+  MediSlotRescheduleFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-Reschedule-${Environment}"
+      CodeUri: ../../src/reschedule/
+      Handler: handler.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          ENABLE_FAULT_INJECTION: !Ref EnableFaultInjection
+          SLOTS_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-SlotsV2TableName-${Environment}"
+          WAITLIST_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-WaitlistTableName-${Environment}"
+          WAITLIST_OFFER_TABLE:
+            Fn::ImportValue:
+              !Sub "MediSlot-WaitlistOfferTableName-${Environment}"
+          EVENT_BUS_NAME: !Ref MediSlotEventBus
+
+  MediSlotRescheduleStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      StateMachineName: !Sub "MediSlot-Reschedule-${Environment}"
+      StateMachineType: STANDARD
+      Tracing:
+        Enabled: true
+      DefinitionUri: ../../statemachine/reschedule.asl.json
+      DefinitionSubstitutions:
+        RescheduleFunctionArn: !GetAtt MediSlotRescheduleFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref MediSlotRescheduleFunction
+
+  MediSlotReminderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "MediSlot-Reminder-${Environment}"
+      CodeUri: ../../src/reminder/
+      Handler: handler.lambda_handler
+      Timeout: 120
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Role:
+        Fn::ImportValue:
+          !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-LambdaSecurityGroupId-${Environment}"
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet1Id-${Environment}"
+          - Fn::ImportValue:
+              !Sub "MediSlot-PrivateSubnet2Id-${Environment}"
+      Environment:
+        Variables:
+          EVENT_BUS_NAME: !Ref MediSlotEventBus
+      Events:
+        Every15Minutes:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(15 minutes)
 
   MediSlotSlotMaterialiserFunction:
     Type: AWS::Serverless::Function
@@ -944,6 +1373,7 @@ Resources:
       Handler: handler.lambda_handler
       Timeout: 900
       MemorySize: 512
+      ReservedConcurrentExecutions: 1
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
@@ -961,6 +1391,12 @@ Resources:
           SLOTS_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-SlotsV2TableName-${Environment}"
+      Events:
+        DailyRun:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(30 18 * * ? *)
+            Input: '{}'
 
 # ============================================================
 # OUTPUTS
