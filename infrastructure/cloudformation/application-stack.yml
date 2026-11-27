@@ -921,7 +921,7 @@ Resources:
           SLOTS_TABLE:
             Fn::ImportValue:
               !Sub "MediSlot-SlotsV2TableName-${Environment}"
-          REFUND_POLICY_PARAMETER_NAME: !Sub "${RefundPolicyParameterName}"
+          REFUND_POLICY_PARAMETER_NAME: !Sub "/MediSlot/${Environment}/booking/refund-policy"
           RESCHEDULE_STATE_MACHINE_ARN: !Ref MediSlotRescheduleStateMachine
           EVENT_BUS_NAME: !Ref MediSlotEventBus
       Events:
