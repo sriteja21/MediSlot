@@ -1323,8 +1323,8 @@ Resources:
   MediSlotRescheduleStateMachine:
     Type: AWS::Serverless::StateMachine
     Properties:
-      StateMachineName: !Sub "MediSlot-Reschedule-${Environment}"
-      StateMachineType: STANDARD
+      Name: !Sub "MediSlot-Reschedule-${Environment}"
+      Type: STANDARD
       Tracing:
         Enabled: true
       DefinitionUri: ../../statemachine/reschedule.asl.json
