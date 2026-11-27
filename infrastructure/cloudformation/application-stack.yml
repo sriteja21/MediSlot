@@ -1110,7 +1110,6 @@ Resources:
       Handler: handler.lambda_handler
       Timeout: 60
       MemorySize: 256
-      ReservedConcurrentExecutions: 1
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
@@ -1342,7 +1341,6 @@ Resources:
       Handler: handler.lambda_handler
       Timeout: 120
       MemorySize: 256
-      ReservedConcurrentExecutions: 1
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
@@ -1373,7 +1371,6 @@ Resources:
       Handler: handler.lambda_handler
       Timeout: 900
       MemorySize: 512
-      ReservedConcurrentExecutions: 1
       Role:
         Fn::ImportValue:
           !Sub "MediSlot-ApiLambdaRoleArn-${Environment}"
